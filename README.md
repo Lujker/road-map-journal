@@ -12,7 +12,7 @@ Keep a project's roadmap, next steps and decision history useful across AI codin
 - Supports starting, adopting, resuming and updating a plan, plus read-only status questions.
 - Uses the language already used in a project, or agrees on one with the user for a new plan.
 
-The skill is an instruction set, not a task tracker or a guarantee that an agent will follow every rule. Its operation depends on the model, host, permissions and project instructions. It does not add a service, hooks, scheduled jobs or executable helpers.
+The skill is an instruction set, not a task tracker or a guarantee that an agent will follow every rule. Its operation depends on the model, host, permissions and project instructions. The skill itself adds no service, hooks, scheduled jobs or executable helpers. An optional maintenance script for updating an installed copy lives in `scripts/` outside the skill folder; it is not installed with the skill.
 
 ## Installation
 
@@ -35,6 +35,18 @@ npx skills add Lujker/road-map-journal --skill road-map-journal --agent codex --
 ```
 
 This selects Codex only; it does not update other agents or environments. Inspect the complete installed skill and `references/`, check for duplicates and verify discovery using the host's own mechanism. For other agents use their documented name and intended scope; `--global` is optional and must not be assumed for project-scoped installations. Changed-version reinstalls and one targeted `skills update` with a prepared GitHub lock were verified in isolated WSL homes; these do not establish update behavior on every host. In one isolated `skills` 1.7.6 probe, `owner/repo@<commit>` printed the requested old commit but installed current content instead; verify actual files and do not assume ref pinning works for that version. Installation and file equality alone do not prove runtime behavior.
+
+#### Optional per-host update script
+
+`scripts/update-installed.mjs` wraps the targeted command above for **one host**: it reports where the skill is installed (canonical `.agents` copy, Claude/Codex/Hermes links, account-synced Claude copies), compares the installed content with the published version, and, only with `--apply`, backs up the existing copies, runs the pinned `skills` CLI for the selected agents, and verifies the result. It stops on locally modified or untracked installs unless `--force` is given. It requires Node 22.20 or newer (the `skills` CLI requirement) and Git. Run it with a new-enough `node`; on a host where an older Node comes first in `PATH`, call that binary explicitly.
+
+```sh
+node scripts/update-installed.mjs            # report only
+node scripts/update-installed.mjs --apply    # back up, update, verify
+node --test scripts/update-installed.test.mjs
+```
+
+It does not update copies the `skills` CLI does not manage, such as skills synced from a Claude account (reported only), and it does not reload an already running agent session. Use `--agent <id>` to choose agents; Hermes is not selected by default because the CLI would create a root Hermes link that can hide a categorised one. Model-free tests in isolated homes on WSL and Windows (Node 26) covered report-only, an outdated pristine install, and a locally edited install; hosts and customized installs beyond those are untested.
 
 ## Usage
 
