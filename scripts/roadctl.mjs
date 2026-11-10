@@ -13,14 +13,15 @@
 //   roadctl done <id> --by NAME      review/doing -> done; refuses without evidence
 //   roadctl approve <id> --by NAME --scope implementation[+analysis+external] [--source REF]
 //   roadctl new <id> "title" [--status ready|idea]
-//   roadctl hook <event>             session-start | pre-compact | stop | pre-commit
-//   roadctl hook-install --claude|--git [--apply] ; hook-uninstall --claude|--git [--apply]
+//   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | pre-commit
+//   roadctl hook-install --claude|--codex|--hermes|--git [--apply] ; hook-uninstall (same flags)
 //
 // Global: --board <dir>, --date YYYY-MM-DD, --json (lint). Exit codes: 0 ok, 1 findings/refusal, 2 usage/error.
 
 import { execFileSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -340,7 +341,40 @@ function readStdinJson() {
   }
 }
 
-export function hookContext(event, payload, boardArg) {
+const stateDir = (board) => {
+  try {
+    return path.resolve(board.project, git(['rev-parse', '--git-dir'], board.project).trim());
+  } catch {
+    const d = path.join(os.tmpdir(), `roadctl-${crypto.createHash('sha1').update(board.dir).digest('hex').slice(0, 12)}`);
+    fs.mkdirSync(d, { recursive: true });
+    return d;
+  }
+};
+
+/** Text of the once-only reminder, or null. Shared by the Claude/Codex Stop hooks and the Hermes next-turn hook. */
+export function stopReminder(board, payload = {}) {
+  if (payload.stop_hook_active) return null;
+  const doing = board.cards.filter((c) => statusOf(board, c) === 'doing');
+  if (doing.length !== 1) return null;
+  const card = doing[0];
+  let porcelain;
+  try {
+    porcelain = git(['status', '--porcelain'], board.project);
+  } catch {
+    return null;
+  }
+  const rel = path.relative(board.project, board.dir).split(path.sep).join('/');
+  const changed = porcelain.split('\n').filter(Boolean).map((l) => l.slice(3));
+  const outside = changed.filter((p) => !p.replace(/\\/g, '/').startsWith(`${rel}/`));
+  if (!outside.length || changed.length > outside.length) return null;
+  const marker = path.join(stateDir(board), 'roadctl-stop-state');
+  const key = `${card.header.id}:${card.log.length}`;
+  if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === key) return null;
+  fs.writeFileSync(marker, key);
+  return `Card ${card.header.id} is doing and the working tree has changes outside the board, but the board was not updated. If you made progress or a decision, record it (roadctl log ${card.header.id} "..." or the card's Log); otherwise ignore this one-time reminder.`;
+}
+
+export function hookContext(event, payload, boardArg, host = 'claude') {
   const start = payload.cwd || process.cwd();
   const dir = findBoard(start, boardArg);
   if (!dir) return null;
@@ -350,36 +384,31 @@ export function hookContext(event, payload, boardArg) {
     return { json: { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: brief(board) } } };
   }
   if (event === 'pre-compact') {
-    if (!doing.length) return null;
+    if (host === 'codex' || !doing.length) return null; // Codex ignores PreCompact output; SessionStart(compact) re-injects instead
     const ids = doing.map((c) => `${c.header.id} (${sanitize(c.header.title, 60)})`).join(', ');
     return { text: `When you summarize this conversation, keep: the active card ${ids}, its open acceptance criteria ids, decisions made in this session with their reasons, and where to resume. The board is in ${path.relative(board.project, board.dir) || '.'}; read it again with roadctl brief after compaction.` };
   }
   if (event === 'stop') {
-    if (payload.stop_hook_active) return null;
-    if (doing.length !== 1) return null;
-    const card = doing[0];
-    let porcelain;
-    try {
-      porcelain = git(['status', '--porcelain'], board.project);
-    } catch {
-      return null;
-    }
-    const rel = path.relative(board.project, board.dir).split(path.sep).join('/');
-    const changed = porcelain.split('\n').filter(Boolean).map((l) => l.slice(3));
-    const outside = changed.filter((p) => !p.replace(/\\/g, '/').startsWith(`${rel}/`));
-    const boardTouched = changed.length > outside.length;
-    if (!outside.length || boardTouched) return null;
-    const gitDir = path.resolve(board.project, git(['rev-parse', '--git-dir'], board.project).trim());
-    const marker = path.join(gitDir, 'roadctl-stop-state');
-    const key = `${card.header.id}:${card.log.length}`;
-    if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === key) return null;
-    fs.writeFileSync(marker, key);
-    return { json: { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: `Card ${card.header.id} is doing and the working tree has changes outside the board, but the board was not updated this turn. If you made progress or a decision, record it (roadctl log ${card.header.id} "..." or the card's Log); otherwise ignore this one-time reminder.` } } };
+    const text = stopReminder(board, payload);
+    if (!text) return null;
+    return host === 'codex'
+      ? { json: { decision: 'block', reason: text } }
+      : { json: { hookSpecificOutput: { hookEventName: 'Stop', additionalContext: text } } };
+  }
+  if (event === 'hermes-pre-llm') {
+    // Hermes only uses the return value of pre_llm_call: brief on the first turn of a session, a one-time reminder later.
+    const session = String(payload.session_id ?? '');
+    const marker = path.join(stateDir(board), 'roadctl-hermes-session');
+    const first = payload.extra?.is_first_turn === true || (session && (!fs.existsSync(marker) || fs.readFileSync(marker, 'utf8') !== session));
+    if (session) fs.writeFileSync(marker, session);
+    if (first) return { json: { context: brief(board) } };
+    const text = stopReminder(board, {});
+    return text ? { json: { context: text } } : null;
   }
   return null;
 }
 
-export function runHook(event, payload, boardArg, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }) {
+export function runHook(event, payload, boardArg, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }, host = 'claude') {
   try {
     if (event === 'pre-commit') {
       const dir = findBoard(process.cwd(), boardArg);
@@ -391,7 +420,7 @@ export function runHook(event, payload, boardArg, io = { out: (s) => process.std
       if (errors.length) io.err('roadctl: commit blocked by lint errors (fix them, or run roadctl sync if BOARD.md is stale).\n');
       return errors.length ? 1 : 0;
     }
-    const r = hookContext(event, payload, boardArg);
+    const r = hookContext(event, payload, boardArg, host);
     if (r?.json) io.out(`${JSON.stringify(r.json)}\n`);
     else if (r?.text) io.out(`${r.text}\n`);
     return 0;
@@ -437,18 +466,109 @@ function backup(file) {
   return b;
 }
 
-export function installHooks(kind, project, { apply, uninstall, self = SELF, node = 'node' }) {
+const posix = (p) => p.split(path.sep).join('/');
+const shq = (x) => (/^[\w./:@%+=,-]+$/.test(x) ? x : `'${x.replace(/'/g, `'\\''`)}'`);
+
+const isOursCodex = (h) => /roadctl/.test(h.command ?? '') && / hook /.test(h.command ?? '');
+
+export function codexCommand(self, node, arg, win = false) {
+  if (win) return `${node} "${self.replace(/\//g, '\\')}" hook ${arg} --host codex`;
+  return `${shq(node)} ${shq(posix(self))} hook ${arg} --host codex`;
+}
+
+export function mergeCodexHooks(settings, self = SELF, node = 'node') {
+  const out = JSON.parse(JSON.stringify(settings));
+  out.hooks ??= {};
+  for (const [event, arg] of [['SessionStart', 'session-start'], ['Stop', 'stop']]) {
+    const groups = (out.hooks[event] ??= []);
+    if (!groups.some((g) => (g.hooks ?? []).some((h) => isOursCodex(h) && h.command.includes(` hook ${arg} `)))) {
+      groups.push({ hooks: [{ type: 'command', command: codexCommand(self, node, arg), commandWindows: codexCommand(self, node, arg, true), timeout: 10 }] });
+    }
+  }
+  return out;
+}
+
+export function removeCodexHooks(settings) {
+  const out = JSON.parse(JSON.stringify(settings));
+  for (const event of Object.keys(out.hooks ?? {})) {
+    out.hooks[event] = out.hooks[event].map((g) => ({ ...g, hooks: (g.hooks ?? []).filter((h) => !isOursCodex(h)) })).filter((g) => g.hooks.length);
+    if (!out.hooks[event].length) delete out.hooks[event];
+  }
+  if (out.hooks && !Object.keys(out.hooks).length) delete out.hooks;
+  return out;
+}
+
+export const HERMES_BEGIN = '# roadctl-managed begin';
+export const HERMES_END = '# roadctl-managed end';
+
+export function hermesBlock(self = SELF, node = 'node') {
+  const cmd = `${shq(node)} ${shq(posix(self))} hook hermes-pre-llm`;
+  return `${HERMES_BEGIN}\nhooks:\n  pre_llm_call:\n    - command: ${JSON.stringify(cmd)}\n      timeout: 10\n${HERMES_END}\n`;
+}
+
+export function hermesHomeDir(flag) {
+  if (flag) return path.resolve(flag);
+  if (process.env.HERMES_HOME?.trim()) return process.env.HERMES_HOME.trim();
+  if (process.platform === 'win32' && process.env.LOCALAPPDATA) return path.join(process.env.LOCALAPPDATA, 'hermes');
+  return path.join(os.homedir(), '.hermes');
+}
+
+export function codexHomeDir(flag) {
+  return flag ? path.resolve(flag) : process.env.CODEX_HOME?.trim() || path.join(os.homedir(), '.codex');
+}
+
+/** Pure text transformation of Hermes config.yaml; returns { text, note }. */
+export function editHermesConfig(text, { uninstall, self, node }) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const t = text.replace(/\r\n/g, '\n');
+  const re = new RegExp(`\\n?${HERMES_BEGIN}[\\s\\S]*?${HERMES_END}\\n?`);
+  const has = re.test(t);
+  let out;
+  let note = '';
+  if (uninstall) {
+    out = has ? t.replace(re, '\n') : t;
+    note = has ? '' : 'no roadctl block found';
+  } else if (has) {
+    out = t.replace(re, `\n${hermesBlock(self, node)}`);
+  } else if (/^hooks:/m.test(t)) {
+    return { text, note: 'config.yaml already has a top-level hooks: key; not editing it. Merge this entry under hooks: yourself:\n' + hermesBlock(self, node).replace(/^hooks:\n/m, '') };
+  } else {
+    out = `${t.replace(/\n*$/, '\n')}\n${hermesBlock(self, node)}`;
+  }
+  return { text: out.replace(/\n/g, eol), note };
+}
+
+export function installHooks(kind, project, { apply, uninstall, self = SELF, node = 'node', codexHome, hermesHome }) {
   const log = [];
-  if (kind === 'claude') {
-    const f = claudeSettingsPath(project);
-    const cur = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf8')) : {};
-    const next = uninstall ? removeClaudeHooks(cur) : mergeClaudeHooks(cur, self, node);
-    log.push(`${apply ? 'writing' : 'would write'} ${f} (local, uncommitted settings):`, JSON.stringify(next, null, 2));
+  const jsonHooks = (file, merge, remove, label) => {
+    const cur = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+    const next = uninstall ? remove(cur) : merge(cur, self, node);
+    log.push(`${apply ? 'writing' : 'would write'} ${file} (${label}):`, JSON.stringify(next, null, 2));
     if (apply) {
-      const b = backup(f);
+      const b = backup(file);
       if (b) log.push(`backup: ${b}`);
-      fs.mkdirSync(path.dirname(f), { recursive: true });
-      fs.writeFileSync(f, `${JSON.stringify(next, null, 2)}\n`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(file, `${JSON.stringify(next, null, 2)}\n`);
+    }
+  };
+  if (kind === 'claude') {
+    jsonHooks(claudeSettingsPath(project), mergeClaudeHooks, removeClaudeHooks, 'local, uncommitted settings');
+  } else if (kind === 'codex') {
+    jsonHooks(path.join(codexHomeDir(codexHome), 'hooks.json'), mergeCodexHooks, removeCodexHooks, 'user-level Codex hooks; Codex will ask you to review and trust them in /hooks before they run');
+  } else if (kind === 'hermes') {
+    const file = path.join(hermesHomeDir(hermesHome), 'config.yaml');
+    if (!fs.existsSync(file)) throw new Error(`${file} not found`);
+    const cur = fs.readFileSync(file, 'utf8');
+    const r = editHermesConfig(cur, { uninstall, self, node });
+    if (r.note) log.push(r.note);
+    if (r.text !== cur) {
+      log.push(`${apply ? 'writing' : 'would write'} ${file}: ${uninstall ? 'remove' : 'add'} the roadctl block (${HERMES_BEGIN} ... ${HERMES_END}). Hermes asks you to approve a new hook on first use (or use hermes --accept-hooks).`);
+      if (!uninstall) log.push(hermesBlock(self, node));
+      if (apply) {
+        const b = backup(file);
+        if (b) log.push(`backup: ${b}`);
+        fs.writeFileSync(file, r.text);
+      }
     }
   } else if (kind === 'git') {
     const hooksDir = path.resolve(project, git(['rev-parse', '--git-path', 'hooks'], project).trim());
@@ -462,15 +582,15 @@ export function installHooks(kind, project, { apply, uninstall, self = SELF, nod
         if (apply) fs.rmSync(f);
       } else log.push('no roadctl pre-commit hook to remove');
     } else if (exists && !ours) {
-      log.push(`${f} already exists and is not managed by roadctl; not touching it. Add this line to it yourself:`, `node "${self.split(path.sep).join('/')}" hook pre-commit || exit 1`);
+      log.push(`${f} already exists and is not managed by roadctl; not touching it. Add this line to it yourself:`, `node "${posix(self)}" hook pre-commit || exit 1`);
     } else {
       log.push(`${apply ? 'writing' : 'would write'} ${f}`);
       if (apply) {
         fs.mkdirSync(hooksDir, { recursive: true });
-        fs.writeFileSync(f, `#!/bin/sh\n${marker}\n${node} "${self.split(path.sep).join('/')}" hook pre-commit\n`, { mode: 0o755 });
+        fs.writeFileSync(f, `#!/bin/sh\n${marker}\n${node} "${posix(self)}" hook pre-commit\n`, { mode: 0o755 });
       }
     }
-  } else throw new Error('choose --claude or --git');
+  } else throw new Error('choose --claude, --codex, --hermes or --git');
   if (!apply) log.push('(dry run; add --apply to write)');
   return log.join('\n');
 }
@@ -479,7 +599,7 @@ export function installHooks(kind, project, { apply, uninstall, self = SELF, nod
 
 function parse(argv) {
   const o = { _: [], flags: {} };
-  const withValue = new Set(['--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node']);
+  const withValue = new Set(['--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -498,12 +618,12 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
   if (!cmd || cmd === 'help' || flags.help) return out(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 24).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')), 0;
   if (cmd === 'version') return out(VERSION), 0;
   try {
-    if (cmd === 'hook') return runHook(args[1], readStdinJson(), flags.board, io);
+    if (cmd === 'hook') return runHook(args[1], readStdinJson(), flags.board, io, flags.host === 'codex' ? 'codex' : 'claude');
     if (cmd === 'hook-install' || cmd === 'hook-uninstall') {
-      const kind = flags.claude ? 'claude' : flags.git ? 'git' : null;
+      const kind = flags.claude ? 'claude' : flags.codex ? 'codex' : flags.hermes ? 'hermes' : flags.git ? 'git' : null;
       const dir = findBoard(process.cwd(), flags.board);
       let project = dir ? path.dirname(dir) : process.cwd();
-      out(installHooks(kind, project, { apply: Boolean(flags.apply), uninstall: cmd === 'hook-uninstall', node: flags.node || 'node' }));
+      out(installHooks(kind, project, { apply: Boolean(flags.apply), uninstall: cmd === 'hook-uninstall', node: flags.node || 'node', codexHome: flags['codex-home'], hermesHome: flags['hermes-home'] }));
       return 0;
     }
     const dir = findBoard(process.cwd(), flags.board);

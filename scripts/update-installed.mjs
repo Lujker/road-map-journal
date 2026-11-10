@@ -16,7 +16,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const SKILL = 'road-map-journal';
 export const DEFAULT_SOURCE = 'Lujker/road-map-journal';
@@ -142,6 +142,22 @@ export function decide({ canonicalExists, lockEntry, installedHash, upstreamHash
   return { state: 'OUTDATED', action: 'update' };
 }
 
+/** Install or refresh the optional roadctl helper at a stable per-user path (hooks point there). */
+export function syncRoadctl(home, srcFile, apply = true) {
+  const dest = path.join(home, '.local', 'share', 'road-map-journal', 'roadctl.mjs');
+  const norm = (t) => t.replace(/\r\n/g, '\n');
+  const src = norm(fs.readFileSync(srcFile, 'utf8'));
+  const cur = fs.existsSync(dest) ? norm(fs.readFileSync(dest, 'utf8')) : null;
+  if (cur === src) return { dest, action: 'unchanged' };
+  const action = cur === null ? 'install' : 'update';
+  if (apply) {
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    if (cur !== null) fs.copyFileSync(dest, `${dest}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+    fs.writeFileSync(dest, src);
+  }
+  return { dest, action: apply ? action : `would ${action}` };
+}
+
 function copyDir(src, dest) {
   fs.cpSync(src, dest, { recursive: true, verbatimSymlinks: true });
 }
@@ -158,12 +174,13 @@ function runCli(cliPkg, args, env) {
 }
 
 function parseArgs(argv) {
-  const o = { apply: false, force: false, agents: [], cli: DEFAULT_CLI, source: null, home: os.homedir(), json: false };
+  const o = { apply: false, force: false, agents: [], cli: DEFAULT_CLI, source: null, home: os.homedir(), json: false, roadctl: false };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--apply') o.apply = true;
     else if (a === '--force') o.force = true;
     else if (a === '--json') o.json = true;
+    else if (a === '--roadctl') o.roadctl = true;
     else if (a === '--agent') o.agents.push(argv[++i]);
     else if (a === '--cli') o.cli = argv[++i];
     else if (a === '--source') o.source = argv[++i];
@@ -177,9 +194,9 @@ function parseArgs(argv) {
   return o;
 }
 
-const HELP = `Usage: node scripts/update-installed.mjs [--apply] [--force] [--agent <id>]... [--cli skills@x.y.z] [--source owner/repo] [--home <dir>] [--json]
+const HELP = `Usage: node scripts/update-installed.mjs [--apply] [--force] [--roadctl] [--agent <id>]... [--cli skills@x.y.z] [--source owner/repo] [--home <dir>] [--json]
 Dry run unless --apply. Default agents: claude-code if ~/.claude exists, plus codex. Hermes is not selected by default
-(use --agent hermes-agent only after checking that it will not hide a categorised Hermes link). Requires Node >= ${MIN_NODE.join('.')}.`;
+(use --agent hermes-agent only after checking that it will not hide a categorised Hermes link). --roadctl also installs or refreshes the optional helper at ~/.local/share/road-map-journal/roadctl.mjs. Requires Node >= ${MIN_NODE.join('.')}.`;
 
 export async function main(argv) {
   const o = parseArgs(argv);
@@ -219,6 +236,10 @@ export async function main(argv) {
     log(`Upstream ${upstream.commit.slice(0, 7)} tree ${upstream.hash.slice(0, 7)}; installed tree ${installedHash ? installedHash.slice(0, 7) : 'n/a'} -> ${d.state}${d.note ? ` (${d.note})` : ''}`);
     report.state = d.state;
 
+    if (o.roadctl) {
+      const t = syncRoadctl(o.home, fileURLToPath(new URL('./roadctl.mjs', import.meta.url)), o.apply);
+      log(`roadctl helper: ${t.action} ${t.dest}`);
+    }
     const wantsRun = d.action === 'update' || d.action === 'install' || (d.action === 'review' && o.force);
     if (!wantsRun) {
       if (d.action === 'review') exit = 1;

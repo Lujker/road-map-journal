@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { decide, folderHash, nodeOk } from './update-installed.mjs';
+import { decide, folderHash, nodeOk, syncRoadctl } from './update-installed.mjs';
 
 test('nodeOk enforces the skills CLI minimum', () => {
   assert.equal(nodeOk('20.17.0'), false);
@@ -37,4 +37,26 @@ test('decide covers the update states', () => {
   assert.equal(decide({ canonicalExists: true, lockEntry: lock, installedHash: 'new', upstreamHash: 'new' }).state, 'UP_TO_DATE');
   assert.equal(decide({ canonicalExists: true, lockEntry: lock, installedHash: 'old', upstreamHash: 'new' }).state, 'OUTDATED');
   assert.equal(decide({ canonicalExists: true, lockEntry: lock, installedHash: 'edited', upstreamHash: 'new' }).state, 'LOCALLY_MODIFIED');
+});
+
+test('syncRoadctl installs, updates with a backup, and is a no-op when equal (CRLF ignored)', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rmj-sync-'));
+  try {
+    const src = path.join(root, 'roadctl.mjs');
+    const home = path.join(root, 'home');
+    fs.writeFileSync(src, 'v1\n');
+    assert.match(syncRoadctl(home, src, false).action, /would install/);
+    assert.equal(fs.existsSync(path.join(home, '.local')), false, 'dry run writes nothing');
+    assert.equal(syncRoadctl(home, src).action, 'install');
+    assert.equal(syncRoadctl(home, src).action, 'unchanged');
+    fs.writeFileSync(src, 'v1\r\n');
+    assert.equal(syncRoadctl(home, src).action, 'unchanged');
+    fs.writeFileSync(src, 'v2\n');
+    const r = syncRoadctl(home, src);
+    assert.equal(r.action, 'update');
+    assert.equal(fs.readFileSync(r.dest, 'utf8'), 'v2\n');
+    assert.ok(fs.readdirSync(path.dirname(r.dest)).some((n) => n.includes('.bak-')));
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
 });

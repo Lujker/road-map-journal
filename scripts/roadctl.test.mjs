@@ -266,3 +266,82 @@ test('sanitize strips markup and control characters and caps length', () => {
   assert.equal(rc.sanitize('<b>a</b>\n`b`\u0007  c', 50), 'ba/b b c');
   assert.equal(rc.sanitize('x'.repeat(200), 10).length, 10);
 });
+
+test('codex stop hook answers with decision:block once; pre-compact stays silent for codex', () => {
+  const root = project({ git: true });
+  const stop = () => cli(root, ['hook', 'stop', '--host', 'codex'], JSON.stringify({ cwd: root }));
+  fs.writeFileSync(path.join(root, 'code.txt'), 'work');
+  const first = JSON.parse(stop().stdout);
+  assert.equal(first.decision, 'block');
+  assert.match(first.reason, /W-3/);
+  assert.equal(stop().stdout, '', 'second call is silent');
+  assert.equal(cli(root, ['hook', 'stop', '--host', 'codex'], JSON.stringify({ cwd: root, stop_hook_active: true })).stdout, '');
+  assert.equal(cli(root, ['hook', 'pre-compact', '--host', 'codex'], JSON.stringify({ cwd: root })).stdout, '');
+  const ss = JSON.parse(cli(root, ['hook', 'session-start', '--host', 'codex'], JSON.stringify({ cwd: root, source: 'compact' })).stdout);
+  assert.equal(ss.hookSpecificOutput.hookEventName, 'SessionStart');
+});
+
+test('hermes pre_llm_call hook: brief on the first turn of a session, one reminder later, nothing else', () => {
+  const root = project({ git: true });
+  const call = (extra) => cli(root, ['hook', 'hermes-pre-llm'], JSON.stringify({ hook_event_name: 'pre_llm_call', cwd: root, session_id: 's1', ...extra }));
+  const first = JSON.parse(call({ extra: { is_first_turn: true } }).stdout);
+  assert.match(first.context, /DOING \[W-3\]/);
+  assert.equal(call({ extra: { is_first_turn: false } }).stdout, '', 'clean tree, later turn: silent');
+  fs.writeFileSync(path.join(root, 'code.txt'), 'work');
+  assert.match(JSON.parse(call({ extra: { is_first_turn: false } }).stdout).context, /one-time reminder/);
+  assert.equal(call({ extra: { is_first_turn: false } }).stdout, '', 'reminder only once');
+  const other = JSON.parse(call({ session_id: 's2', extra: {} }).stdout);
+  assert.match(other.context, /roadctl brief/, 'a new session id gets the brief even without is_first_turn');
+});
+
+test('codex hook install merges with existing hooks, is idempotent and uninstalls exactly', () => {
+  const root = project({ git: true });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cx-'));
+  const mine = { hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: '/usr/bin/other hook-check' }] }] } };
+  fs.writeFileSync(path.join(home, 'hooks.json'), JSON.stringify(mine, null, 2));
+  assert.match(cli(root, ['hook-install', '--codex', '--codex-home', home]).stdout, /dry run/);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'hooks.json'), 'utf8')), mine);
+  assert.equal(cli(root, ['hook-install', '--codex', '--codex-home', home, '--apply']).status, 0);
+  const s1 = JSON.parse(fs.readFileSync(path.join(home, 'hooks.json'), 'utf8'));
+  assert.deepEqual(Object.keys(s1.hooks).sort(), ['PreToolUse', 'SessionStart', 'Stop']);
+  const h = s1.hooks.Stop[0].hooks[0];
+  assert.match(h.command, /roadctl\.mjs.* hook stop --host codex/);
+  assert.match(h.commandWindows, /^node ".*roadctl\.mjs" hook stop --host codex$/);
+  assert.equal(h.timeout, 10);
+  cli(root, ['hook-install', '--codex', '--codex-home', home, '--apply']);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'hooks.json'), 'utf8')).hooks.Stop.length, 1, 'idempotent');
+  assert.ok(fs.readdirSync(home).some((n) => n.includes('roadctl-backup')));
+  assert.equal(cli(root, ['hook-uninstall', '--codex', '--codex-home', home, '--apply']).status, 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(home, 'hooks.json'), 'utf8')), mine);
+});
+
+test('hermes config edit: append, idempotent, uninstall restores the exact text, refuses an existing hooks: key, keeps CRLF', () => {
+  const base = 'model:\n  default: x\n# a comment\nagent:\n  max_turns: 5\n';
+  const opts = { self: '/opt/rc/roadctl.mjs', node: 'node' };
+  const a = rc.editHermesConfig(base, { ...opts, uninstall: false });
+  assert.match(a.text, /# roadctl-managed begin\nhooks:\n  pre_llm_call:\n    - command: "node \/opt\/rc\/roadctl\.mjs hook hermes-pre-llm"\n      timeout: 10\n# roadctl-managed end\n$/);
+  assert.ok(a.text.startsWith(base));
+  assert.equal(rc.editHermesConfig(a.text, { ...opts, uninstall: false }).text, a.text, 'idempotent');
+  assert.equal(rc.editHermesConfig(a.text, { ...opts, uninstall: true }).text.trimEnd(), base.trimEnd());
+  const refused = rc.editHermesConfig('hooks:\n  post_llm_call: []\n', { ...opts, uninstall: false });
+  assert.equal(refused.text, 'hooks:\n  post_llm_call: []\n');
+  assert.match(refused.note, /already has a top-level hooks/);
+  const crlf = rc.editHermesConfig(base.replace(/\n/g, '\r\n'), { ...opts, uninstall: false }).text;
+  assert.ok(!/[^\r]\n/.test(crlf), 'CRLF kept');
+  const spaced = rc.hermesBlock('/opt/my tools/roadctl.mjs', 'node');
+  assert.match(spaced, /'\/opt\/my tools\/roadctl\.mjs'/);
+});
+
+test('hermes hook install through the CLI uses the given home and backs up', () => {
+  const root = project({ git: true });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hm-'));
+  const cfg = path.join(home, 'config.yaml');
+  fs.writeFileSync(cfg, 'agent:\n  max_turns: 5\n');
+  assert.match(cli(root, ['hook-install', '--hermes', '--hermes-home', home]).stdout, /dry run/);
+  assert.equal(fs.readFileSync(cfg, 'utf8'), 'agent:\n  max_turns: 5\n');
+  assert.equal(cli(root, ['hook-install', '--hermes', '--hermes-home', home, '--apply']).status, 0);
+  assert.match(fs.readFileSync(cfg, 'utf8'), /hermes-pre-llm/);
+  assert.ok(fs.readdirSync(home).some((n) => n.includes('roadctl-backup')));
+  assert.equal(cli(root, ['hook-uninstall', '--hermes', '--hermes-home', home, '--apply']).status, 0);
+  assert.equal(fs.readFileSync(cfg, 'utf8').trimEnd(), 'agent:\n  max_turns: 5');
+});
