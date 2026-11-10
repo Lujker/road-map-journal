@@ -48,6 +48,15 @@ node scripts/update-installed.mjs --apply    # back up, update, verify
 node --test scripts/update-installed.test.mjs
 ```
 
+To run it without keeping a checkout, an agent or a person can fetch it temporarily (use a Node 22.20+ binary):
+
+```sh
+D=$(mktemp -d) && git clone --depth 1 https://github.com/Lujker/road-map-journal.git "$D/r" && node "$D/r/scripts/update-installed.mjs"   # add --apply after reading the report
+rm -rf "$D"
+```
+
+Updating is a manual, per-host action by design: there is no background or scheduled updater, and the script does not wait for running agent sessions. Skill files are instructions, so replacing them under an open session is allowed, but a session may keep the old text until it reloads or restarts.
+
 It does not update copies the `skills` CLI does not manage, such as skills synced from a Claude account (reported only), and it does not reload an already running agent session. Use `--agent <id>` to choose agents; Hermes is not selected by default because the CLI would create a root Hermes link that can hide a categorised one. Model-free tests in isolated homes on WSL and Windows (Node 26) covered report-only, an outdated pristine install, and a locally edited install; hosts and customized installs beyond those are untested.
 
 ## Usage
