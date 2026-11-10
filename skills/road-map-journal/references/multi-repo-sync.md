@@ -1,0 +1,9 @@
+# Multi-repository plan reconciliation
+
+Use this reference when the user requests a status or plan update across several repositories. It does not authorize editing, publishing, deploying, or changing task status on its own.
+
+1. For each relevant repository, inspect its instructions, current branch, staged and unstaged changes, and plan/journal. If it has an accessible remote, fetch and compare local and upstream histories; a stale tracking reference is not evidence of current remote state. Account for repositories with no remote or no upstream. Preserve uncommitted work and identify who owns it.
+2. Separate what the plans say from Git evidence and actual service or tracker state. When the requested assessment needs live state and a suitable read-only source is available and authorized, check it; otherwise label the result unverified. Do not change unrelated owners' plans or tracks.
+3. Where edits are authorized, update the affected summary, queue and journal consistently. Preserve prior decisions as history and include the source and date of a reconciliation. Leave already-current or out-of-scope plans alone.
+4. Before any authorized publication, fetch again and inspect divergence, ownership, semantic dependencies and repository rules. Never automatically pull, rebase, reset, or overwrite a dirty or occupied checkout. For diverged local work, preserve it and agree on an appropriate isolated branch rather than pushing it directly to a shared branch. Do not choose one side of a conflict by default; preserve both and resolve in scope, or ask. Treat conflicting item identifiers as a decision requiring clarification.
+5. Publish only when separately authorized and permitted by the repository. Verify the exact remote ref and working-tree state afterward. Report inaccessible repositories, failed updates, divergent branches, dirty submodules and uncertain results individually; do not treat a partial reconciliation as a complete one.
