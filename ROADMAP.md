@@ -27,8 +27,16 @@ The portable skill, documentation in English and Russian, an update script and p
 **Status: DONE (limited).** Released as 0.2.0 (tag `v0.2.0`): long-running rules moved into `references/long-running.md`, new skill description, version in the frontmatter, [CHANGELOG](CHANGELOG.md), CI (passing), shorter roadmap and README opening. Applied to three hosts, see P0.2. Meaning of the moved rules is intended unchanged; behavior and activation were not re-evaluated (that is P1.1 and the first P2.3 check).
 
 ### P2 — Long-running work and a text board
-**Status: IN PROGRESS — P2.1 started 2026-11-10 by the owner's instruction; later items not started.** Plan: [docs/p2-design-plan.md](docs/p2-design-plan.md) (revised after the [review](docs/p2-plan-review.md); its corrections and discussions are closed). Order: P2.1 → pointer → P2.2 → hooks → P2.4a and pilot → P2.4b and P2.6 only if needed. Current: P2.1 board specification, [docs/board-spec.md](docs/board-spec.md) (draft, acceptance test not run).
+**Status: DONE (limited) for P2.1–P2.4a; P2.4b, P2.5 and P2.6 are not planned.** Plan: [docs/p2-design-plan.md](docs/p2-design-plan.md), revised after the [review](docs/p2-plan-review.md). Owner decision 2026-11-10: tests with a model are not run; only utilities with code are tested, and problems are fixed as they appear in use.
 
+- **P2.1 — Board specification:** [docs/board-spec.md](docs/board-spec.md) with a worked example in `examples/board-example/`. The example passes the tool's lint.
+- **P2.2 — `roadctl`:** [scripts/roadctl.mjs](scripts/roadctl.mjs), documented in [docs/roadctl.md](docs/roadctl.md); 22 model-free tests pass on WSL (Node 24) and Windows (Node 26) and run in CI. History-based lint rules 15 and 16 are not implemented.
+- **P2.3 — Native use:** [pointer templates](docs/pointer-templates.md), `references/board.md` in the skill, hook commands and installers for Claude Code (local settings) and git pre-commit. **Not verified:** the hooks firing inside Claude Code, Codex or Hermes, skill activation without the word "roadmap", and any agent behavior. No installers for Codex or Hermes.
+- **P2.4 — Protocol text:** P2.4a (checkpoint, handoff, recovery, pause and stop, permissions) is in `references/long-running.md`; short delegation guidance is included but untested. P2.4b as a separate piece of work is not planned.
+- **P2.5 — Pilot:** not planned (needs model runs; owner decision above).
+- **P2.6 — Kanban bridge:** not planned; reconsider only if needed.
+
+Released as skill 0.3.0, see [CHANGELOG](CHANGELOG.md).
 ## Queue
 
-P1.1 (owner) → P2 items one at a time, in the plan's order. P0.1 broader coverage stays deferred.
+P1.1 (the owner's own use, fix problems as they appear). P0.1 broader coverage stays deferred.

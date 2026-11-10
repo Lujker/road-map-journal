@@ -1,6 +1,6 @@
 # Board specification
 
-**Status: draft v1 (P2.1).** A text convention for keeping a project's plan as one short generated board plus one file per card. It is tier 1 of the [P2 plan](p2-design-plan.md): usable by hand, with no tool. A tool (`roadctl`, later) only checks and regenerates; files stay the source of truth and an agent or a person may edit cards directly. The acceptance test in the last section has **not** been run.
+**Status: v1, implemented by [`scripts/roadctl.mjs`](../scripts/roadctl.mjs) (see [roadctl.md](roadctl.md)).** A text convention for keeping a project's plan as one short generated board plus one file per card. It is tier 1 of the [P2 plan](p2-design-plan.md): usable by hand, with no tool. A tool (`roadctl`, later) only checks and regenerates; files stay the source of truth and an agent or a person may edit cards directly. The acceptance test in the last section has **not** been run.
 
 Applies to board-format projects. A project whose plan is one file with items as sections keeps its layout (tier 0) or migrates only with the owner's consent; this spec never requires that.
 
@@ -103,13 +103,13 @@ Errors block a git commit when a pre-commit check runs; warnings never block. A 
 | 11 | Unknown header keys; unknown sections | warning |
 | 12 | `doing` card whose `as_of` is older than `doing_stale_days` | warning |
 | 13 | More than one `doing` card | warning |
-| 14 | Card changed since its last Log entry | warning |
-| 15 | Past Log lines edited (needs git history) | warning |
-| 16 | `approved` older than the last edit of Acceptance (needs git history) | warning |
+| 14 | `doing` card whose `as_of` is newer than its last Log entry | warning |
+| 15 | Past Log lines edited (needs git history) | warning, **not implemented in roadctl 0.1** |
+| 16 | `approved` older than the last edit of Acceptance (needs git history) | warning, **not implemented in roadctl 0.1** |
 
 ## `BOARD.md`
 
-Generated and committed, so readers and tier-1 agents have it; never edited by hand. The first lines state that it is generated, the generation time and the tool or spec version. Then, in this order: `doing`, `review`, `blocked`, `ready` (approved first), then `idea`, `parked` and `done` collapsed to counts. One line per listed card: `- [id] title — status; approved: scope; next: first open criterion`. Closed work is a count, not a list.
+Generated and committed, so readers and tier-1 agents have it; never edited by hand. The first lines state that it is generated, the generation time and the tool or spec version. Then, in this order: `doing`, `review`, `blocked`, `ready` (approved first), then `idea`, `parked`, `done` and `dropped` collapsed to counts. One line per listed card: `- [id] title — status; approved: scope; next: id — first open criterion text`. Titles and criterion text are sanitized (markup and control characters removed) and capped, because they can reach a model. Closed work is a count, not a list.
 
 When the board exceeds `limits.board_bytes`, collapse in this order: `idea` and `parked` first, then `ready`; `doing`, `review` and `blocked` are never collapsed. If a merge conflicts in `BOARD.md`, regenerate it from the cards.
 
@@ -119,7 +119,7 @@ One writer per card at a time (no `claim` in v1). Two agents appending to one Lo
 
 ## Data, not instructions
 
-Card text can be written by any agent or contributor and reaches a model as context. Anything that injects it automatically should inject only header fields with length limits and stripped markup, never Log or body text. In a repository that accepts outside contributions, card files are an injection path.
+Card text can be written by any agent or contributor and reaches a model as context. Anything that injects it automatically should inject only header fields and, at most, the id and a sanitized, length-capped text of the first open criterion, never Log, Goal, Plan or Handoff text. In a repository that accepts outside contributions, card files are an injection path.
 
 ## Language
 
@@ -129,6 +129,7 @@ Header keys, status words, section names and `config.json` keys are English and 
 
 A synthetic board in Russian, written by hand following this spec: [examples/board-example/board/](../examples/board-example/board/BOARD.md). It has one card per status that matters: a limited `done`, a `review`, a `doing`, a `blocked`, a `ready` and an `idea`.
 
-## Acceptance test (not run)
+## Validation
 
-A fresh agent session given only this spec and the example should: (1) say what is next and why; (2) add a Log entry to the `doing` card without changing anything else; (3) be asked to close a card whose criterion lacks evidence and decline, naming the criterion. Results are checked by hand until a tool exists. One run is an observation, not proof; no model has been run against this spec yet.
+- **Done:** the example board passes the tool's `lint` with no errors or warnings; seeded errors are caught by the tool's tests (see [roadctl.md](roadctl.md)).
+- **Not done, by owner decision (2026-11-10):** a test with a model. Only utilities with code are tested. The intended check was that a fresh agent session given only this spec and the example can say what is next, add a Log entry to the `doing` card and decline to close a card whose criterion lacks evidence. Problems will be fixed as they appear in use.

@@ -46,6 +46,8 @@ Review the source before installation and choose the intended agent and scope wh
 
 For a manual installation, copy the **entire** `skills/road-map-journal/` directory, including `references/`, into the skill directory documented by your agent. Installing the files alone does not establish that the agent discovers or follows them.
 
+An optional card-board format and helper for larger projects are described in [docs/board-spec.md](docs/board-spec.md), [docs/roadctl.md](docs/roadctl.md) and [docs/pointer-templates.md](docs/pointer-templates.md); they are not needed to use the skill.
+
 **Updating** is a manual, per-host action; reinstalling can overwrite local edits. See [docs/updating.md](docs/updating.md), including an optional update script.
 
 ## Layout
@@ -54,6 +56,7 @@ For a manual installation, copy the **entire** `skills/road-map-journal/` direct
 skills/road-map-journal/
 ├── SKILL.md
 └── references/
+    ├── board.md
     ├── long-running.md
     ├── multi-repo-sync.md
     ├── scenarios.md

@@ -12,6 +12,8 @@ jobs:
           node-version: 22
       - name: Node tests
         run: node --test scripts/update-installed.test.mjs
+      - name: roadctl tests
+        run: node --test scripts/roadctl.test.mjs
       - name: Python tests
         run: python3 -m unittest discover -s evals/tests -v
       - name: Link check

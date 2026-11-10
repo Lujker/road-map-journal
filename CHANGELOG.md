@@ -2,6 +2,12 @@
 
 Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. Behavior was not re-evaluated for any release; see [ROADMAP.md](ROADMAP.md).
 
+## 0.3.0 — 2026-11-10
+
+- New `references/board.md`: how to work in a project whose plan is a card board (core links to it only when `board/config.json` exists).
+- `references/long-running.md`: checkpoint, handoff, recovery after an interruption, pause and stop, permissions bound to their source, and untested delegation guidance.
+- Repository (not part of the installed skill): board specification `docs/board-spec.md` with a worked example, `scripts/roadctl.mjs` with 22 model-free tests, `docs/roadctl.md`, `docs/pointer-templates.md`. No agent behavior was evaluated; the hooks were not run inside any agent.
+
 ## 0.2.0 — 2026-11-10
 
 - Skill description rewritten to list the situations that should activate it (including Russian triggers); adds `license` and `metadata.version`.

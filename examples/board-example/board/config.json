@@ -1,5 +1,6 @@
 {
   "board_version": 1,
+  "title": "Склад",
   "language": "ru",
   "status_map": {},
   "limits": { "board_bytes": 6144, "doing_stale_days": 14 }

@@ -3,7 +3,7 @@ name: road-map-journal
 description: "Use when working with a project's roadmap, development plan, queue, work journal or item status: asking what is next, continuing or resuming planned work, recording a decision, updating an item, or reconciling status with evidence. Follows the project's own conventions. Triggers include «дорожная карта», «что дальше по плану?», «продолжай разработку по плану», «запиши решение», «обнови статус пункта»."
 license: MIT
 metadata:
-  version: "0.2.0"
+  version: "0.3.0"
 ---
 
 # Roadmap and work journal
@@ -16,7 +16,7 @@ Use for requests about a roadmap, development plan, queue, work journal, item st
 
 ## Discover first
 
-Identify the project root and read its instructions. Locate existing roadmaps, queues, item notes, and handoff documents; names and locations vary. Read the relevant item, its acceptance criteria, current queue and linked notes. Check the relevant implementation, version-control state if available, and evidence when the request needs a current-state assessment. Do not assume Git, a specific directory layout, or a particular status vocabulary. For multiple repositories, follow existing links; ask for an inaccessible authoritative location rather than inventing a replacement.
+Identify the project root and read its instructions. Locate existing roadmaps, queues, item notes, and handoff documents; names and locations vary. Read the relevant item, its acceptance criteria, current queue and linked notes. Check the relevant implementation, version-control state if available, and evidence when the request needs a current-state assessment. Do not assume Git, a specific directory layout, or a particular status vocabulary. If the project has `board/config.json`, its plan is a card board: read [Board projects](references/board.md) before editing. For multiple repositories, follow existing links; ask for an inaccessible authoritative location rather than inventing a replacement.
 
 Select the mode implied by the request:
 
@@ -48,5 +48,6 @@ After an authorized edit, check the affected status, queue, links, and consisten
 
 - [Generic templates](references/templates.md) — optional starting points, adapted to the project.
 - [Scenarios](references/scenarios.md) — concise examples of mode and scope choices.
-- [Long-running work](references/long-running.md) — tracks, checkpoints, pause and stop, acceptance, budgets, shared checkouts.
+- [Long-running work](references/long-running.md) — tracks, checkpoints, handoff and recovery, pause and stop, acceptance, budgets, shared checkouts.
+- [Board projects](references/board.md) — working in a project whose plan is a card board.
 - [Multi-repository reconciliation](references/multi-repo-sync.md) — preserve work and distinguish recorded, Git and live state across checkouts.

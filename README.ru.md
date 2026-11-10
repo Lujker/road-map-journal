@@ -46,6 +46,8 @@ npx skills add Lujker/road-map-journal --skill road-map-journal
 
 Для ручной установки скопируйте **всю** папку `skills/road-map-journal/` вместе с `references/` в каталог skill, указанный в документации вашего агента. Одно лишь наличие файлов не доказывает, что агент их обнаружит и будет им следовать.
 
+Необязательный формат доски с карточками и помощник для крупных проектов описаны в [docs/board-spec.md](docs/board-spec.md), [docs/roadctl.md](docs/roadctl.md) и [docs/pointer-templates.md](docs/pointer-templates.md) (на английском); для работы со skill они не нужны.
+
 **Обновление** — ручное действие на каждой среде; переустановка может перезаписать локальные правки. Подробности и необязательный скрипт обновления — в [docs/updating.md](docs/updating.md) (на английском).
 
 ## Состав
@@ -54,6 +56,7 @@ npx skills add Lujker/road-map-journal --skill road-map-journal
 skills/road-map-journal/
 ├── SKILL.md
 └── references/
+    ├── board.md
     ├── long-running.md
     ├── multi-repo-sync.md
     ├── scenarios.md

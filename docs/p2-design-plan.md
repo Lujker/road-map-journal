@@ -1,6 +1,6 @@
 # P2 design plan: text board, `roadctl`, hooks, long-running work protocol
 
-**Status: design v2, not started.** Revised on 2026-11-10 after the review in [p2-plan-review.md](p2-plan-review.md); the disposition of every review point is at the end. Nothing here is implemented or authorized. Each item starts only when the owner selects it, one at a time. The authoritative queue is [ROADMAP.md](../ROADMAP.md); this file holds the detail.
+**Status: design v2; P2.1–P2.4a done (limited) on 2026-11-10, see the outcome section at the end.** Revised on 2026-11-10 after the review in [p2-plan-review.md](p2-plan-review.md); the disposition of every review point is at the end. Nothing here is implemented or authorized. Each item starts only when the owner selects it, one at a time. The authoritative queue is [ROADMAP.md](../ROADMAP.md); this file holds the detail.
 
 ## Goal
 
@@ -134,3 +134,13 @@ Closed on 2026-11-10: freshness net, implementation language, host for hook test
 | 7 Order of work | Accepted with the review's step 1 (failure log) removed per the owner. |
 | 8 Weaknesses and cheap improvements | Done in P1.3: shorter ROADMAP, README opening, long-running rules moved out of the core, version, changelog, tags, CI. Logo: P0.3, owner. Update-script isolated-home checks as tests: not done. |
 | 9 Open-decision table | Reflected in "Open decisions". |
+
+## Outcome (2026-11-10)
+
+Done by the owner's instruction, in the plan's order, with the owner's decision that tests with a model are not run:
+
+- **P2.1** `docs/board-spec.md` and `examples/board-example/` (the example passes `lint`).
+- **P2.2** `scripts/roadctl.mjs` (lint, sync, brief, show, log, review, done, approve, new), 22 model-free tests on WSL and Windows, in CI.
+- **P2.3** pointer templates, `references/board.md`, hook commands, installers for Claude Code (local settings) and git pre-commit. Hooks were exercised only with simulated events and a temporary git repository.
+- **P2.4a** checkpoint, handoff, recovery text in `references/long-running.md`; delegation guidance included, untested.
+- **Not done / not planned:** real hook firing in any agent; activation check; pilot (P2.5); P2.4b as separate work; Kanban bridge (P2.6); installers for Codex and Hermes; lint rules 15 and 16.
