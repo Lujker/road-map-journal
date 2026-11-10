@@ -1,0 +1,18 @@
+name: ci
+on:
+  push:
+  pull_request:
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Node tests
+        run: node --test scripts/update-installed.test.mjs
+      - name: Python tests
+        run: python3 -m unittest discover -s evals/tests -v
+      - name: Link check
+        run: python3 scripts/check_links.py

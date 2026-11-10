@@ -1,6 +1,9 @@
 ---
 name: road-map-journal
-description: Use for project roadmaps and development journals.
+description: "Use when working with a project's roadmap, development plan, queue, work journal or item status: asking what is next, continuing or resuming planned work, recording a decision, updating an item, or reconciling status with evidence. Follows the project's own conventions. Triggers include «дорожная карта», «что дальше по плану?», «продолжай разработку по плану», «запиши решение», «обнови статус пункта»."
+license: MIT
+metadata:
+  version: "0.2.0"
 ---
 
 # Roadmap and work journal
@@ -29,13 +32,9 @@ Use the project's established arrangement. Typically, a roadmap summarizes items
 
 When a decision, pause, or order changes, update affected current summaries and next-step instructions within the authorized scope; label prior instructions as historical. A paused or deferred plan must not appear to be an active instruction to continue. Do not reprioritize unrelated work merely because a note was added. If a necessary correction falls outside the authorized scope, flag it to the user rather than expanding the edit.
 
-For sequential work, honor the selected item's acceptance boundary. A completed substage does not complete the parent item; record the remainder. Unless the owner has authorized a broader scope, work on one item at a time and do not automatically begin the next. When the owner prefers manual validation in real projects, do not require additional lengthy agent trials without agreement. When an owner permits a related track or a continuous range, respect that scope without silently replacing existing priorities. Keep work mode separate from permissions and budgets: authorization to continue is not blanket permission for production actions or external writes.
+Unless the owner has authorized a broader scope, work on one item at a time and do not automatically begin the next. A completed substage does not complete the parent item; record the remainder. Keep work mode separate from permissions and budgets: authorization to continue is not blanket permission for production actions or external writes. Keep recorded completion, pending user acceptance and fully accepted work distinct. Keep concise checkpoints at handoffs, decisions, verified results and blockers, including what remains and how to resume; verify uncertain in-flight actions before repeating them. Before a multi-file update in a shared checkout, check the version-control state and dirty paths immediately before writing, apply narrow edits against freshly read content, preserve unrelated work, and verify the scoped changes without committing or publishing unless authorized.
 
-Keep recorded completion, pending user acceptance and fully accepted work distinct. If the owner authorizes a separate next track and it does not depend on pending acceptance, the earlier item remains pending while the authorized track proceeds. A proposed future pilot must not silently redefine an existing milestone's acceptance criteria. Closing a limited evaluation does not turn unperformed acceptance criteria into passing results. Keep concise checkpoints at handoffs, decisions, verified results, blockers and pauses, including what remains and how to resume. Distinguish a status request from a pause or stop; verify uncertain in-flight actions before repeating them.
-
-For explicitly budgeted work, check available usage at agreed checkpoints and record the baseline immediately before the first authorized run. A shared subscription counter can include other activity; a list-price estimate is not a verified charge. If an agreed stop threshold is reached or a required reading is unavailable, stop the restricted work and obtain a decision; do not silently reset the baseline.
-
-Before a multi-file update in a shared checkout, check the current version-control state and dirty paths immediately before writing where version control is available, and apply narrow edits against freshly read content; another agent may have committed or changed the tree during planning. Stop on ambiguous overlapping edits, preserve unrelated work, then verify the scoped changes and links without committing or publishing unless authorized.
+For work that spans several items, agents or sessions, has a budget, or where the owner authorizes a track or continuous mode, read [Long-running work](references/long-running.md) first.
 
 ## Status and evidence
 
@@ -49,4 +48,5 @@ After an authorized edit, check the affected status, queue, links, and consisten
 
 - [Generic templates](references/templates.md) — optional starting points, adapted to the project.
 - [Scenarios](references/scenarios.md) — concise examples of mode and scope choices.
+- [Long-running work](references/long-running.md) — tracks, checkpoints, pause and stop, acceptance, budgets, shared checkouts.
 - [Multi-repository reconciliation](references/multi-repo-sync.md) — preserve work and distinguish recorded, Git and live state across checkouts.
