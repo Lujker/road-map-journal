@@ -17,3 +17,7 @@ Moved out of [ROADMAP.md](../ROADMAP.md) so the roadmap stays short. Text is as 
 ## Release 0.2.0 update on real hosts (2026-11-10)
 
 `scripts/update-installed.mjs` was run report-only and then with `--apply` against the published repository (commit `ad29e31`, skill tree `296322e`) on Home WSL, the laptop (WSL) and Windows (Node 26). Each install was pristine (`OUTDATED`, no local edits), a backup was made first, and the script's checks passed: canonical content equals upstream, lock hash equals upstream, links resolve (Claude Code on all three, Hermes categorised link on Windows). Afterwards `claude -p` listed only `road-map-journal` on all three hosts; Hermes `skill_view` loaded `references/long-running.md`. Codex discovery of the new frontmatter was checked model-free only in an isolated home on WSL (name and description read, scope user, enabled), not on the real installs. No agent behavior was evaluated. No agent session was open on the laptop at update time; on Home WSL and Windows sessions were open and may keep the old text until restarted.
+
+## Release 0.3.0 update on real hosts (2026-11-10)
+
+The same script updated Home WSL, the laptop (WSL) and Windows to commit `13664e1` (skill tree `5a5dcb6`) with backups first and all file-level checks passing (canonical content and lock hash equal upstream, links resolve). Hermes `skill_view` on Windows loaded `references/board.md`. No model was run for this update: no agent listing and no behavior check; sessions that were open may keep the older text until restarted.
