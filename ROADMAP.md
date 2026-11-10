@@ -28,6 +28,17 @@ The public draft defines the portable skill, documentation and proposed evaluati
 
 **Status: IN PROGRESS — draft added, not reviewed.** A Russian [README.ru.md](README.ru.md) and three synthetic examples in [examples/](examples/README.md) (Russian, English, mixed) were drafted by an agent. The examples are proposed and have not been run; the translation has not been reviewed by the owner. Remaining: owner review of the translation and examples, and any further languages.
 
+### P2 — Long-running work and a text board (design stage)
+
+Owner decisions of 2026-11-10 (design only; **no implementation is started and none is authorized by this entry**): a card carries the status vocabulary `idea | ready | doing | review | blocked | done | parked | dropped`, where decision and external dependencies become `blocked` with a reason, and projects that already have their own statuses keep them through an optional mapping; `approved` is a separate field (a plan is not permission to start); `claim` is added only when agents really work in parallel; new projects use `board/` at the root, while an adopted project keeps its existing layout; header keys are English and text uses the project's language; any command-line helper (`roadctl`) is an optional layer under `scripts/`, outside `skills/`, and is not installed with the skill. Work modes (one item, a track, continuous) stay separate from permissions, budget and allowed external actions. Open decisions: whether a Hermes Kanban bridge is part of the first version, which agent verifies hooks first, and the license route for any code generalized from a private tool (see P0.3).
+
+- **P2.1 — Board specification.** **Status: OPEN.** `docs/board-spec.md` with a worked example: three levels (generated board, one card per file, notes), card header, invariants such as no `done` without evidence per acceptance criterion; no private material.
+- **P2.2 — `roadctl` prototype.** **Status: OPEN.** `brief`, `show`, `log`, `done`, `lint`, `sync` on a synthetic project. Depends on P2.1 and on the P0.3 license decision.
+- **P2.3 — Native use without reminders.** **Status: OPEN.** A short pointer for `AGENTS.md`/`CLAUDE.md`, a compact skill description by situation, and hooks as reinforcement where a host supports them (Claude Code first; Codex and Hermes equivalents are unverified).
+- **P2.4 — Long-running work protocol specification.** **Status: OPEN.** Modes, pause/status/stop, checkpoints, handoff, recovery after an interruption with unknown outcomes, a delegation package for sub-agents, an owner-question queue, layered budgets and acceptance recorded separately from agent completion. Host capabilities are to be verified, not assumed.
+- **P2.5 — Pilot.** **Status: OPEN.** One end-to-end scenario with one coordinating agent and a sub-agent on a disposable project (Hermes first, then Claude Code and Codex), compared with no skill and the current skill, with a separately agreed scope and budget.
+- **P2.6 — Optional Hermes Kanban bridge.** **Status: OPEN, optional.** Only if it proves useful after P2.1–P2.5.
+
 ## Development queue
 
 1. **P0.1 — Real agent behavior.** Short comparison complete; broader scenarios deferred. Do not claim general reliability from these results.
@@ -35,3 +46,4 @@ The public draft defines the portable skill, documentation and proposed evaluati
 3. **P0.3 — Provenance and license.** Review provenance and rights for future contributed material.
 4. **P1.1 — Real project feedback.** Improve behavior from actual use.
 5. **P1.2 — International onboarding.** Expand reviewed translations and examples.
+6. **P2.1–P2.6 — Long-running work and a text board.** Design stage; one item at a time, in this order, only after the owner selects it. Not started.
