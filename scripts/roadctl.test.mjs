@@ -425,3 +425,45 @@ test('lint --all and pre-commit-all cover every board in the workspace', () => {
   assert.equal(cli(c.ws, ['hook-install', '--git', '--all', '--apply'], '', c.env).status, 0);
   assert.match(fs.readFileSync(path.join(c.ws, '.git', 'hooks', 'pre-commit'), 'utf8'), /hook pre-commit-all/);
 });
+
+test('user-level Claude hooks and instruction blocks install idempotently, keep foreign content, and uninstall', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-claude-'));
+  fs.writeFileSync(path.join(home, 'settings.json'), JSON.stringify({ model: 'x', hooks: { PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'rtk hook claude' }] }] } }));
+  fs.writeFileSync(path.join(home, 'CLAUDE.md'), '# mine\n\nkeep this\n');
+  const codex = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-codexhome-'));
+  const env = { ROADCTL_WORKSPACE: path.join(home, 'ws') };
+  fs.mkdirSync(path.join(home, 'ws', 'projects'), { recursive: true });
+  assert.equal(cli(home, ['hook-install', '--claude', '--user', '--claude-home', home], '', env).status, 0);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'settings.json'), 'utf8')).hooks.Stop, undefined, 'dry run does not write');
+  for (let i = 0; i < 2; i++) assert.equal(cli(home, ['hook-install', '--claude', '--user', '--apply', '--claude-home', home], '', env).status, 0);
+  const st = JSON.parse(fs.readFileSync(path.join(home, 'settings.json'), 'utf8'));
+  assert.equal(st.model, 'x');
+  assert.equal(st.hooks.PreToolUse.length, 1);
+  assert.equal(st.hooks.Stop.length, 1, 'idempotent');
+  assert.ok(fs.readdirSync(home).some((f) => f.startsWith('settings.json.roadctl-backup-')));
+  for (let i = 0; i < 2; i++) assert.equal(cli(home, ['instructions-install', '--claude', '--codex', '--apply', '--claude-home', home, '--codex-home', codex, '--helper', '/h/roadctl.mjs'], '', env).status, 0);
+  const md = fs.readFileSync(path.join(home, 'CLAUDE.md'), 'utf8');
+  assert.match(md, /keep this/);
+  assert.equal(md.split('ROADMAP-JOURNAL:START').length, 2, 'one block only');
+  assert.match(md, /node \/h\/roadctl\.mjs where/);
+  assert.match(md, /ws\/projects\/<project-name>\/board/);
+  assert.match(fs.readFileSync(path.join(codex, 'AGENTS.md'), 'utf8'), /road-map-journal/);
+  assert.equal(cli(home, ['instructions-uninstall', '--claude', '--apply', '--claude-home', home], '', env).status, 0);
+  assert.equal(fs.readFileSync(path.join(home, 'CLAUDE.md'), 'utf8').includes('ROADMAP-JOURNAL'), false);
+  assert.match(fs.readFileSync(path.join(home, 'CLAUDE.md'), 'utf8'), /keep this/);
+  assert.equal(cli(home, ['hook-uninstall', '--claude', '--user', '--apply', '--claude-home', home], '', env).status, 0);
+  const st2 = JSON.parse(fs.readFileSync(path.join(home, 'settings.json'), 'utf8'));
+  assert.equal(st2.hooks.Stop, undefined);
+  assert.equal(st2.hooks.PreToolUse.length, 1);
+});
+
+test('workspace pointer file under ~/.local/share/road-map-journal/workspace is honoured', () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-wsfile-'));
+  const ws = path.join(home, 'elsewhere', 'agent-workspace');
+  fs.mkdirSync(path.join(ws, 'projects'), { recursive: true });
+  fs.mkdirSync(path.join(home, '.local', 'share', 'road-map-journal'), { recursive: true });
+  fs.writeFileSync(path.join(home, '.local', 'share', 'road-map-journal', 'workspace'), `${ws}\n`);
+  const r = cli(home, ['lint', '--all'], '', { HOME: home, USERPROFILE: home, ROADCTL_WORKSPACE: '' });
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /0 board/);
+});

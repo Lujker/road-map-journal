@@ -15,7 +15,8 @@
 //   roadctl approve <id> --by NAME --scope implementation[+analysis+external] [--source REF]
 //   roadctl new <id> "title" [--status ready|idea]
 //   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | pre-commit | pre-commit-all
-//   roadctl hook-install --claude|--codex|--hermes|--git [--apply] ; hook-uninstall (same flags)
+//   roadctl hook-install --claude [--user]|--codex|--hermes|--git [--all] [--apply] ; hook-uninstall (same flags)
+//   roadctl instructions-install --claude --codex [--workspace DIR] [--apply] ; instructions-uninstall
 //
 // Global: --board <dir>, --date YYYY-MM-DD, --json (lint). Exit codes: 0 ok, 1 findings/refusal, 2 usage/error.
 
@@ -51,7 +52,13 @@ const normName = (x) => String(x).toLowerCase().replace(/[_\s]+/g, '-');
 
 export function workspaceRoots(env = process.env) {
   const h = os.homedir();
-  const roots = [env.ROADCTL_WORKSPACE?.trim(), path.join(h, 'projects', 'agent-workspace'), path.join(h, 'Projects', 'agent-workspace')].filter(Boolean);
+  let fromFile = null;
+  try {
+    fromFile = fs.readFileSync(path.join(h, '.local', 'share', 'road-map-journal', 'workspace'), 'utf8').trim().split(/\r?\n/)[0] || null;
+  } catch {
+    /* optional pointer file, for hosts where the workspace is not in ~/projects (for example Windows) */
+  }
+  const roots = [env.ROADCTL_WORKSPACE?.trim(), fromFile, path.join(h, 'projects', 'agent-workspace'), path.join(h, 'Projects', 'agent-workspace')].filter(Boolean);
   return roots.filter((r) => fs.existsSync(path.join(r, 'projects')));
 }
 
@@ -636,7 +643,74 @@ export function editHermesConfig(text, { uninstall, self, node }) {
   return { text: out.replace(/\n/g, eol), note };
 }
 
-export function installHooks(kind, project, { apply, uninstall, self = SELF, node = 'node', codexHome, hermesHome, all = false }) {
+export function claudeHomeDir(flag) {
+  return flag ? path.resolve(flag) : process.env.CLAUDE_CONFIG_DIR?.trim() || path.join(os.homedir(), '.claude');
+}
+
+// ---------------------------------------------------------------- instruction blocks
+
+export const INSTR_BEGIN = '<!-- ROADMAP-JOURNAL:START -->';
+export const INSTR_END = '<!-- ROADMAP-JOURNAL:END -->';
+
+export function instructionBlock(workspace, helper) {
+  const ws = workspace || '<agent-workspace>';
+  return `${INSTR_BEGIN}
+## Plans, boards and journals (road-map-journal)
+
+For any task about a project's plan, roadmap, journal, backlog, task cards, status or "what next", use the \`road-map-journal\` skill (installed in ~/.agents/skills; it is updated by the owner with scripts/update-installed.mjs from a clone of github.com/Lujker/road-map-journal, not by you).
+
+- A project's existing plan stays where it is and keeps the project's own conventions. Do not migrate it unless the owner asks.
+- New boards, cards and plan notes do not go into the project repository. They live in the owner's agent workspace, \`${ws}/projects/<project-name>/board/\` (format: the skill's references/board.md). Ask before creating a board for a project that has none.
+- \`node ${helper} where\` prints the board for the current directory; \`brief\`, \`show <id>\`, \`log <id> "..."\` and \`lint\` work from the project's code directory. The tool never marks anything done or accepted for you.
+- Commits to the workspace repository are made only when the owner asks.
+${INSTR_END}
+`;
+}
+
+/** Pure text edit of an instruction file; returns the new text. */
+export function editInstructionFile(text, block, uninstall) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const t = text.replace(/\r\n/g, '\n');
+  const re = new RegExp(`\\n?${INSTR_BEGIN}[\\s\\S]*?${INSTR_END}\\n?`);
+  let out;
+  if (uninstall) out = t.replace(re, '\n');
+  else if (re.test(t)) out = t.replace(re, () => `\n${block}`);
+  else out = `${t.replace(/\n*$/, '\n')}\n${block}`;
+  return out.replace(/\n/g, eol);
+}
+
+export function installInstructions({ claude, codex, apply, uninstall, claudeHome, codexHome, workspace, helper }) {
+  const log = [];
+  const ws = workspace || workspaceRoots()[0] || '';
+  const block = instructionBlock(ws.split(path.sep).join('/'), helper || '~/.local/share/road-map-journal/roadctl.mjs');
+  const targets = [];
+  if (claude) targets.push(path.join(claudeHomeDir(claudeHome), 'CLAUDE.md'));
+  if (codex) targets.push(path.join(codexHomeDir(codexHome), 'AGENTS.md'));
+  if (!targets.length) throw new Error('choose --claude and/or --codex');
+  for (const f of targets) {
+    if (fs.existsSync(f) && fs.lstatSync(f).isSymbolicLink()) {
+      log.push(`${f} is a symlink to ${fs.realpathSync(f)}; not editing it. Put the block into the target file yourself:`, block);
+      continue;
+    }
+    const cur = fs.existsSync(f) ? fs.readFileSync(f, 'utf8') : '';
+    const next = editInstructionFile(cur, block, uninstall);
+    if (next === cur) {
+      log.push(`${f}: already up to date`);
+      continue;
+    }
+    log.push(`${apply ? 'writing' : 'would write'} ${f}: ${uninstall ? 'remove' : 'add or refresh'} the road-map-journal block`);
+    if (apply) {
+      const bk = backup(f);
+      if (bk) log.push(`backup: ${bk}`);
+      fs.mkdirSync(path.dirname(f), { recursive: true });
+      fs.writeFileSync(f, next);
+    }
+  }
+  if (!apply) log.push('(dry run; add --apply to write)');
+  return log.join('\n');
+}
+
+export function installHooks(kind, project, { apply, uninstall, self = SELF, node = 'node', codexHome, hermesHome, claudeHome, user = false, all = false }) {
   const log = [];
   const jsonHooks = (file, merge, remove, label) => {
     const cur = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
@@ -650,7 +724,8 @@ export function installHooks(kind, project, { apply, uninstall, self = SELF, nod
     }
   };
   if (kind === 'claude') {
-    jsonHooks(claudeSettingsPath(project), mergeClaudeHooks, removeClaudeHooks, 'local, uncommitted settings');
+    if (user) jsonHooks(path.join(claudeHomeDir(claudeHome), 'settings.json'), mergeClaudeHooks, removeClaudeHooks, 'user-level Claude Code settings; the hooks stay silent in directories without a board');
+    else jsonHooks(claudeSettingsPath(project), mergeClaudeHooks, removeClaudeHooks, 'local, uncommitted settings');
   } else if (kind === 'codex') {
     jsonHooks(path.join(codexHomeDir(codexHome), 'hooks.json'), mergeCodexHooks, removeCodexHooks, 'user-level Codex hooks; Codex will ask you to review and trust them in /hooks before they run');
   } else if (kind === 'hermes') {
@@ -697,7 +772,7 @@ export function installHooks(kind, project, { apply, uninstall, self = SELF, nod
 
 function parse(argv) {
   const o = { _: [], flags: {} };
-  const withValue = new Set(['--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node']);
+  const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -717,14 +792,18 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
   if (cmd === 'version') return out(VERSION), 0;
   try {
     if (cmd === 'hook') return runHook(args[1], readStdinJson(), flags.board, io, flags.host === 'codex' ? 'codex' : 'claude');
-    if (cmd === 'hook-install' || cmd === 'hook-uninstall') {
-      const kind = flags.claude ? 'claude' : flags.codex ? 'codex' : flags.hermes ? 'hermes' : flags.git ? 'git' : null;
-      const dir = flags.all ? null : findBoard(process.cwd(), flags.board);
-      const project = flags.all ? process.cwd() : dir ? path.dirname(dir) : process.cwd();
-      out(installHooks(kind, project, { apply: Boolean(flags.apply), uninstall: cmd === 'hook-uninstall', node: flags.node || 'node', codexHome: flags['codex-home'], hermesHome: flags['hermes-home'], all: Boolean(flags.all) }));
+    if (flags.workspace) process.env.ROADCTL_WORKSPACE = flags.workspace;
+    if (cmd === 'instructions-install' || cmd === 'instructions-uninstall') {
+      out(installInstructions({ claude: Boolean(flags.claude), codex: Boolean(flags.codex), apply: Boolean(flags.apply), uninstall: cmd === 'instructions-uninstall', claudeHome: flags['claude-home'], codexHome: flags['codex-home'], workspace: flags.workspace, helper: flags.helper }));
       return 0;
     }
-    if (flags.workspace) process.env.ROADCTL_WORKSPACE = flags.workspace;
+    if (cmd === 'hook-install' || cmd === 'hook-uninstall') {
+      const kind = flags.claude ? 'claude' : flags.codex ? 'codex' : flags.hermes ? 'hermes' : flags.git ? 'git' : null;
+      const dir = flags.all || flags.user ? null : findBoard(process.cwd(), flags.board);
+      const project = flags.all ? process.cwd() : dir ? path.dirname(dir) : process.cwd();
+      out(installHooks(kind, project, { apply: Boolean(flags.apply), uninstall: cmd === 'hook-uninstall', node: flags.node || 'node', codexHome: flags['codex-home'], hermesHome: flags['hermes-home'], claudeHome: flags['claude-home'], user: Boolean(flags.user), all: Boolean(flags.all) }));
+      return 0;
+    }
     if (cmd === 'lint' && flags.all) {
       const roots = workspaceRoots();
       if (!roots.length) throw new Error('no workspace found; set ROADCTL_WORKSPACE or use --workspace DIR');
