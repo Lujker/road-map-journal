@@ -9,6 +9,13 @@
 //   roadctl sync [--check]           regenerate board/BOARD.md (or verify it is current)
 //   roadctl brief                    short summary for an agent (header fields only)
 //   roadctl show <id> [--log N] [--commits N]
+//   roadctl status [--all]           counts by status per project, cards doing/blocked, oldest as_of, lint totals (read-only)
+//   roadctl list [--status S[,S]|all] [--all]   cards; default: everything except done and dropped
+//   roadctl next [--all]             doing cards, ready cards whose dependencies are done, ready cards still waiting
+//   roadctl pull                     fetch and rebase the board's repository on its upstream; BOARD.md conflicts are regenerated
+//   roadctl save ["message"]          lint, commit only the board's paths, rebase on the upstream and push; never forces
+//   status --fetch asks the server first; pull and save accept --json
+//   brief, show, status, list and next accept --json (status/list/next with --all cover every board of the workspace)
 //   roadctl log <id> "text" [--author A] [--commit SHA]
 //   roadctl review <id>              doing -> review when every criterion has evidence
 //   roadctl done <id> --by NAME      review/doing -> done; refuses without evidence
@@ -20,7 +27,7 @@
 //
 // Global: --board <dir>, --date YYYY-MM-DD, --json (lint). Exit codes: 0 ok, 1 findings/refusal, 2 usage/error.
 
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
@@ -391,6 +398,342 @@ export function show(board, id, { log = 5, commits = 0 } = {}) {
   return o.join('\n');
 }
 
+// ---------------------------------------------------------------- overview (read-only, no agent needed)
+
+const CLOSED = new Set(['done', 'dropped']);
+const depsOf = (c) => (c.header.depends_on ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+
+export function cardRow(board, c) {
+  return {
+    id: c.header.id,
+    title: c.header.title,
+    status: statusOf(board, c),
+    approved: scopesOf(c.header.approved),
+    depends_on: depsOf(c),
+    blocked: c.header.blocked ?? null,
+    as_of: c.header.as_of ?? null,
+    next_criterion: nextOpen(c),
+  };
+}
+
+const rank = () => (a, b) => Number(scopesOf(b.header.approved).length > 0) - Number(scopesOf(a.header.approved).length > 0);
+
+/** One summary per board: counts by status, cards that need attention, lint totals, oldest as_of among active cards. */
+export function statusSummary(project, board, { sync = null } = {}) {
+  const counts = Object.fromEntries(STATUSES.map((s) => [s, 0]));
+  for (const c of board.cards) {
+    const s = statusOf(board, c);
+    counts[s] = (counts[s] ?? 0) + 1;
+  }
+  const rows = (s) => board.cards.filter((c) => statusOf(board, c) === s).map((c) => cardRow(board, c));
+  const active = board.cards.filter((c) => ['doing', 'review', 'blocked'].includes(statusOf(board, c)) && c.header.as_of);
+  const f = lint(board);
+  return {
+    project,
+    counts,
+    doing: rows('doing'),
+    review: rows('review'),
+    blocked: rows('blocked'),
+    oldest_as_of: active.map((c) => c.header.as_of).sort()[0] ?? null,
+    lint: { errors: f.filter((x) => x.level === 'error').length, warnings: f.filter((x) => x.level === 'warning').length },
+    sync,
+  };
+}
+
+export function formatStatus(summaries) {
+  const cols = ['doing', 'review', 'ready', 'blocked', 'idea', 'parked', 'done', 'dropped'];
+  const head = ['project', ...cols, 'oldest as_of', 'lint', 'origin'];
+  const table = summaries.map((s) => [sanitize(s.project, 30), ...cols.map((k) => String(s.counts[k] ?? 0)), s.oldest_as_of ?? '-', `${s.lint.errors}E ${s.lint.warnings}W`, s.sync ? originCell(s.sync) : '-']);
+  const w = head.map((h, i) => Math.max(h.length, ...table.map((r) => r[i].length)));
+  const row = (r) => r.map((x, i) => (i === 0 || i === r.length - 1 ? x.padEnd(w[i]) : x.padStart(w[i]))).join('  ').trimEnd();
+  const out = [row(head), ...table.map(row)];
+  for (const s of summaries) {
+    for (const c of s.doing) out.push(`${s.project}: DOING [${c.id}] ${sanitize(c.title, 80)} | approved: ${c.approved.join('+') || 'no'}`);
+  }
+  return out.join('\n');
+}
+
+/** Cards filtered by status. Default: everything except done and dropped; `all` or a comma-separated list overrides. */
+export function listCards(board, statusFilter) {
+  const want = statusFilter && statusFilter !== true ? String(statusFilter).split(',').map((x) => x.trim()) : null;
+  return board.cards
+    .filter((c) => {
+      const s = statusOf(board, c);
+      if (want?.includes('all')) return true;
+      return want ? want.includes(s) : !CLOSED.has(s);
+    })
+    .map((c) => cardRow(board, c));
+}
+
+/** Cards to continue (doing), ready cards whose dependencies are all done, and ready cards still waiting. `ready` is not permission to start. */
+export function nextCards(board) {
+  const byId = new Map(board.cards.map((c) => [c.header.id, c]));
+  const doing = [];
+  const available = [];
+  const waiting = [];
+  const ready = board.cards.filter((c) => statusOf(board, c) === 'ready').sort(rank());
+  for (const c of board.cards) if (statusOf(board, c) === 'doing') doing.push(cardRow(board, c));
+  for (const c of ready) {
+    const unmet = depsOf(c).map((d) => ({ d, s: byId.has(d) ? statusOf(board, byId.get(d)) : 'missing' })).filter((x) => x.s !== 'done');
+    if (unmet.length) waiting.push({ ...cardRow(board, c), waiting_on: unmet.map((x) => `${x.d} (${x.s})`) });
+    else available.push(cardRow(board, c));
+  }
+  return { doing, available, waiting };
+}
+
+export function formatNext(n, prefix = '') {
+  const o = [];
+  for (const c of n.doing) o.push(`${prefix}DOING [${c.id}] ${sanitize(c.title, 80)} | approved: ${c.approved.join('+') || 'no'}${c.next_criterion ? ` | next ${c.next_criterion}` : ''}`);
+  for (const c of n.available) o.push(`${prefix}READY [${c.id}] ${sanitize(c.title, 80)} | ${c.approved.length ? `approved: ${c.approved.join('+')}` : 'not approved: the owner must approve before work starts'}`);
+  for (const c of n.waiting) o.push(`${prefix}WAITING [${c.id}] ${sanitize(c.title, 80)} | waits for ${c.waiting_on.join(', ')}`);
+  return o;
+}
+
+export function formatList(rows, prefix = '') {
+  return rows.map((c) => `${prefix}[${c.id}] ${c.status} | approved: ${c.approved.join('+') || 'no'} | ${sanitize(c.title, 90)}`);
+}
+
+const OVERVIEW = new Set(['status', 'list', 'next']);
+
+/** status | list | next over one or several boards; prints text or JSON and returns the exit code. */
+function overview(cmd, boards, flags, out, multi) {
+  const prefix = (b) => (multi ? `${b.name}: ` : '');
+  if (cmd === 'status') {
+    const s = boards.map((b) => statusSummary(b.name, b.board, { sync: syncState(b.board, { fetch: Boolean(flags.fetch) }) }));
+    out(flags.json ? JSON.stringify(s, null, 2) : formatStatus(s));
+  } else if (cmd === 'list') {
+    const rows = boards.map((b) => ({ b, rows: listCards(b.board, flags.status) }));
+    if (flags.json) out(JSON.stringify(rows.flatMap(({ b, rows: r }) => r.map((x) => ({ project: b.name, ...x }))), null, 2));
+    else for (const { b, rows: r } of rows) formatList(r, prefix(b)).forEach(out);
+  } else {
+    const res = boards.map((b) => ({ b, n: nextCards(b.board) }));
+    if (flags.json) out(JSON.stringify(res.map(({ b, n }) => ({ project: b.name, ...n })), null, 2));
+    else for (const { b, n } of res) formatNext(n, prefix(b)).forEach(out);
+  }
+  return 0;
+}
+
+export function briefJson(board) {
+  const f = lint(board);
+  const rows = (s) => board.cards.filter((c) => statusOf(board, c) === s).map((c) => cardRow(board, c));
+  return {
+    title: board.config.title || path.basename(board.project),
+    board: path.relative(board.project, board.dir) || '.',
+    doing: rows('doing'),
+    review: rows('review'),
+    blocked: rows('blocked'),
+    ready: rows('ready'),
+    lint: { errors: f.filter((x) => x.level === 'error').length, warnings: f.filter((x) => x.level === 'warning').length },
+  };
+}
+
+export function showJson(board, id, { log = 5 } = {}) {
+  const c = findCard(board, id);
+  return { header: c.header, sections: c.sections, criteria: c.criteria, evidence: [...c.evidence], log: c.log.slice(-log) };
+}
+
+// ---------------------------------------------------------------- synchronization with the server (pull, save)
+//
+// Only the board's own paths are ever committed, nothing is forced, and a conflict that is not the generated
+// BOARD.md stops the operation with the working tree as it was. Statuses that are not failures: up-to-date, pulled,
+// offline, no-remote, saved-local, nothing-to-save, pushed.
+
+const real = (p) => {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return path.resolve(p);
+  }
+};
+const netTimeout = () => Number(process.env.ROADCTL_GIT_TIMEOUT_MS) || 15000;
+
+function gitx(args, cwd, { timeout = 0 } = {}) {
+  const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true' };
+  if (!env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes -o ConnectTimeout=8';
+  const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: timeout || undefined, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  return { ok: r.status === 0, code: r.status, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim(), timedOut: r.error?.code === 'ETIMEDOUT' };
+}
+
+/** Repository root and the board's path scope inside it: the project folder for a central workspace, `board/` for a project-local board. */
+export function syncContext(board) {
+  const r = gitx(['rev-parse', '--show-toplevel'], board.dir);
+  if (!r.ok || !r.out) return null;
+  const root = real(r.out);
+  const scope = real(board.project) === root ? real(board.dir) : real(board.project);
+  return { root, scope: path.relative(root, scope).split(path.sep).join('/') || '.' };
+}
+
+const inScope = (ctx, f) => ctx.scope === '.' || f === ctx.scope || f.startsWith(`${ctx.scope}/`);
+const upstreamOf = (root) => {
+  const r = gitx(['rev-parse', '--abbrev-ref', '--symbolic-full-name', '@{u}'], root);
+  return r.ok ? r.out : null;
+};
+const aheadBehind = (root) => {
+  const r = gitx(['rev-list', '--left-right', '--count', 'HEAD...@{u}'], root);
+  if (!r.ok) return null;
+  const [ahead, behind] = r.out.split(/\s+/).map(Number);
+  return { ahead, behind };
+};
+const pendingIn = (ctx) => gitx(['status', '--porcelain', '--', ctx.scope], ctx.root).out.split('\n').filter(Boolean);
+const rebaseInProgress = (root) => ['rebase-merge', 'rebase-apply'].some((d) => fs.existsSync(path.resolve(root, gitx(['rev-parse', '--git-path', d], root).out)));
+const unmerged = (root) => gitx(['diff', '--name-only', '--diff-filter=U'], root).out.split('\n').filter(Boolean);
+const failureHint = (g) => (g.err.split('\n').find((l) => l.trim()) ?? '').slice(0, 160);
+const looksOffline = (g) => g.timedOut || /could not resolve|unable to access|connection|timed out|network|does not appear to be a git repository|could not read from remote|permission denied|authentication/i.test(g.err);
+
+const fetchedRoots = new Set();
+
+/** Where the board stands relative to its server. `fetch` asks the server first (once per repository and process). */
+export function syncState(board, { fetch = false, timeout = 5000 } = {}) {
+  const ctx = syncContext(board);
+  if (!ctx) return { state: 'no-git' };
+  if (!gitx(['remote'], ctx.root).out) return { state: 'no-remote' };
+  let offline = false;
+  if (fetch && !fetchedRoots.has(ctx.root)) {
+    fetchedRoots.add(ctx.root);
+    offline = !gitx(['fetch', '--quiet'], ctx.root, { timeout }).ok;
+  }
+  if (!upstreamOf(ctx.root)) return { state: 'no-upstream', pending: pendingIn(ctx).length };
+  const ab = aheadBehind(ctx.root) ?? { ahead: 0, behind: 0 };
+  return { state: offline ? 'offline' : 'ok', ...ab, pending: pendingIn(ctx).length };
+}
+
+export function syncLine(st) {
+  if (!st || st.state === 'no-git') return null;
+  if (st.state === 'no-remote') return 'sync: the board repository has no git remote (local only).';
+  if (st.state === 'no-upstream') return 'sync: the branch has no upstream; nothing to compare with.';
+  const parts = [];
+  if (st.behind > 0) parts.push(`behind origin by ${st.behind} commit(s): run roadctl pull before writing`);
+  if (st.ahead > 0) parts.push(`${st.ahead} local commit(s) not pushed: run roadctl save`);
+  if (st.pending > 0) parts.push(`${st.pending} uncommitted board change(s)`);
+  const body = parts.length ? parts.join('; ') : 'up to date with origin';
+  return st.state === 'offline' ? `sync: origin unreachable, last known state: ${body}.` : `sync: ${body}.`;
+}
+
+const originCell = (st) => {
+  if (st.state === 'no-git' || st.state === 'no-upstream') return '-';
+  if (st.state === 'no-remote') return 'no remote';
+  const p = [];
+  if (st.behind > 0) p.push(`behind ${st.behind}`);
+  if (st.ahead > 0) p.push(`ahead ${st.ahead}`);
+  if (st.pending > 0) p.push(`${st.pending} uncommitted`);
+  return `${p.length ? p.join(', ') : 'in sync'}${st.state === 'offline' ? ' (offline)' : ''}`;
+};
+
+/** Regenerate BOARD.md after a merge when it no longer matches the cards. Returns true when it wrote the file. */
+function regenerateIfStale(dir) {
+  const bf = path.join(dir, 'BOARD.md');
+  const gen = generateBoard(loadBoard(dir));
+  if (fs.existsSync(bf) && stripGenerated(fs.readFileSync(bf, 'utf8')) === stripGenerated(gen)) return false;
+  fs.writeFileSync(bf, gen);
+  return true;
+}
+
+/** Fetch, then rebase local work on the upstream. A conflict only in generated BOARD.md files is resolved by regenerating them. */
+function integrate(ctx, board, timeout) {
+  const f = gitx(['fetch', '--quiet'], ctx.root, { timeout });
+  if (!f.ok) return { status: 'offline', message: `origin is unreachable (${failureHint(f) || 'timeout'}); working with the local state` };
+  const up = upstreamOf(ctx.root);
+  if (!up) return { status: 'no-upstream', message: 'the branch has no upstream; set one with git push -u origin <branch>' };
+  const ab = aheadBehind(ctx.root);
+  if (ab.behind === 0) return { status: 'up-to-date', ahead: ab.ahead, behind: 0, message: 'nothing to pull' };
+  let r = gitx(['rebase', '--autostash', '@{u}'], ctx.root);
+  for (let i = 0; !r.ok && rebaseInProgress(ctx.root) && i < 30; i++) {
+    const files = unmerged(ctx.root);
+    const generated = files.length > 0 && files.every((x) => path.basename(x) === 'BOARD.md' && fs.existsSync(path.join(ctx.root, path.dirname(x), 'config.json')));
+    if (files.length && !generated) {
+      gitx(['rebase', '--abort'], ctx.root);
+      return { status: 'conflict', files, message: `conflict in ${files.join(', ')}; nothing was changed (the rebase was aborted); another agent edited the same text, decide with the owner` };
+    }
+    for (const x of files) {
+      fs.writeFileSync(path.join(ctx.root, x), generateBoard(loadBoard(path.join(ctx.root, path.dirname(x)))));
+      gitx(['add', '--', x], ctx.root);
+    }
+    r = gitx(['rebase', '--continue'], ctx.root);
+  }
+  if (!r.ok && rebaseInProgress(ctx.root)) {
+    gitx(['rebase', '--abort'], ctx.root);
+    return { status: 'conflict', files: [], message: `the rebase could not finish (${failureHint(r)}); it was aborted and nothing was changed` };
+  }
+  if (!r.ok) return { status: 'error', message: `git rebase failed: ${failureHint(r)}` };
+  const left = unmerged(ctx.root);
+  if (left.length) return { status: 'stash-conflict', files: left, message: `pulled, but your uncommitted changes conflict with them in ${left.join(', ')}; they are kept in git stash` };
+  const regenerated = regenerateIfStale(board.dir);
+  return { status: 'pulled', behind: ab.behind, ahead: ab.ahead, board_regenerated: regenerated, message: `pulled ${ab.behind} commit(s)${regenerated ? '; BOARD.md was regenerated and is not committed yet (roadctl save)' : ''}` };
+}
+
+export function pullBoard(board, { timeout = netTimeout() } = {}) {
+  const ctx = syncContext(board);
+  if (!ctx) return { status: 'no-git', message: 'the board is not in a git repository' };
+  if (!gitx(['remote'], ctx.root).out) return { status: 'no-remote', message: 'the board repository has no git remote' };
+  return integrate(ctx, board, timeout);
+}
+
+const defaultMessage = (ctx, board, pending) => {
+  const byFile = new Map(loadBoard(board.dir).cards.map((c) => [c.name, c.header.id]));
+  const ids = [...new Set(pending.map((l) => l.slice(3).replace(/\\/g, '/')).filter((p) => p.includes('/cards/')).map((p) => byFile.get(path.posix.basename(p))).filter(Boolean))];
+  return `board ${path.basename(board.project)}: update${ids.length ? ` ${ids.slice(0, 6).join(', ')}` : ''}`;
+};
+
+/** Commit only the board's paths and push. Never forces; lints first and again after a merge. */
+export function saveBoard(board, message, { timeout = netTimeout() } = {}) {
+  const ctx = syncContext(board);
+  if (!ctx) return { status: 'no-git', message: 'the board is not in a git repository' };
+  regenerateIfStale(board.dir);
+  const errs = lint(loadBoard(board.dir)).filter((x) => x.level === 'error');
+  if (errs.length) return { status: 'lint', errors: errs.map((x) => `${x.card}: ${x.msg}`), message: `lint found ${errs.length} error(s); nothing was committed` };
+  const pending = pendingIn(ctx);
+  const others = gitx(['status', '--porcelain'], ctx.root).out.split('\n').filter(Boolean).length - pending.length;
+  const note = others > 0 ? ` (${others} other changed path(s) outside the board left alone)` : '';
+  let committed = false;
+  if (pending.length) {
+    gitx(['add', '-A', '--', ctx.scope], ctx.root);
+    const c = gitx(['commit', '-q', '-m', message || defaultMessage(ctx, board, pending), '--', ctx.scope], ctx.root);
+    if (!c.ok) return { status: 'error', message: `git commit failed: ${failureHint(c)}` };
+    committed = true;
+  }
+  if (!gitx(['remote'], ctx.root).out) return { status: committed ? 'saved-local' : 'nothing-to-save', message: `${committed ? 'committed' : 'nothing to commit'}; the repository has no remote${note}` };
+  if (!committed && !upstreamOf(ctx.root)) return { status: 'nothing-to-save', message: `nothing to commit${note}` };
+  if (!committed && (aheadBehind(ctx.root)?.ahead ?? 0) === 0) return { status: 'nothing-to-save', message: `nothing to commit or push${note}` };
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const i = integrate(ctx, board, timeout);
+    if (i.status === 'offline') return { status: 'saved-local', message: `${committed ? 'committed locally' : 'unpushed commits are kept locally'}; ${i.message}` };
+    if (!['pulled', 'up-to-date'].includes(i.status)) return { ...i, message: `${i.message}${committed ? '; your commit stays local' : ''}` };
+    if (regenerateIfStale(board.dir) || pendingIn(ctx).length) {
+      gitx(['add', '-A', '--', ctx.scope], ctx.root);
+      gitx(['commit', '-q', '-m', `${message || 'board'}: regenerate BOARD.md`, '--', ctx.scope], ctx.root);
+    }
+    const merged = lint(loadBoard(board.dir)).filter((x) => x.level === 'error');
+    if (merged.length) return { status: 'lint-after-merge', errors: merged.map((x) => `${x.card}: ${x.msg}`), message: `after merging other changes lint found ${merged.length} error(s); not pushed` };
+    const out = gitx(['diff', '--name-only', '@{u}', 'HEAD'], ctx.root).out.split('\n').filter(Boolean);
+    const foreign = out.filter((x) => !inScope(ctx, x));
+    if (foreign.length) return { status: 'foreign-commits', files: foreign, message: `unpushed commits touch paths outside the board (${foreign.slice(0, 5).join(', ')}); push those yourself` };
+    if (!out.length && !(aheadBehind(ctx.root)?.ahead > 0)) return { status: 'nothing-to-save', message: `nothing to push${note}` };
+    const p = gitx(['push', '--quiet'], ctx.root, { timeout });
+    if (p.ok) return { status: 'pushed', message: `committed and pushed${note}` };
+    if (looksOffline(p)) return { status: 'saved-local', message: `committed locally; could not push (${failureHint(p) || 'timeout'})` };
+    if (attempt === 0 && /rejected|non-fast-forward|fetch first/i.test(p.err)) continue; // someone pushed in between: integrate again
+    return { status: 'push-failed', message: `git push failed: ${failureHint(p)}` };
+  }
+  return { status: 'push-failed', message: 'git push was rejected twice' };
+}
+
+const SYNC_OK = new Set(['up-to-date', 'pulled', 'offline', 'no-remote', 'saved-local', 'nothing-to-save', 'pushed']);
+export const syncExitCode = (r) => (SYNC_OK.has(r.status) ? 0 : 1);
+export const formatSync = (cmd, r) => `roadctl ${cmd}: ${r.status} — ${r.message}${r.errors ? `\n${r.errors.map((e) => `  ${e}`).join('\n')}` : ''}`;
+
+/** `autosync` in board/config.json (or ROADCTL_AUTOSYNC=1/0) lets the SessionStart hook pull and the Stop hook save by itself. */
+export function autosyncOn(board, env = process.env) {
+  if (env.ROADCTL_AUTOSYNC === '1') return true;
+  if (env.ROADCTL_AUTOSYNC === '0') return false;
+  return board.config.autosync === true;
+}
+
+/** Warn (never block) when a write is about to start on a board that is known to be behind its server. */
+const staleWarning = (board) => {
+  const st = syncState(board, { fetch: false });
+  return st.state === 'ok' && st.behind > 0 ? `roadctl: warning: the board is behind origin by ${st.behind} commit(s); run roadctl pull first\n` : '';
+};
+
 // ---------------------------------------------------------------- hooks
 
 function readStdinJson() {
@@ -466,6 +809,36 @@ export function stopReminder(board, payload = {}) {
   return `Card ${card.header.id} is doing and the working tree has changes, but the board was not updated. If you made progress or a decision, record it (roadctl log ${card.header.id} "..." or the card's Log); otherwise ignore this one-time reminder.`;
 }
 
+/** One line about the board's state relative to its server for the session brief. With autosync it also pulls. Never throws. */
+function hookSyncLine(board) {
+  try {
+    if (autosyncOn(board)) {
+      const r = pullBoard(board, { timeout: 6000 });
+      if (r.status === 'up-to-date') return 'sync: up to date with origin (autosync).';
+      if (r.status === 'pulled') return `sync: autosync pulled ${r.behind} commit(s) from origin.`;
+      return `sync: autosync ${r.status} — ${r.message}`;
+    }
+    return syncLine(syncState(board, { fetch: process.env.ROADCTL_NO_FETCH !== '1', timeout: 4000 }));
+  } catch {
+    return null;
+  }
+}
+
+/** Autosync at Stop: save the board when it has uncommitted changes or unpushed commits. Returns text only for a problem. */
+function autosave(board, payload, doing) {
+  try {
+    const st = syncState(board, { fetch: false });
+    if (st.state === 'no-git' || (!(st.pending > 0) && !(st.ahead > 0))) return null;
+    const r = saveBoard(board, undefined, { timeout: 8000 });
+    if (st.pending > 0 && doing.length === 1 && ['pushed', 'saved-local'].includes(r.status)) {
+      fs.writeFileSync(path.join(stateDir(board, payload.cwd), 'roadctl-stop-state'), `${doing[0].header.id}:${doing[0].log.length}`);
+    }
+    return SYNC_OK.has(r.status) ? null : `roadctl autosync: ${r.status} — ${r.message}. Tell the owner if it needs a decision.`;
+  } catch {
+    return null;
+  }
+}
+
 export function hookContext(event, payload, boardArg, host = 'claude') {
   const start = payload.cwd || process.cwd();
   const dir = findBoard(start, boardArg);
@@ -473,7 +846,7 @@ export function hookContext(event, payload, boardArg, host = 'claude') {
   const board = loadBoard(dir);
   const doing = board.cards.filter((c) => statusOf(board, c) === 'doing');
   if (event === 'session-start') {
-    return { json: { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: brief(board) } } };
+    return { json: { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: [brief(board), hookSyncLine(board)].filter(Boolean).join('\n') } } };
   }
   if (event === 'pre-compact') {
     if (host === 'codex' || !doing.length) return null; // Codex ignores PreCompact output; SessionStart(compact) re-injects instead
@@ -481,7 +854,9 @@ export function hookContext(event, payload, boardArg, host = 'claude') {
     return { text: `When you summarize this conversation, keep: the active card ${ids}, its open acceptance criteria ids, decisions made in this session with their reasons, and where to resume. The board is in ${path.relative(board.project, board.dir) || '.'}; read it again with roadctl brief after compaction.` };
   }
   if (event === 'stop') {
-    const text = stopReminder(board, payload);
+    const reminder = stopReminder(board, payload); // before autosync: committing the board would make it look untouched
+    const auto = autosyncOn(board) ? autosave(board, payload, doing) : null;
+    const text = [reminder, payload.stop_hook_active ? null : auto].filter(Boolean).join('\n');
     if (!text) return null;
     return host === 'codex'
       ? { json: { decision: 'block', reason: text } }
@@ -493,7 +868,7 @@ export function hookContext(event, payload, boardArg, host = 'claude') {
     const marker = path.join(stateDir(board, payload.cwd), 'roadctl-hermes-session');
     const first = payload.extra?.is_first_turn === true || (session && (!fs.existsSync(marker) || fs.readFileSync(marker, 'utf8') !== session));
     if (session) fs.writeFileSync(marker, session);
-    if (first) return { json: { context: brief(board) } };
+    if (first) return { json: { context: [brief(board), hookSyncLine(board)].filter(Boolean).join('\n') } };
     const text = stopReminder(board, { cwd: payload.cwd });
     return text ? { json: { context: text } } : null;
   }
@@ -662,7 +1037,7 @@ For any task about a project's plan, roadmap, journal, backlog, task cards, stat
 - A project's existing plan stays where it is and keeps the project's own conventions. Do not migrate it unless the owner asks.
 - New boards, cards and plan notes do not go into the project repository. They live in the owner's agent workspace, \`${ws}/projects/<project-name>/board/\` (format: the skill's references/board.md). Ask before creating a board for a project that has none.
 - \`node ${helper} where\` prints the board for the current directory; \`brief\`, \`show <id>\`, \`log <id> "..."\` and \`lint\` work from the project's code directory. The tool never marks anything done or accepted for you.
-- Commits to the workspace repository are made only when the owner asks.
+- Commits to the workspace repository are made only when the owner asks, with one exception: the board files this skill and \`roadctl\` write (\`${ws}/projects/<project-name>/board/\`, including its notes). For those, work in the background without asking: before the first write in a session run \`node ${helper} pull\`; after a decision, a verified result or a handoff run \`node ${helper} save "<short message>"\` (it lints, commits only that board's paths, merges other agents' changes and pushes; it never forces and leaves other changed files alone). Ask only when it reports a conflict, a lint error or a refused push, or when you are unsure the change is worth recording. Being offline is not a reason to ask: the commit stays local and the next \`save\` pushes it. Never run \`approve\` or \`done\` unless the owner told you to.
 ${INSTR_END}
 `;
 }
@@ -788,7 +1163,10 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
   const cmd = args[0];
   if (flags.date) process.env.ROADCTL_DATE = flags.date;
   const out = (s) => io.out(`${s}\n`);
-  if (!cmd || cmd === 'help' || flags.help) return out(fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1, 24).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')), 0;
+  if (!cmd || cmd === 'help' || flags.help) {
+    const src = fs.readFileSync(new URL(import.meta.url), 'utf8').split('\n').slice(1);
+    return out(src.slice(0, src.findIndex((l) => !l.startsWith('//'))).map((l) => l.replace(/^\/\/ ?/, '')).join('\n')), 0;
+  }
   if (cmd === 'version') return out(VERSION), 0;
   try {
     if (cmd === 'hook') return runHook(args[1], readStdinJson(), flags.board, io, flags.host === 'codex' ? 'codex' : 'claude');
@@ -814,6 +1192,11 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
         out(`${workspaceBoards(roots[0]).length} board(s), ${f.filter((x) => x.level === 'error').length} error(s), ${f.filter((x) => x.level === 'warning').length} warning(s)`);
       }
       return f.some((x) => x.level === 'error') ? 1 : 0;
+    }
+    if (OVERVIEW.has(cmd) && flags.all) {
+      const roots = workspaceRoots();
+      if (!roots.length) throw new Error('no workspace found; set ROADCTL_WORKSPACE or use --workspace DIR');
+      return overview(cmd, workspaceBoards(roots[0]).map((b) => ({ name: b.name, board: loadBoard(b.dir) })), flags, out, true);
     }
     const dir = findBoard(process.cwd(), flags.board);
     if (cmd === 'where') return dir ? (out(dir), 0) : 1;
@@ -841,9 +1224,19 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
         out(`wrote ${bf} (${Buffer.byteLength(gen)} bytes)`);
         return 0;
       }
-      case 'brief': return out(brief(board)), 0;
-      case 'show': return out(show(board, args[1], { log: Number(flags.log ?? 5), commits: Number(flags.commits ?? 0) })), 0;
+      case 'brief': return out(flags.json ? JSON.stringify(briefJson(board), null, 2) : brief(board)), 0;
+      case 'show': return out(flags.json ? JSON.stringify(showJson(board, args[1], { log: Number(flags.log ?? 5) }), null, 2) : show(board, args[1], { log: Number(flags.log ?? 5), commits: Number(flags.commits ?? 0) })), 0;
+      case 'status':
+      case 'list':
+      case 'next': return overview(cmd, [{ name: path.basename(board.project), board }], flags, out, false);
+      case 'pull':
+      case 'save': {
+        const r = cmd === 'pull' ? pullBoard(board) : saveBoard(board, args[1]);
+        out(flags.json ? JSON.stringify(r, null, 2) : formatSync(cmd, r));
+        return syncExitCode(r);
+      }
       case 'log': {
+        io.err(staleWarning(board));
         if (!args[1] || !args[2]) throw new Error('usage: roadctl log <id> "text" [--author A] [--commit SHA]');
         out(appendLog(board, args[1], args[2], { author: flags.author || 'agent', commit: flags.commit, date: today() }));
         return 0;
@@ -851,6 +1244,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
       case 'review':
       case 'done': {
         if (cmd === 'done' && !flags.by) throw new Error('done needs --by NAME (the owner who accepted); only run it when the owner has accepted');
+        if (cmd === 'review') io.err(staleWarning(board));
         const r = cmd === 'review' ? review(board, args[1]) : done(board, args[1], flags.by);
         if (!r.ok) {
           io.err(`refused: ${r.reasons.join('; ')}\n`);
@@ -864,7 +1258,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
         approve(board, args[1], { by: flags.by, scope: flags.scope, source: flags.source });
         return out(`${args[1]} approved`), 0;
       }
-      case 'new': return out(newCard(board, args[1], args[2] ?? '', flags.status || 'ready')), 0;
+      case 'new': return io.err(staleWarning(board)), out(newCard(board, args[1], args[2] ?? '', flags.status || 'ready')), 0;
       default: throw new Error(`unknown command ${cmd}`);
     }
   } catch (e) {

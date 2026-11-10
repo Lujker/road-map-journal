@@ -467,3 +467,257 @@ test('workspace pointer file under ~/.local/share/road-map-journal/workspace is 
   assert.equal(r.status, 0);
   assert.match(r.stdout, /0 board/);
 });
+
+// ---------------------------------------------------------------- overview: status, list, next, --json
+
+const snapshot = (dir) => fs.readdirSync(dir, { recursive: true }).sort().map((f) => { const p = path.join(dir, f); return fs.statSync(p).isFile() ? `${f}:${fs.readFileSync(p, 'utf8')}` : f; }).join('\n');
+
+test('status counts cards by status, names the doing card and writes nothing', () => {
+  const root = project();
+  const before = snapshot(root);
+  const s = rc.statusSummary('demo', load(root));
+  assert.deepEqual(s.counts, { idea: 1, ready: 1, doing: 1, review: 1, blocked: 1, done: 1, parked: 0, dropped: 0 });
+  assert.equal(s.doing[0].id, 'W-3');
+  assert.deepEqual(s.lint, { errors: 0, warnings: 0 });
+  assert.match(s.oldest_as_of, /^\d{4}-\d{2}-\d{2}$/);
+  const r = cli(root, ['status']);
+  assert.equal(r.status, 0);
+  assert.match(r.stdout, /^project\s+doing\s+review\s+ready/m);
+  assert.match(r.stdout, /DOING \[W-3\]/);
+  assert.equal(JSON.parse(cli(root, ['status', '--json']).stdout)[0].counts.review, 1);
+  assert.equal(snapshot(root), before, 'read-only');
+});
+
+test('list hides done and dropped by default, filters by status, accepts "all", prints JSON', () => {
+  const root = project();
+  const ids = (a) => cli(root, ['list', ...a]).stdout.split('\n').filter(Boolean).map((l) => l.match(/^\[([^\]]+)\]/)[1]);
+  assert.deepEqual(ids([]).sort(), ['W-2', 'W-3', 'W-4', 'W-5', 'W-6']);
+  assert.deepEqual(ids(['--status', 'ready,doing']).sort(), ['W-3', 'W-5']);
+  assert.deepEqual(ids(['--status', 'done']), ['W-1']);
+  assert.equal(ids(['--status', 'all']).length, 6);
+  const j = JSON.parse(cli(root, ['list', '--status', 'review', '--json']).stdout);
+  assert.deepEqual(j.map((x) => [x.project, x.id, x.status]), [[path.basename(root), 'W-2', 'review']]);
+});
+
+test('next: doing card first, ready cards whose dependencies are done, the rest waiting; ready is not approval', () => {
+  const root = project();
+  let n = rc.nextCards(load(root));
+  assert.deepEqual(n.doing.map((c) => c.id), ['W-3']);
+  assert.deepEqual(n.available, []);
+  assert.deepEqual(n.waiting.map((c) => [c.id, c.waiting_on]), [['W-5', ['W-2 (review)']]]);
+  edit(root, 'W-2', (t) => t.replace('status: review', 'status: done\naccepted: владелец, 2026-11-10'));
+  n = rc.nextCards(load(root));
+  assert.deepEqual(n.available.map((c) => c.id), ['W-5']);
+  const text = cli(root, ['next']).stdout;
+  assert.match(text, /^DOING \[W-3\]/m);
+  assert.match(text, /READY \[W-5\].*not approved: the owner must approve before work starts/);
+  edit(root, 'W-5', (t) => t.replace('depends_on: W-2', 'depends_on: W-99'));
+  assert.deepEqual(rc.nextCards(load(root)).waiting.map((c) => c.waiting_on), [['W-99 (missing)']]);
+});
+
+test('status, list and next with --all cover every board of the workspace', () => {
+  const c = central();
+  fs.cpSync(c.board, path.join(c.ws, 'projects', 'other', 'board'), { recursive: true });
+  const s = JSON.parse(cli(c.ws, ['status', '--all', '--json'], '', c.env).stdout);
+  assert.deepEqual(s.map((x) => x.project).sort(), ['my-app', 'other']);
+  const t = cli(c.ws, ['status', '--all'], '', c.env).stdout;
+  assert.match(t, /^my-app\s/m);
+  assert.match(t, /^other: DOING \[W-3\]/m);
+  assert.match(cli(c.ws, ['list', '--all', '--status', 'review'], '', c.env).stdout, /^other: \[W-2\] review/m);
+  assert.match(cli(c.ws, ['next', '--all'], '', c.env).stdout, /^my-app: DOING \[W-3\]/m);
+  assert.equal(cli(c.ws, ['status', '--all'], '', { ROADCTL_WORKSPACE: path.join(c.base, 'nowhere'), HOME: c.base, USERPROFILE: c.base }).status, 2);
+});
+
+test('brief --json and show --json are structured; the text brief is unchanged', () => {
+  const root = project();
+  const b = JSON.parse(cli(root, ['brief', '--json']).stdout);
+  assert.equal(b.doing[0].id, 'W-3');
+  assert.deepEqual(b.doing[0].approved, ['implementation']);
+  assert.equal(b.ready[0].id, 'W-5');
+  assert.deepEqual(b.lint, { errors: 0, warnings: 0 });
+  const s = JSON.parse(cli(root, ['show', 'W-3', '--json', '--log', '1']).stdout);
+  assert.equal(s.header.id, 'W-3');
+  assert.ok(s.criteria.length > 0 && s.log.length <= 1 && 'Goal' in s.sections);
+  assert.match(cli(root, ['brief']).stdout, /^roadctl brief/);
+});
+
+test('help prints the usage comment only', () => {
+  const out = cli(project(), ['help']).stdout;
+  assert.match(out, /roadctl status/);
+  assert.doesNotMatch(out, /import /);
+});
+
+// ---------------------------------------------------------------- synchronization: pull, save, hooks (a local bare repository stands in for the server)
+
+Object.assign(process.env, { GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' });
+const g = (cwd, ...a) => execFileSync('git', a, { cwd, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+
+function pair() {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'rcs-'));
+  const server = path.join(base, 'server.git');
+  g(base, 'init', '-q', '--bare', '-b', 'main', server);
+  const a = path.join(base, 'a');
+  fs.mkdirSync(a);
+  fs.cpSync(EXAMPLE, path.join(a, 'projects', 'my-app', 'board'), { recursive: true });
+  g(a, 'init', '-q', '-b', 'main');
+  g(a, 'add', '-A');
+  g(a, 'commit', '-q', '-m', 'init');
+  g(a, 'remote', 'add', 'origin', server);
+  g(a, 'push', '-q', '-u', 'origin', 'main');
+  const b = path.join(base, 'b');
+  g(base, 'clone', '-q', server, b);
+  const bd = (w) => path.join(w, 'projects', 'my-app', 'board');
+  const run = (w, args, input = '', env = {}) => cli(w, [...args, '--board', bd(w)], input, env);
+  const serverLog = () => g(server, 'log', '--format=%s', 'main').split('\n');
+  return { base, server, a, b, bd, run, serverLog };
+}
+const out = (r) => JSON.parse(r.stdout);
+
+test('pull brings in what another agent pushed, and reports up-to-date afterwards', () => {
+  const p = pair();
+  assert.equal(p.run(p.b, ['new', 'W-8', 'Eight']).status, 0);
+  const saved = out(p.run(p.b, ['save', 'add W-8', '--json']));
+  assert.equal(saved.status, 'pushed');
+  const pulled = out(p.run(p.a, ['pull', '--json']));
+  assert.equal(pulled.status, 'pulled');
+  assert.equal(pulled.behind, 1);
+  assert.ok(fs.readdirSync(path.join(p.bd(p.a), 'cards')).some((f) => f.startsWith('W-8')));
+  assert.equal(p.run(p.a, ['lint']).status, 0);
+  assert.equal(out(p.run(p.a, ['pull', '--json'])).status, 'up-to-date');
+});
+
+test('save commits only the board paths, leaves other changes alone and pushes', () => {
+  const p = pair();
+  fs.writeFileSync(path.join(p.a, 'notes.txt'), 'foreign, untracked');
+  fs.writeFileSync(path.join(p.a, 'other.txt'), 'foreign, staged');
+  g(p.a, 'add', 'other.txt');
+  assert.equal(p.run(p.a, ['log', 'W-3', 'a decision', '--author', 'agent']).status, 0);
+  const r = p.run(p.a, ['save', '--json']);
+  const res = out(r);
+  assert.equal(res.status, 'pushed');
+  assert.match(res.message, /2 other changed path/);
+  assert.match(p.serverLog()[0], /^board my-app: update W-3$/);
+  const files = g(p.a, 'show', '--name-only', '--format=', 'HEAD').split('\n');
+  assert.ok(files.length > 0 && files.every((f) => f.startsWith('projects/my-app/')), files.join());
+  assert.match(g(p.a, 'status', '--porcelain'), /notes\.txt/);
+  assert.match(g(p.a, 'status', '--porcelain'), /A {2}other\.txt/);
+  assert.equal(out(p.run(p.a, ['save', '--json'])).status, 'nothing-to-save');
+});
+
+test('two agents: different cards merge, and a conflict only in the generated BOARD.md is regenerated', () => {
+  const p = pair();
+  p.run(p.a, ['new', 'W-8', 'Eight']);
+  assert.equal(out(p.run(p.a, ['save', 'a adds W-8', '--json'])).status, 'pushed');
+  p.run(p.b, ['new', 'W-9', 'Nine']); // b has not seen W-8: both add a line at the same place of BOARD.md
+  const r = out(p.run(p.b, ['save', 'b adds W-9', '--json']));
+  assert.equal(r.status, 'pushed', JSON.stringify(r));
+  assert.equal(g(p.b, 'status', '--porcelain'), '');
+  const board = fs.readFileSync(path.join(p.bd(p.b), 'BOARD.md'), 'utf8');
+  assert.match(board, /\[W-8\]/);
+  assert.match(board, /\[W-9\]/);
+  assert.equal(p.run(p.b, ['lint']).status, 0);
+  assert.ok(p.serverLog().includes('b adds W-9'));
+});
+
+test('two agents on the same card: stop, keep the local commit, leave the tree as it was', () => {
+  const p = pair();
+  p.run(p.a, ['log', 'W-3', 'decision from a']);
+  assert.equal(out(p.run(p.a, ['save', 'a log', '--json'])).status, 'pushed');
+  p.run(p.b, ['log', 'W-3', 'decision from b']);
+  const r = p.run(p.b, ['save', 'b log', '--json']);
+  assert.equal(r.status, 1);
+  const res = out(r);
+  assert.equal(res.status, 'conflict');
+  assert.ok(res.files.some((f) => f.includes('W-3')));
+  assert.equal(g(p.b, 'status', '--porcelain'), '');
+  assert.equal(fs.existsSync(path.join(p.b, '.git', 'rebase-merge')), false);
+  assert.equal(g(p.b, 'log', '-1', '--format=%s'), 'b log');
+  assert.ok(!p.serverLog().includes('b log'));
+});
+
+test('without a server: save commits locally and pull says offline; without a remote nothing fails', () => {
+  const p = pair();
+  g(p.b, 'remote', 'set-url', 'origin', path.join(p.base, 'gone.git'));
+  p.run(p.b, ['log', 'W-3', 'offline note']);
+  const s = p.run(p.b, ['save', 'offline save', '--json']);
+  assert.equal(s.status, 0);
+  assert.equal(out(s).status, 'saved-local');
+  assert.equal(g(p.b, 'log', '-1', '--format=%s'), 'offline save');
+  const pl = p.run(p.b, ['pull', '--json']);
+  assert.equal(pl.status, 0);
+  assert.equal(out(pl).status, 'offline');
+  const c = central();
+  assert.equal(out(cli(c.code, ['pull', '--json'], '', c.env)).status, 'no-remote');
+  const plain = project();
+  assert.equal(out(cli(plain, ['pull', '--json'])).status, 'no-git');
+});
+
+test('save refuses on lint errors and on unpushed commits outside the board', () => {
+  const p = pair();
+  const head = g(p.a, 'rev-parse', 'HEAD');
+  edit(p.a.replace(/$/, '/projects/my-app'), 'W-2', (t) => t.replace('- a2: сверка', '- zz: сверка'));
+  const bad = p.run(p.a, ['save', '--json']);
+  assert.equal(bad.status, 1);
+  assert.equal(out(bad).status, 'lint');
+  assert.equal(g(p.a, 'rev-parse', 'HEAD'), head, 'nothing was committed');
+  g(p.a, 'checkout', '--', '.');
+  fs.writeFileSync(path.join(p.a, 'mine.txt'), 'x');
+  g(p.a, 'add', 'mine.txt');
+  g(p.a, 'commit', '-q', '-m', 'private work');
+  p.run(p.a, ['log', 'W-3', 'note']);
+  const r = p.run(p.a, ['save', '--json']);
+  assert.equal(r.status, 1);
+  assert.equal(out(r).status, 'foreign-commits');
+  assert.ok(!p.serverLog().includes('private work'));
+});
+
+test('hooks: the session brief reports the sync state; autosync pulls at start and saves at Stop; the reminder is not disturbed', () => {
+  const p = pair();
+  p.run(p.a, ['log', 'W-3', 'from a']);
+  p.run(p.a, ['save', 'a log']);
+  const start = (env = {}) => out(p.run(p.b, ['hook', 'session-start'], JSON.stringify({ cwd: p.b }), env)).hookSpecificOutput.additionalContext;
+  assert.match(start(), /sync: behind origin by 1 commit\(s\): run roadctl pull before writing/);
+  assert.doesNotMatch(fs.readFileSync(path.join(p.bd(p.b), 'cards', fs.readdirSync(path.join(p.bd(p.b), 'cards')).find((f) => f.startsWith('W-3'))), 'utf8'), /from a/, 'plain mode never pulls');
+  assert.match(start({ ROADCTL_AUTOSYNC: '1' }), /autosync pulled 1 commit/);
+  assert.match(start(), /sync: up to date with origin/);
+  // Stop: without autosync nothing is committed; with it the board is saved and pushed
+  p.run(p.b, ['log', 'W-3', 'from b']);
+  const stop = (env = {}) => p.run(p.b, ['hook', 'stop'], JSON.stringify({ cwd: p.b }), env).stdout;
+  assert.equal(stop(), '');
+  assert.notEqual(g(p.b, 'status', '--porcelain'), '');
+  assert.equal(stop({ ROADCTL_AUTOSYNC: '1' }), '');
+  assert.equal(g(p.b, 'status', '--porcelain'), '');
+  assert.match(p.serverLog()[0], /^board my-app: update W-3$/);
+  // a problem is reported to the agent instead of staying silent
+  assert.equal(out(p.run(p.a, ['pull', '--json'])).status, 'pulled');
+  p.run(p.a, ['log', 'W-3', 'a again']);
+  p.run(p.a, ['save', 'a log 2']);
+  p.run(p.b, ['log', 'W-3', 'b again']);
+  const msg = out(p.run(p.b, ['hook', 'stop'], JSON.stringify({ cwd: p.b }), { ROADCTL_AUTOSYNC: '1' })).hookSpecificOutput.additionalContext;
+  assert.match(msg, /roadctl autosync: conflict/);
+  const again = p.run(p.b, ['hook', 'stop'], JSON.stringify({ cwd: p.b, stop_hook_active: true }), { ROADCTL_AUTOSYNC: '1' });
+  assert.equal(again.stdout, '', 'no output while a Stop hook is already active');
+});
+
+test('autosync can be switched on in the board config; status shows how far the board is from origin', () => {
+  const p = pair();
+  const cfg = path.join(p.bd(p.a), 'config.json');
+  assert.equal(rc.autosyncOn(rc.loadBoard(p.bd(p.a)), {}), false);
+  fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg, 'utf8')), autosync: true }));
+  assert.equal(rc.autosyncOn(rc.loadBoard(p.bd(p.a)), {}), true);
+  assert.equal(rc.autosyncOn(rc.loadBoard(p.bd(p.a)), { ROADCTL_AUTOSYNC: '0' }), false);
+  assert.equal(p.run(p.b, ['log', 'W-3', 'x']).status, 0);
+  p.run(p.b, ['save', 'b']);
+  assert.match(p.run(p.a, ['status']).stdout, /in sync|uncommitted/, 'no fetch: the old state is shown');
+  assert.match(p.run(p.a, ['status', '--fetch']).stdout, /behind 1/);
+  assert.match(p.run(p.a, ['log', 'W-3', 'late']).stderr, /^$|behind origin/);
+});
+
+test('the instruction block keeps the general commit rule, adds the board exception and names pull and save', () => {
+  const b = rc.instructionBlock('/w', '~/.local/share/road-map-journal/roadctl.mjs');
+  assert.match(b, /Commits to the workspace repository are made only when the owner asks, with one exception: the board files/);
+  assert.match(b, /roadctl\.mjs pull`/);
+  assert.match(b, /roadctl\.mjs save "<short message>"/);
+  assert.match(b, /never run `approve` or `done` unless the owner told you to/i);
+  assert.doesNotMatch(b, /git push|--force/);
+});

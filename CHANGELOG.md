@@ -2,6 +2,11 @@
 
 Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. Behavior was not re-evaluated for any release; see [ROADMAP.md](ROADMAP.md).
 
+## Unreleased
+
+- `references/board.md`: committing and pushing board files needs the owner's standing permission; with it, `roadctl pull` before the first write and `roadctl save` after a decision, a verified result or a handoff.
+- Repository (not part of the installed skill): `roadctl status`, `list`, `next` and `--json` (an overview without an agent, also across the workspace with `--all`); `roadctl pull` and `save` (merge other agents' changes, commit only the board's paths, push, never force); opt-in `autosync` for the SessionStart and Stop hooks; sync state in the session brief and in `status`; the managed instruction block states the board exception to the commit rule. 48 model-free tests; the sync tests use a local bare repository. Not checked: live sessions, a remote server over the network, Windows and CI.
+
 ## 0.4.0 — 2026-11-10
 
 - `references/board.md`: a board may live in a central workspace outside the project; where to create new boards when the owner's instructions say so.

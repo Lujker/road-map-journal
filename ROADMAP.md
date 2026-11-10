@@ -37,6 +37,15 @@ The portable skill, documentation in English and Russian, an update script and p
 - **P2.6 — Kanban bridge:** not planned; reconsider only if needed.
 
 Released as skill 0.3.0, see [CHANGELOG](CHANGELOG.md).
+
+### P3 — Autonomous operation and observation
+**Status: OPEN (planned 2026-11-10 after the owner's first use).** Short sessions (status and plan questions) worked well. Observed gaps: the agent asks the owner before committing and pushing its own board changes, does not pull other agents' changes before writing, and there is no agent-free way to see cards and statuses across projects. Tools, hooks, automation and long sessions are untested in real use; the checks are in [docs/live-testing.ru.md](docs/live-testing.ru.md). Owner decision 2026-11-10: tests with a model are still not run by the agent; the owner runs the live checks.
+
+- **P3.1 — Overview without an agent:** `roadctl status [--all]`, `list --status`, `next`, `--json` for `brief` and `show`. **Status: PARTIAL.** Implemented and tested without a model (2026-11-10); remaining: the owner's check on the real workspace.
+- **P3.2 — Synchronization with the server:** `roadctl pull` and `save` (pull before the first write; commit only the board's paths, lint first, push; stop on conflicts), opt-in `autosync` (`board/config.json` or `ROADCTL_AUTOSYNC`) for the SessionStart and Stop hooks, and sync state in the `SessionStart` brief and in `status`. **Status: PARTIAL.** Implemented and tested without a model against a local bare repository (2026-11-10); remaining: the owner's check in live sessions. Autosync is off by default, so the rule that hooks change nothing still holds unless the owner opts in.
+- **P3.3 — Autonomous recording of board changes:** a scoped exception to "commit only when the owner asks" for the board files this skill writes. **Status: PARTIAL.** Done: the instruction block (`roadctl instructions-install`) and the owner's `~/.claude/CLAUDE.md`, 2026-11-10. Also done in the repository: the mention in `references/board.md`, and the generator names `roadctl pull` and `save`. The installed `roadctl` copy was updated and the block was applied to the owner's `CLAUDE.md` (2026-11-10). Remaining: the Codex `AGENTS.md` (owner's choice) and the owner's check that agents stop asking (scenario C8).
+- **P3.4 — Live checks by the owner:** tools, hooks inside real sessions, synchronization and long sessions, per [docs/live-testing.ru.md](docs/live-testing.ru.md). **Status: OPEN** (owner's work; no agent runs).
+
 ## Queue
 
-P1.1 (the owner's own use, fix problems as they appear). P0.1 broader coverage stays deferred.
+P1.1 (the owner's own use, fix problems as they appear). P3.1 and P3.2 once the owner approves them; P3.4 in the owner's normal work. P0.1 broader coverage stays deferred.

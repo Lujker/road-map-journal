@@ -11,6 +11,13 @@ roadctl where                     print the board found for the current director
 roadctl sync [--check]            regenerate board/BOARD.md, or verify it is current
 roadctl brief                     short summary for an agent: header fields and a sanitized next criterion
 roadctl show <id> [--log N] [--commits N]
+roadctl status [--all]            counts by status per project, the doing cards, oldest as_of of active cards, lint totals; read-only
+roadctl list [--status S[,S]|all] [--all]   cards; by default everything except done and dropped
+roadctl next [--all]              doing cards, then ready cards whose depends_on are all done, then ready cards still waiting (and on what)
+                                  brief, show, status, list and next accept --json
+roadctl pull                      fetch, then rebase the board's repository on its upstream (a conflict only in BOARD.md is regenerated)
+roadctl save ["message"]          lint, commit only the board's paths, rebase on the upstream, push; never forces
+                                  status --fetch asks the server first; pull and save accept --json
 roadctl log <id> "text" [--author A] [--commit SHA]
 roadctl review <id>               doing -> review when every criterion is met with evidence or deferred with a reason
 roadctl done <id> --by NAME       review/doing -> done; refuses without evidence; run only after the owner accepted
@@ -25,6 +32,23 @@ roadctl instructions-uninstall --claude --codex [--apply]
 ```
 
 Global flags: `--board <dir>` (default: search upwards for `board/config.json`, then the central workspace, see [board-spec.md](board-spec.md)), `--workspace DIR` (or `ROADCTL_WORKSPACE`), `--date YYYY-MM-DD`. Exit codes: 0 ok, 1 findings or refusal, 2 usage error.
+
+## Overview without an agent
+
+`status`, `list` and `next` only read the board files; they need no model and write nothing. `--all` covers every board of the central workspace (the first workspace root found, as for `lint --all`). `status` prints one row per project (counts per status, `oldest as_of` among doing, review and blocked cards, lint errors and warnings) and one line per doing card. `next` is a view, not a decision: `ready` means defined, **not** permission to start, so a ready card without `approved` is marked as needing the owner's approval, and a ready card is "waiting" until every id in `depends_on` is `done`. Card titles in text output are sanitized like in `brief`; `--json` returns the raw values for scripts. What these commands cannot tell is whether a status matches reality: that still needs a person or an agent reading the evidence. How far a board is behind its server is not shown yet (P3.2).
+
+## Synchronization with the server
+
+Plans live in a git repository (a central workspace, or the project). `pull` and `save` keep a board in step with other agents and machines without anyone typing git commands.
+
+- `pull`: `git fetch`, then `git rebase --autostash` on the upstream. Uncommitted changes are kept. If the rebase conflicts **only** in generated `BOARD.md` files they are regenerated from the merged cards and the rebase continues; any other conflict aborts the rebase, leaves the tree as it was and reports the files (status `conflict`): two agents edited the same text, so a person decides. If the server cannot be reached the status is `offline` and work continues on the local state.
+- `save ["message"]`: regenerates a stale `BOARD.md`, runs `lint` (errors refuse the save, nothing is committed), commits **only the board's paths** (the project folder `projects/<name>` in a central workspace, `board/` in a project; other changed or staged files are left alone and counted in the message), rebases on the upstream like `pull`, lints the merged result, pushes. It never forces. If someone pushed in between it integrates once more and retries. If the server is unreachable the commit stays local (`saved-local`, exit 0) and the next `save` pushes it. It refuses to push when unpushed commits touch paths outside the board (`foreign-commits`), and when the merged board has lint errors (`lint-after-merge`). Without a message the commit is `board <project>: update <card ids>`.
+- Statuses that are not failures (exit 0): `up-to-date`, `pulled`, `offline`, `no-remote`, `saved-local`, `nothing-to-save`, `pushed`. Everything else exits 1 with the reason.
+- `status` shows an `origin` column (`in sync`, `behind N`, `ahead N`, `N uncommitted`, `no remote`) from the last known state; `status --fetch` asks the server first.
+- `log`, `new` and `review` print a warning to stderr when the board is known to be behind origin (no network is used for that check).
+- Network limits: `ROADCTL_GIT_TIMEOUT_MS` (default 15000); git never prompts (`GIT_TERMINAL_PROMPT=0`, ssh `BatchMode`).
+
+**Autosync (opt-in).** Hooks keep their rule of never changing anything unless the owner opts in, with `"autosync": true` in `board/config.json` (shared by every host and agent that uses this board) or `ROADCTL_AUTOSYNC=1` (`0` forces it off). Then the `SessionStart` hook runs `pull` before the brief, and the `Stop` hook runs `save` when the board has uncommitted changes or unpushed commits. Without autosync `SessionStart` only fetches (4 second limit, `ROADCTL_NO_FETCH=1` disables it) and adds one line to the brief ("behind origin by N commit(s)", "N local commit(s) not pushed", "origin unreachable", "up to date"). A successful autosave is silent; a problem (conflict, lint error, rejected push) is passed to the agent once so it can tell the owner. The reminder check runs before the autosave, and a successful autosave records the card's Log state so the reminder is not triggered for work that was already written down. Hooks have short timeouts (Codex kills a hook after 10 seconds); a kill during `fetch` or `push` is harmless, and the rebase itself is local and fast.
 
 ## Hooks
 
@@ -45,7 +69,7 @@ Installers (dry run by default, backup before writing, existing hooks kept, idem
 
 ## What was tested
 
-`node --test scripts/roadctl.test.mjs` runs 33 model-free tests (CI runs them too): lint rules with seeded errors, `sync` determinism and `--check`, brief content limits, `log` with CRLF files, `review`/`done` refusals, `approve`, `new`, `show`, hook outputs and the once-only Stop rule against a temporary git repository, hook installation and removal for Claude Code, Codex, Hermes and git. They pass on WSL (Node 24) and on Windows (Node 20 and 26); the blocking-commit step of the git-hook test runs only on Linux. **Checked against the real tools, without a model (2026-11-10):** Codex 0.165 `app-server hooks/list` parsed the installed `hooks.json` with 3 hooks, no warnings or errors, all `untrusted` until you trust them in `/hooks`; Hermes 0.22.6 `hermes hooks test pre_llm_call` fired the installed hook through Hermes's own dispatcher (exit 0, valid `{"context": ...}` with the brief), and `hermes hooks list` shows it as not yet allowlisted. **Not tested:** the hooks firing inside a live Claude Code, Codex or Hermes session, and any agent behavior; no model was run. Rules 15 and 16 of the spec (history-based warnings) are not implemented.
+`node --test scripts/roadctl.test.mjs` runs 48 model-free tests (CI runs them too): lint rules with seeded errors, `sync` determinism and `--check`, brief content limits, `log` with CRLF files, `review`/`done` refusals, `approve`, `new`, `show`, `status`/`list`/`next`/`--json` (including `--all` over two boards and a check that they write nothing), `pull`/`save` and the sync hooks against a local bare repository with two clones (merging different cards, regenerating a conflicting `BOARD.md`, stopping on a conflict in one card, offline, lint refusal, commits outside the board, autosync at session start and at Stop), hook outputs and the once-only Stop rule against a temporary git repository, hook installation and removal for Claude Code, Codex, Hermes and git. The first 33 passed on WSL (Node 24) and on Windows (Node 20 and 26); the blocking-commit step of the git-hook test runs only on Linux. The 48 were run on WSL (Node 24) only; Windows and CI were not rerun after the overview and sync commands were added. The sync tests use a local bare repository, not a remote over the network or ssh. **Checked against the real tools, without a model (2026-11-10):** Codex 0.165 `app-server hooks/list` parsed the installed `hooks.json` with 3 hooks, no warnings or errors, all `untrusted` until you trust them in `/hooks`; Hermes 0.22.6 `hermes hooks test pre_llm_call` fired the installed hook through Hermes's own dispatcher (exit 0, valid `{"context": ...}` with the brief), and `hermes hooks list` shows it as not yet allowlisted. **Not tested:** the hooks firing inside a live Claude Code, Codex or Hermes session, and any agent behavior; no model was run. Rules 15 and 16 of the spec (history-based warnings) are not implemented.
 
 ## Instruction blocks
 
