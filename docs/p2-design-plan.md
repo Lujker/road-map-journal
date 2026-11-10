@@ -18,7 +18,7 @@ Make plans and journals stay current with little effort and few tokens, for seve
 - **Pointer** (5-8 lines in `AGENTS.md`/`CLAUDE.md`) has one variant per tier: tier 1 says where the board is and which card sections to update; only tier 2 mentions `brief` and `done`.
 - **Adopted projects:** tiers 2 and 3 apply to board-format projects. A project whose plan is one file stays at tier 0 or migrates with consent. A small config file (`board_version`, board path, status mapping) covers a board that lives outside `board/`.
 - **Distribution of `roadctl`:** one vendored file with a version line; `lint` warns when the board format is newer than the tool. Hooks need a stable path.
-- **Implementation language:** proposed Node (already required by the `skills` CLI and used by `scripts/`; `node:test`); standard library only; Windows tested from the first command. *Needs owner confirmation.*
+- **Implementation language:** Node (already required by the `skills` CLI and used by `scripts/`; `node:test`); standard library only; Windows tested from the first command. Confirmed by the owner 2026-11-10.
 
 ## Decisions recorded (owner, 2026-11-10)
 
@@ -31,14 +31,15 @@ Make plans and journals stay current with little effort and few tokens, for seve
 - Work modes (one item, a track, continuous) are separate from permissions, budget and external actions.
 - P2 does **not** wait for a log of observed failures. Cases from P1.1 are used as test fixtures when they exist.
 - Closing P1.3 (skill core cleanup and release 0.2.0) comes before P1.1 and P2.
+- **Freshness net (confirmed 2026-11-10):** git pre-commit `lint` (errors block a commit, warnings never do) plus agent hooks as reinforcement; without git, tiers 0-1 remain.
+- **Host for the first hook test and for the pilot (confirmed 2026-11-10):** Claude Code on Home WSL, one host for both.
 
 ## Open decisions
 
-1. **Freshness net:** git pre-commit `lint` with errors blocking and warnings never blocking, plus agent hooks as reinforcement (recommended; the owner has not chosen). Note that git exists only in some projects; tiers 0-1 are the fallback.
-2. Hermes Kanban bridge in the first version (default: no, P2.6).
-3. Agent for the first hook test and for the pilot: Claude Code recommended, one host for both.
-4. Implementation language (proposed Node).
-5. Defaults for size caps, `as_of` staleness, `brief` format, checkpoint cadence and budgets: set in P2.1/P2.4 with a one-line reason each, all configurable.
+1. Hermes Kanban bridge in the first version (default: no, P2.6).
+2. Defaults for size caps, `as_of` staleness, `brief` format, checkpoint cadence and budgets: set in P2.1/P2.4 with a one-line reason each, all configurable.
+
+Closed on 2026-11-10: freshness net, implementation language, host for hook test and pilot (see Decisions recorded).
 
 ## Order of work (revised)
 
@@ -87,7 +88,7 @@ Make plans and journals stay current with little effort and few tokens, for seve
 - **Hooks may:** inject context, run `lint`, remind once. **Hooks must not:** change statuses, set `approved`, block work, or fail on error (a failure degrades to a no-op).
 - **Where hooks are written:** the user's local, uncommitted settings by default; the installer shows what it will write, backs up, merges with existing hooks and can be undone. A committed project settings file would change every collaborator's environment and needs explicit consent. Codex requires reviewing a new or changed hook in `/hooks`.
 - **Injection:** agent-written card text reaches the model as context and cannot be made safe by wording; `brief` therefore emits only capped header fields. In a repository that accepts outside contributions, card files are an injection path.
-- **Git hook:** `pre-commit` running `lint` (pending open decision 1).
+- **Git hook:** `pre-commit` running `lint` (decided 2026-11-10).
 - **Accept when:** on one host a fresh session receives `brief` without a reminder and the Stop reminder fires once; other hosts are verified one at a time and recorded separately.
 
 ### P2.4 Long-running work protocol (text), split
@@ -119,12 +120,12 @@ Make plans and journals stay current with little effort and few tokens, for seve
 | Review point | Disposition |
 | --- | --- |
 | 2 Evidence before mechanism | **Owner declined to gate P2** on a failure log. Kept: P1.1 cases become fixtures when they exist. |
-| 3.1 Tiers, pointer per tier, distribution, language, adopted projects | Accepted; language proposed (Node), awaiting confirmation. |
+| 3.1 Tiers, pointer per tier, distribution, language, adopted projects | Accepted; Node confirmed by the owner 2026-11-10. |
 | 3.2 Header format, acceptance ids, completion states, `as_of`, ids, closed cards, version | Accepted; dropped `summary`, `parent`, `claim`, `rank` from v1. |
 | 3.3 `approved` as a record | Accepted. |
 | 3.4 Board generation and merges | Accepted. |
 | 3.5 P2.1 acceptance test | Accepted. |
-| 4 Freshness net, error/warning split | Accepted as recommendation; **not yet chosen by the owner** (open decision 1). |
+| 4 Freshness net, error/warning split | Accepted; confirmed by the owner 2026-11-10. |
 | 4 Stop reminder wording | Accepted. Of the review's claims I verified the documented eight-continuation cap and `additionalContext`; `stop_hook_active` is not in the current docs, so the plan uses its own once-only guard. |
 | 4 "`PreCompact` cannot save a checkpoint" | **Partly incorrect:** docs say its stdout becomes instructions for the compaction summary; it still cannot make the model write a file. `PostCompact` also exists. Table corrected. |
 | 4 Hook location, injection surface, trigger-table sourcing, activation first | Accepted. |

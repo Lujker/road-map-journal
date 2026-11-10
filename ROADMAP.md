@@ -15,7 +15,7 @@ The portable skill, documentation in English and Russian, an update script and p
 **Status: DONE (limited).** Installation, discovery, a per-host update script and removal of a conflicting account-synced Claude copy were checked, model-free, on Home WSL, Windows and the laptop (report-only on the real installs; changed-version updates in isolated homes). Updating is manual by design: the script or the targeted `npx skills` command, see [docs/updating.md](docs/updating.md). The first real changed-version update (release 0.2.0) was applied with the script on Home WSL, the laptop and Windows and verified at file level, with Claude Code listing the skill on all three; Hermes loaded the new reference on Windows and Codex discovery was checked only in an isolated home. Limits: Hermes layouts on other hosts are unverified; agent behavior with 0.2.0 was not re-evaluated. [Evidence](docs/evidence-p0.md).
 
 ### P0.3 — Establish provenance and license
-**Status: PARTIAL.** MIT; origin of each part is in [PROVENANCE.md](PROVENANCE.md). Remaining: the owner confirms how `assets/logo.png` was made and that it may be published under the repository license. Decision: any `roadctl` will be written independently from the public specification; code from private tools is not used.
+**Status: DONE (limited).** MIT; origin of each part is in [PROVENANCE.md](PROVENANCE.md). The owner confirmed on 2026-11-10 that `assets/logo.png` is the owner's own work with rights to publish it under MIT; the tool and method are not recorded. Decision: any `roadctl` is written independently from the public specification; code from private tools is not used. Contributions from others still need review when they arrive.
 
 ### P1.1 — Learn from real projects
 **Status: OPEN.** The owner tests the skill on real projects; fix cases where it rewrites conventions, loses decisions or misstates verification. Observed failures should be written down as cases (situation, what happened, what should have happened).
@@ -27,8 +27,8 @@ The portable skill, documentation in English and Russian, an update script and p
 **Status: DONE (limited).** Released as 0.2.0 (tag `v0.2.0`): long-running rules moved into `references/long-running.md`, new skill description, version in the frontmatter, [CHANGELOG](CHANGELOG.md), CI (passing), shorter roadmap and README opening. Applied to three hosts, see P0.2. Meaning of the moved rules is intended unchanged; behavior and activation were not re-evaluated (that is P1.1 and the first P2.3 check).
 
 ### P2 — Long-running work and a text board
-**Status: DESIGN, not started.** Plan: [docs/p2-design-plan.md](docs/p2-design-plan.md); review: [docs/p2-plan-review.md](docs/p2-plan-review.md). Corrections from the review and open discussions must be completed before any P2 item starts. Items P2.1–P2.6 are listed in the plan; each starts only when the owner selects it.
+**Status: IN PROGRESS — P2.1 started 2026-11-10 by the owner's instruction; later items not started.** Plan: [docs/p2-design-plan.md](docs/p2-design-plan.md) (revised after the [review](docs/p2-plan-review.md); its corrections and discussions are closed). Order: P2.1 → pointer → P2.2 → hooks → P2.4a and pilot → P2.4b and P2.6 only if needed. Current: P2.1 board specification, [docs/board-spec.md](docs/board-spec.md) (draft, acceptance test not run).
 
 ## Queue
 
-P1.1 (owner) → owner confirmation for P0.3 → P2 plan corrections → P2 items one at a time. P0.1 broader coverage stays deferred.
+P1.1 (owner) → P2 items one at a time, in the plan's order. P0.1 broader coverage stays deferred.
