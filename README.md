@@ -1,5 +1,7 @@
 # Road-map Journal
 
+**English** · [Русский](README.ru.md)
+
 Keep a project's roadmap, next steps and decision history useful across AI coding sessions. A portable [Agent Skill](https://agentskills.io/) for maintaining existing plans as well as starting a new one.
 
 > Early development: the skill has received scoped installation and short behavioral checks. Cross-agent discovery and behavior on long-running projects are not fully verified; please review changes before accepting them.
@@ -61,6 +63,8 @@ Ask your agent, for example:
 - “Продолжай разработку по согласованному пункту.”
 
 When starting a new plan, the skill discusses the desired way of working and asks about decisions it cannot infer. For deeper planning it can use `grill-me` if available; otherwise it can offer to install it or continue with its own structured questions. The optional skill is not automatically installed. An ordinary read-only question should not trigger an interview or create files.
+
+Synthetic examples in English and Russian, with expected behavior, are in [examples/](examples/README.md). They are proposed checks, not run results.
 
 ## Layout
 
