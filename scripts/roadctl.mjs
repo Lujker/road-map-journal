@@ -4,7 +4,8 @@
 // regenerates BOARD.md and makes small, mechanical edits. It never sets `approved` by itself
 // and never decides what is true; it only checks that references exist.
 //
-//   roadctl lint [--json]            check invariants; exit 1 on errors
+//   roadctl lint [--json]            check invariants; exit 1 on errors; --all lints every board of the workspace
+//   roadctl where                    print the board directory found for the current directory
 //   roadctl sync [--check]           regenerate board/BOARD.md (or verify it is current)
 //   roadctl brief                    short summary for an agent (header fields only)
 //   roadctl show <id> [--log N] [--commits N]
@@ -13,7 +14,7 @@
 //   roadctl done <id> --by NAME      review/doing -> done; refuses without evidence
 //   roadctl approve <id> --by NAME --scope implementation[+analysis+external] [--source REF]
 //   roadctl new <id> "title" [--status ready|idea]
-//   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | pre-commit
+//   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | pre-commit | pre-commit-all
 //   roadctl hook-install --claude|--codex|--hermes|--git [--apply] ; hook-uninstall (same flags)
 //
 // Global: --board <dir>, --date YYYY-MM-DD, --json (lint). Exit codes: 0 ok, 1 findings/refusal, 2 usage/error.
@@ -46,7 +47,50 @@ export function sanitize(s, n = 100) {
 
 // ---------------------------------------------------------------- board discovery
 
-export function findBoard(start, explicit) {
+const normName = (x) => String(x).toLowerCase().replace(/[_\s]+/g, '-');
+
+export function workspaceRoots(env = process.env) {
+  const h = os.homedir();
+  const roots = [env.ROADCTL_WORKSPACE?.trim(), path.join(h, 'projects', 'agent-workspace'), path.join(h, 'Projects', 'agent-workspace')].filter(Boolean);
+  return roots.filter((r) => fs.existsSync(path.join(r, 'projects')));
+}
+
+/** Boards in a central workspace: <workspace>/projects/<name>/board/config.json (+ optional "match" names in config). */
+export function workspaceBoards(ws) {
+  const base = path.join(ws, 'projects');
+  const out = [];
+  for (const e of fs.readdirSync(base, { withFileTypes: true })) {
+    const dir = path.join(base, e.name, 'board');
+    const cfg = path.join(dir, 'config.json');
+    if (!e.isDirectory() || !fs.existsSync(cfg)) continue;
+    let match = [];
+    try {
+      match = JSON.parse(fs.readFileSync(cfg, 'utf8')).match ?? [];
+    } catch {
+      /* a broken config is reported by lint, not here */
+    }
+    out.push({ name: e.name, dir, names: [e.name, ...match].map(normName) });
+  }
+  return out;
+}
+
+export function findWorkspaceBoard(start, env = process.env) {
+  for (const ws of workspaceRoots(env)) {
+    const boards = workspaceBoards(ws);
+    if (!boards.length) continue;
+    let d = path.resolve(start);
+    for (;;) {
+      const hit = boards.find((b) => b.names.includes(normName(path.basename(d))));
+      if (hit) return hit.dir;
+      const up = path.dirname(d);
+      if (up === d) break;
+      d = up;
+    }
+  }
+  return null;
+}
+
+export function findBoard(start, explicit, env = process.env) {
   if (explicit) {
     const dir = path.resolve(explicit);
     if (!fs.existsSync(path.join(dir, 'config.json'))) throw new Error(`no config.json in ${dir}`);
@@ -57,9 +101,10 @@ export function findBoard(start, explicit) {
     const c = path.join(d, 'board', 'config.json');
     if (fs.existsSync(c)) return path.join(d, 'board');
     const up = path.dirname(d);
-    if (up === d) return null;
+    if (up === d) break;
     d = up;
   }
+  return findWorkspaceBoard(start, env);
 }
 
 // ---------------------------------------------------------------- parsing
@@ -178,6 +223,15 @@ export function lint(board, opts = {}) {
     else if (stripGenerated(fs.readFileSync(bf, 'utf8')) !== stripGenerated(generateBoard(board))) add('error', 9, 'BOARD.md', 'out of date; run roadctl sync');
   }
   return f;
+}
+
+export function lintAll(ws) {
+  const out = [];
+  for (const b of workspaceBoards(ws)) {
+    const board = loadBoard(b.dir);
+    for (const f of lint(board)) out.push({ project: b.name, ...f });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------- BOARD.md
@@ -341,14 +395,26 @@ function readStdinJson() {
   }
 }
 
-const stateDir = (board) => {
+const gitRoot = (cwd) => {
   try {
-    return path.resolve(board.project, git(['rev-parse', '--git-dir'], board.project).trim());
+    return git(['rev-parse', '--show-toplevel'], cwd).trim();
   } catch {
-    const d = path.join(os.tmpdir(), `roadctl-${crypto.createHash('sha1').update(board.dir).digest('hex').slice(0, 12)}`);
-    fs.mkdirSync(d, { recursive: true });
-    return d;
+    return null;
   }
+};
+
+const stateDir = (board, cwd) => {
+  for (const c of [cwd, board.project]) {
+    if (!c) continue;
+    try {
+      return path.resolve(c, git(['rev-parse', '--git-dir'], c).trim());
+    } catch {
+      /* try the next candidate */
+    }
+  }
+  const d = path.join(os.tmpdir(), `roadctl-${crypto.createHash('sha1').update(board.dir).digest('hex').slice(0, 12)}`);
+  fs.mkdirSync(d, { recursive: true });
+  return d;
 };
 
 /** Text of the once-only reminder, or null. Shared by the Claude/Codex Stop hooks and the Hermes next-turn hook. */
@@ -357,21 +423,40 @@ export function stopReminder(board, payload = {}) {
   const doing = board.cards.filter((c) => statusOf(board, c) === 'doing');
   if (doing.length !== 1) return null;
   const card = doing[0];
+  const cwd = payload.cwd || process.cwd();
+  const root = gitRoot(cwd);
+  if (!root) return null;
   let porcelain;
   try {
-    porcelain = git(['status', '--porcelain'], board.project);
+    porcelain = git(['status', '--porcelain'], root);
   } catch {
     return null;
   }
-  const rel = path.relative(board.project, board.dir).split(path.sep).join('/');
-  const changed = porcelain.split('\n').filter(Boolean).map((l) => l.slice(3));
-  const outside = changed.filter((p) => !p.replace(/\\/g, '/').startsWith(`${rel}/`));
-  if (!outside.length || changed.length > outside.length) return null;
-  const marker = path.join(stateDir(board), 'roadctl-stop-state');
+  const changed = porcelain.split('\n').filter(Boolean).map((l) => l.slice(3).replace(/\\/g, '/'));
+  const relBoard = path.relative(root, board.dir);
+  const central = relBoard.startsWith('..') || path.isAbsolute(relBoard);
+  let outside;
+  let touched;
+  if (central) {
+    // The board lives in another repository (a central workspace): any change here counts as work,
+    // and the board counts as updated when its own directory has uncommitted changes there.
+    outside = changed;
+    try {
+      touched = git(['status', '--porcelain', '--', board.dir], board.project).trim().length > 0;
+    } catch {
+      touched = false;
+    }
+  } else {
+    const rel = relBoard.split(path.sep).join('/');
+    outside = changed.filter((p) => !p.startsWith(`${rel}/`));
+    touched = changed.length > outside.length;
+  }
+  if (!outside.length || touched) return null;
+  const marker = path.join(stateDir(board, cwd), 'roadctl-stop-state');
   const key = `${card.header.id}:${card.log.length}`;
   if (fs.existsSync(marker) && fs.readFileSync(marker, 'utf8') === key) return null;
   fs.writeFileSync(marker, key);
-  return `Card ${card.header.id} is doing and the working tree has changes outside the board, but the board was not updated. If you made progress or a decision, record it (roadctl log ${card.header.id} "..." or the card's Log); otherwise ignore this one-time reminder.`;
+  return `Card ${card.header.id} is doing and the working tree has changes, but the board was not updated. If you made progress or a decision, record it (roadctl log ${card.header.id} "..." or the card's Log); otherwise ignore this one-time reminder.`;
 }
 
 export function hookContext(event, payload, boardArg, host = 'claude') {
@@ -398,11 +483,11 @@ export function hookContext(event, payload, boardArg, host = 'claude') {
   if (event === 'hermes-pre-llm') {
     // Hermes only uses the return value of pre_llm_call: brief on the first turn of a session, a one-time reminder later.
     const session = String(payload.session_id ?? '');
-    const marker = path.join(stateDir(board), 'roadctl-hermes-session');
+    const marker = path.join(stateDir(board, payload.cwd), 'roadctl-hermes-session');
     const first = payload.extra?.is_first_turn === true || (session && (!fs.existsSync(marker) || fs.readFileSync(marker, 'utf8') !== session));
     if (session) fs.writeFileSync(marker, session);
     if (first) return { json: { context: brief(board) } };
-    const text = stopReminder(board, {});
+    const text = stopReminder(board, { cwd: payload.cwd });
     return text ? { json: { context: text } } : null;
   }
   return null;
@@ -418,6 +503,17 @@ export function runHook(event, payload, boardArg, io = { out: (s) => process.std
       for (const x of f) io.err(`${x.level} [${x.rule}] ${x.card}: ${x.msg}\n`);
       const errors = f.filter((x) => x.level === 'error');
       if (errors.length) io.err('roadctl: commit blocked by lint errors (fix them, or run roadctl sync if BOARD.md is stale).\n');
+      return errors.length ? 1 : 0;
+    }
+    if (event === 'pre-commit-all') {
+      const roots = workspaceRoots();
+      const cwd = path.resolve(process.cwd());
+      const ws = roots.find((r) => cwd === path.resolve(r) || cwd.startsWith(path.resolve(r) + path.sep)) ?? roots[0];
+      if (!ws) return 0;
+      const f = lintAll(ws);
+      for (const x of f) io.err(`${x.level} [${x.rule}] ${x.project}/${x.card}: ${x.msg}\n`);
+      const errors = f.filter((x) => x.level === 'error');
+      if (errors.length) io.err('roadctl: commit blocked by lint errors in the workspace boards.\n');
       return errors.length ? 1 : 0;
     }
     const r = hookContext(event, payload, boardArg, host);
@@ -540,7 +636,7 @@ export function editHermesConfig(text, { uninstall, self, node }) {
   return { text: out.replace(/\n/g, eol), note };
 }
 
-export function installHooks(kind, project, { apply, uninstall, self = SELF, node = 'node', codexHome, hermesHome }) {
+export function installHooks(kind, project, { apply, uninstall, self = SELF, node = 'node', codexHome, hermesHome, all = false }) {
   const log = [];
   const jsonHooks = (file, merge, remove, label) => {
     const cur = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
@@ -584,12 +680,12 @@ export function installHooks(kind, project, { apply, uninstall, self = SELF, nod
         if (apply) fs.rmSync(f);
       } else log.push('no roadctl pre-commit hook to remove');
     } else if (exists && !ours) {
-      log.push(`${f} already exists and is not managed by roadctl; not touching it. Add this line to it yourself:`, `node "${posix(self)}" hook pre-commit || exit 1`);
+      log.push(`${f} already exists and is not managed by roadctl; not touching it. Add this line to it yourself:`, `node "${posix(self)}" hook ${all ? 'pre-commit-all' : 'pre-commit'} || exit 1`);
     } else {
       log.push(`${apply ? 'writing' : 'would write'} ${f}`);
       if (apply) {
         fs.mkdirSync(hooksDir, { recursive: true });
-        fs.writeFileSync(f, `#!/bin/sh\n${marker}\n${node} "${posix(self)}" hook pre-commit\n`, { mode: 0o755 });
+        fs.writeFileSync(f, `#!/bin/sh\n${marker}\n${node} "${posix(self)}" hook ${all ? 'pre-commit-all' : 'pre-commit'}\n`, { mode: 0o755 });
       }
     }
   } else throw new Error('choose --claude, --codex, --hermes or --git');
@@ -601,7 +697,7 @@ export function installHooks(kind, project, { apply, uninstall, self = SELF, nod
 
 function parse(argv) {
   const o = { _: [], flags: {} };
-  const withValue = new Set(['--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node']);
+  const withValue = new Set(['--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -623,13 +719,26 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
     if (cmd === 'hook') return runHook(args[1], readStdinJson(), flags.board, io, flags.host === 'codex' ? 'codex' : 'claude');
     if (cmd === 'hook-install' || cmd === 'hook-uninstall') {
       const kind = flags.claude ? 'claude' : flags.codex ? 'codex' : flags.hermes ? 'hermes' : flags.git ? 'git' : null;
-      const dir = findBoard(process.cwd(), flags.board);
-      let project = dir ? path.dirname(dir) : process.cwd();
-      out(installHooks(kind, project, { apply: Boolean(flags.apply), uninstall: cmd === 'hook-uninstall', node: flags.node || 'node', codexHome: flags['codex-home'], hermesHome: flags['hermes-home'] }));
+      const dir = flags.all ? null : findBoard(process.cwd(), flags.board);
+      const project = flags.all ? process.cwd() : dir ? path.dirname(dir) : process.cwd();
+      out(installHooks(kind, project, { apply: Boolean(flags.apply), uninstall: cmd === 'hook-uninstall', node: flags.node || 'node', codexHome: flags['codex-home'], hermesHome: flags['hermes-home'], all: Boolean(flags.all) }));
       return 0;
     }
+    if (flags.workspace) process.env.ROADCTL_WORKSPACE = flags.workspace;
+    if (cmd === 'lint' && flags.all) {
+      const roots = workspaceRoots();
+      if (!roots.length) throw new Error('no workspace found; set ROADCTL_WORKSPACE or use --workspace DIR');
+      const f = lintAll(roots[0]);
+      if (flags.json) out(JSON.stringify(f, null, 2));
+      else {
+        for (const x of f) out(`${x.level} [${x.rule}] ${x.project}/${x.card}: ${x.msg}`);
+        out(`${workspaceBoards(roots[0]).length} board(s), ${f.filter((x) => x.level === 'error').length} error(s), ${f.filter((x) => x.level === 'warning').length} warning(s)`);
+      }
+      return f.some((x) => x.level === 'error') ? 1 : 0;
+    }
     const dir = findBoard(process.cwd(), flags.board);
-    if (!dir) throw new Error('no board found (looked for board/config.json upwards); use --board <dir>');
+    if (cmd === 'where') return dir ? (out(dir), 0) : 1;
+    if (!dir) throw new Error('no board found (looked for board/config.json upwards, then in the central workspace); use --board <dir> or set ROADCTL_WORKSPACE');
     const board = loadBoard(dir);
     switch (cmd) {
       case 'lint': {

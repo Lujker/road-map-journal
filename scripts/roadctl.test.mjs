@@ -24,7 +24,7 @@ function project({ git = false } = {}) {
   return root;
 }
 const load = (root) => rc.loadBoard(path.join(root, 'board'));
-const cli = (root, args, input = '') => spawnSync(process.execPath, [SELF, ...args], { cwd: root, input, encoding: 'utf8', env: { ...process.env, ROADCTL_DATE: '2026-11-10' } });
+const cli = (root, args, input = '', env = {}) => spawnSync(process.execPath, [SELF, ...args], { cwd: root, input, encoding: 'utf8', env: { ...process.env, ROADCTL_DATE: '2026-11-10', ...env } });
 const edit = (root, name, fn) => {
   const f = fs.readdirSync(path.join(root, 'board', 'cards')).find((x) => x.startsWith(name));
   const p = path.join(root, 'board', 'cards', f);
@@ -345,4 +345,83 @@ test('hermes hook install through the CLI uses the given home and backs up', () 
   assert.ok(fs.readdirSync(home).some((n) => n.includes('roadctl-backup')));
   assert.equal(cli(root, ['hook-uninstall', '--hermes', '--hermes-home', home, '--apply']).status, 0);
   assert.equal(fs.readFileSync(cfg, 'utf8').trimEnd(), 'agent:\n  max_turns: 5');
+});
+
+// ------------------------------------------------------------ central workspace
+
+const gitIn = (dir, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: dir, stdio: 'ignore' });
+
+function central({ match } = {}) {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'rcw-'));
+  const ws = path.join(base, 'agent-workspace');
+  const board = path.join(ws, 'projects', 'my-app', 'board');
+  fs.cpSync(EXAMPLE, board, { recursive: true });
+  if (match) {
+    const cfg = path.join(board, 'config.json');
+    fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg, 'utf8')), match }));
+    cli(ws, ['sync', '--board', board]);
+  }
+  gitIn(ws, 'init', '-q');
+  gitIn(ws, 'add', '-A');
+  gitIn(ws, 'commit', '-q', '-m', 'init');
+  const code = path.join(base, 'work', 'my_app', 'frontend');
+  fs.mkdirSync(code, { recursive: true });
+  fs.writeFileSync(path.join(code, 'a.txt'), 'x');
+  gitIn(path.join(base, 'work', 'my_app'), 'init', '-q');
+  gitIn(path.join(base, 'work', 'my_app'), 'add', '-A');
+  gitIn(path.join(base, 'work', 'my_app'), 'commit', '-q', '-m', 'init');
+  return { base, ws, board, code, codeRoot: path.join(base, 'work', 'my_app'), env: { ROADCTL_WORKSPACE: ws } };
+}
+
+test('findBoard: project-local board first, then the central workspace by ancestor name, "match" aliases, explicit path, none', () => {
+  const c = central({ match: ['ai_assistant'] });
+  assert.equal(rc.findBoard(c.code, null, c.env), c.board, 'my_app ancestor matches my-app');
+  const alias = path.join(c.base, 'work', 'ai_assistant', 'AiAssistant');
+  fs.mkdirSync(alias, { recursive: true });
+  assert.equal(rc.findBoard(alias, null, c.env), c.board, 'match alias');
+  const local = project();
+  assert.equal(rc.findBoard(path.join(local, 'board'), null, c.env), path.join(local, 'board'), 'local board wins');
+  assert.equal(rc.findBoard(c.code, c.board, {}), c.board, 'explicit');
+  const other = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-none-'));
+  assert.equal(rc.findBoard(other, null, c.env), null);
+});
+
+test('where, brief and lint work from a code directory with a board in the central workspace', () => {
+  const c = central();
+  assert.equal(cli(c.code, ['where'], '', c.env).stdout.trim(), c.board);
+  assert.match(cli(c.code, ['brief'], '', c.env).stdout, /DOING \[W-3\]/);
+  assert.equal(cli(c.code, ['lint'], '', c.env).status, 0);
+  assert.equal(cli(c.code, ['where'], '', { ROADCTL_WORKSPACE: path.join(c.base, 'nowhere'), HOME: c.base, USERPROFILE: c.base }).status, 1);
+});
+
+test('hooks with a central board: session-start brief; Stop reminds once about the code repo, silent when the board changed', () => {
+  const c = central();
+  const ss = JSON.parse(cli(c.code, ['hook', 'session-start'], JSON.stringify({ cwd: c.code }), c.env).stdout);
+  assert.match(ss.hookSpecificOutput.additionalContext, /DOING \[W-3\]/);
+  const stop = () => cli(c.code, ['hook', 'stop'], JSON.stringify({ cwd: c.code }), c.env).stdout;
+  assert.equal(stop(), '', 'clean code repo: silent');
+  fs.writeFileSync(path.join(c.code, 'a.txt'), 'changed');
+  assert.match(JSON.parse(stop()).hookSpecificOutput.additionalContext, /W-3/);
+  assert.equal(stop(), '', 'once');
+  // a new Log state allows another reminder; an uncommitted board edit silences it
+  const c2 = central();
+  fs.writeFileSync(path.join(c2.code, 'a.txt'), 'changed');
+  edit(c2.ws.replace(/agent-workspace$/, 'agent-workspace/projects/my-app'), 'W-3', (t) => t + '\n');
+  assert.equal(cli(c2.code, ['hook', 'stop'], JSON.stringify({ cwd: c2.code }), c2.env).stdout, '', 'board was updated');
+});
+
+test('lint --all and pre-commit-all cover every board in the workspace', () => {
+  const c = central();
+  const other = path.join(c.ws, 'projects', 'second', 'board');
+  fs.cpSync(EXAMPLE, other, { recursive: true });
+  assert.equal(cli(c.ws, ['lint', '--all'], '', c.env).status, 0);
+  edit(c.ws.replace(/agent-workspace$/, 'agent-workspace/projects/second'), 'W-1', (t) => t.replace('accepted: владелец, 2026-10-30\n', ''));
+  const r = cli(c.ws, ['lint', '--all'], '', c.env);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /second\/W-1/);
+  const h = cli(c.ws, ['hook', 'pre-commit-all'], '', c.env);
+  assert.equal(h.status, 1);
+  assert.match(h.stderr, /commit blocked/);
+  assert.equal(cli(c.ws, ['hook-install', '--git', '--all', '--apply'], '', c.env).status, 0);
+  assert.match(fs.readFileSync(path.join(c.ws, '.git', 'hooks', 'pre-commit'), 'utf8'), /hook pre-commit-all/);
 });

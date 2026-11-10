@@ -2,6 +2,10 @@
 
 Read this when the project has `board/config.json`: its plan is a short generated board plus one file per card. The full format is `docs/board-spec.md` in the road-map-journal repository (https://github.com/Lujker/road-map-journal); this is the part an agent needs. If the project instead keeps its own layout, ignore this file and follow the project.
 
+## Where the board lives
+
+The board is in the project (`board/`) or in a central workspace outside the project (`<workspace>/projects/<name>/board/`); the owner's global or project instructions say which. `roadctl where` prints the board found for the current directory. If the instructions say plans live in a central workspace, create new boards, cards and notes there, not in the project repository, and leave a project's existing plan where it is unless the owner asks to migrate it.
+
 ## Read
 
 - Read `board/BOARD.md` first, then only the cards you need in `board/cards/<id>-<slug>.md`. `BOARD.md` is generated; do not edit it by hand.

@@ -3,7 +3,7 @@ name: road-map-journal
 description: "Use when working with a project's roadmap, development plan, queue, work journal or item status: asking what is next, continuing or resuming planned work, recording a decision, updating an item, or reconciling status with evidence. Follows the project's own conventions. Triggers include «дорожная карта», «что дальше по плану?», «продолжай разработку по плану», «запиши решение», «обнови статус пункта»."
 license: MIT
 metadata:
-  version: "0.3.0"
+  version: "0.4.0"
 ---
 
 # Roadmap and work journal

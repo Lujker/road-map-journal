@@ -2,6 +2,11 @@
 
 Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. Behavior was not re-evaluated for any release; see [ROADMAP.md](ROADMAP.md).
 
+## 0.4.0 — 2026-11-10
+
+- `references/board.md`: a board may live in a central workspace outside the project; where to create new boards when the owner's instructions say so.
+- Repository (not part of the installed skill): `roadctl` finds a board in a central workspace (`where`, `lint --all`, `pre-commit-all`, Stop reminder across two repositories), 31 model-free tests; Codex and Hermes hook support; `update-installed.mjs --roadctl`. Hooks were checked with the hosts' own model-free tools only.
+
 ## 0.3.0 — 2026-11-10
 
 - New `references/board.md`: how to work in a project whose plan is a card board (core links to it only when `board/config.json` exists).
