@@ -306,7 +306,8 @@ test('codex hook install merges with existing hooks, is idempotent and uninstall
   assert.deepEqual(Object.keys(s1.hooks).sort(), ['PreToolUse', 'SessionStart', 'Stop']);
   const h = s1.hooks.Stop[0].hooks[0];
   assert.match(h.command, /roadctl\.mjs.* hook stop --host codex/);
-  assert.match(h.commandWindows, /^node ".*roadctl\.mjs" hook stop --host codex$/);
+  if (process.platform === 'win32') assert.match(h.commandWindows, /^node ".*roadctl\.mjs" hook stop --host codex$/);
+  else assert.equal(h.commandWindows, undefined);
   assert.equal(h.timeout, 10);
   cli(root, ['hook-install', '--codex', '--codex-home', home, '--apply']);
   assert.equal(JSON.parse(fs.readFileSync(path.join(home, 'hooks.json'), 'utf8')).hooks.Stop.length, 1, 'idempotent');

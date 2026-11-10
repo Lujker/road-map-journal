@@ -482,7 +482,9 @@ export function mergeCodexHooks(settings, self = SELF, node = 'node') {
   for (const [event, arg] of [['SessionStart', 'session-start'], ['Stop', 'stop']]) {
     const groups = (out.hooks[event] ??= []);
     if (!groups.some((g) => (g.hooks ?? []).some((h) => isOursCodex(h) && h.command.includes(` hook ${arg} `)))) {
-      groups.push({ hooks: [{ type: 'command', command: codexCommand(self, node, arg), commandWindows: codexCommand(self, node, arg, true), timeout: 10 }] });
+      const hook = { type: 'command', command: codexCommand(self, node, arg), timeout: 10 };
+      if (process.platform === 'win32') hook.commandWindows = codexCommand(self, node, arg, true);
+      groups.push({ hooks: [hook] });
     }
   }
   return out;
