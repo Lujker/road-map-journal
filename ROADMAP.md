@@ -12,7 +12,7 @@ The portable skill, documentation in English and Russian, an update script and p
 **Status: PARTIAL — short comparison complete; broader coverage deferred.** On three hosts the short checks gave correct answers with and without the skill, so they show no benefit and do not establish reliability, native activation or effect on long tasks. Remaining scenarios in [evals/scenarios.md](evals/scenarios.md) are deferred, not passed; any future evaluation targets long-running work with a separately agreed scope and budget. [Evidence](docs/evidence-p0.md).
 
 ### P0.2 — Verify installation and discovery
-**Status: DONE (limited).** Installation, discovery, a per-host update script and removal of a conflicting account-synced Claude copy were checked, model-free, on Home WSL, Windows and the laptop (report-only on the real installs; changed-version updates in isolated homes). Updating is manual by design: the script or the targeted `npx skills` command, see [docs/updating.md](docs/updating.md). Limits: no changed-version update has yet run on a real host (release 0.2.0 will be the first); Hermes layouts on other hosts are unverified. [Evidence](docs/evidence-p0.md).
+**Status: DONE (limited).** Installation, discovery, a per-host update script and removal of a conflicting account-synced Claude copy were checked, model-free, on Home WSL, Windows and the laptop (report-only on the real installs; changed-version updates in isolated homes). Updating is manual by design: the script or the targeted `npx skills` command, see [docs/updating.md](docs/updating.md). The first real changed-version update (release 0.2.0) was applied with the script on Home WSL, the laptop and Windows and verified at file level, with Claude Code listing the skill on all three; Hermes loaded the new reference on Windows and Codex discovery was checked only in an isolated home. Limits: Hermes layouts on other hosts are unverified; agent behavior with 0.2.0 was not re-evaluated. [Evidence](docs/evidence-p0.md).
 
 ### P0.3 — Establish provenance and license
 **Status: PARTIAL.** MIT; origin of each part is in [PROVENANCE.md](PROVENANCE.md). Remaining: the owner confirms how `assets/logo.png` was made and that it may be published under the repository license. Decision: any `roadctl` will be written independently from the public specification; code from private tools is not used.
@@ -24,11 +24,11 @@ The portable skill, documentation in English and Russian, an update script and p
 **Status: DONE (limited).** [README.ru.md](README.ru.md) and three synthetic [examples](examples/README.md) were drafted by an agent; checked only for structure, no native-reader review, examples not run. No further languages planned.
 
 ### P1.3 — Skill core cleanup and first release
-**Status: IN PROGRESS.** Move owner-specific and long-running rules out of the skill core into `references/`, improve the skill description for activation, add a skill version, [CHANGELOG](CHANGELOG.md), release tags and CI. Owner decision 2026-11-10 to do this before P1.1. Not yet run on a real host; behavior was not re-evaluated.
+**Status: DONE (limited).** Released as 0.2.0 (tag `v0.2.0`): long-running rules moved into `references/long-running.md`, new skill description, version in the frontmatter, [CHANGELOG](CHANGELOG.md), CI (passing), shorter roadmap and README opening. Applied to three hosts, see P0.2. Meaning of the moved rules is intended unchanged; behavior and activation were not re-evaluated (that is P1.1 and the first P2.3 check).
 
 ### P2 — Long-running work and a text board
 **Status: DESIGN, not started.** Plan: [docs/p2-design-plan.md](docs/p2-design-plan.md); review: [docs/p2-plan-review.md](docs/p2-plan-review.md). Corrections from the review and open discussions must be completed before any P2 item starts. Items P2.1–P2.6 are listed in the plan; each starts only when the owner selects it.
 
 ## Queue
 
-P1.3 → P1.1 (owner) → owner confirmation for P0.3 → P2 plan corrections → P2 items one at a time. P0.1 broader coverage stays deferred.
+P1.1 (owner) → owner confirmation for P0.3 → P2 plan corrections → P2 items one at a time. P0.1 broader coverage stays deferred.
