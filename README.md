@@ -92,4 +92,4 @@ The source skill is model-neutral. A particular agent may have different skill d
 
 See [ROADMAP.md](ROADMAP.md) for the next development tasks and [evaluation scenarios](evals/scenarios.md) for proposed behavioral checks. Those scenarios are not results. No superiority over alternatives or cross-agent compatibility is claimed without running comparable tests.
 
-Issues and contributions are welcome. Do not include private project plans, tokens, customer information or session transcripts in reports. The public draft is available under the [MIT License](LICENSE). Do not copy substantial third-party material without compatible permissions and attribution.
+See [PROVENANCE.md](PROVENANCE.md) for the origin of the repository's material. Issues and contributions are welcome. Do not include private project plans, tokens, customer information or session transcripts in reports. The public draft is available under the [MIT License](LICENSE). Do not copy substantial third-party material without compatible permissions and attribution.

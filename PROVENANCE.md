@@ -1,0 +1,11 @@
+# Provenance
+
+What each part of this repository is and what is **not** established. Update it when material is added. The repository is offered under the [MIT License](LICENSE).
+
+| Part | Origin | Notes |
+| --- | --- | --- |
+| `skills/road-map-journal/` | Independently drafted by the repository owner with AI coding-agent assistance; no text copied from another skill. | The portable skill and its `references/`. |
+| `scripts/`, `evals/`, `examples/`, `README*.md`, `ROADMAP.md`, `CONTRIBUTING.md` | Written by the repository owner with AI coding-agent assistance. | Scripts use only Node and Python standard libraries; no third-party code is vendored. The `skills` CLI is invoked through `npx` and is not copied here. |
+| `assets/logo.png` | Generic map-and-pin artwork, 512 px, no text or third-party marks visible. | **How it was made and its licensing are not recorded in this repository.** Pending owner confirmation that it may be published under the repository license. |
+
+Not covered: any code or text from private tools. Do not add such material until its license route is decided and recorded here. Contributors: see [CONTRIBUTING.md](CONTRIBUTING.md); submit only material you may license under MIT.
