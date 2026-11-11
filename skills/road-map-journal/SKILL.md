@@ -1,6 +1,6 @@
 ---
 name: road-map-journal
-description: "Use when working with a project's roadmap, development plan, queue, work journal or item status: asking what is next, continuing or resuming planned work, recording a decision, updating an item, or reconciling status with evidence. Follows the project's own conventions. Triggers include «дорожная карта», «что дальше по плану?», «продолжай разработку по плану», «запиши решение», «обнови статус пункта»."
+description: "Use when working with a project's roadmap, development plan, queue, work journal or item status: asking what is next, continuing or resuming planned work, recording a decision, updating an item, or reconciling status with evidence. Follows the project's own conventions. Triggers include «дорожная карта», «что дальше по плану?», «продолжай разработку по плану», «запиши решение», «обнови статус пункта», «давай составим список агентов и исполнителей»."
 license: MIT
 metadata:
   version: "0.4.0"
@@ -50,4 +50,5 @@ After an authorized edit, check the affected status, queue, links, and consisten
 - [Scenarios](references/scenarios.md) — concise examples of mode and scope choices.
 - [Long-running work](references/long-running.md) — tracks, checkpoints, handoff and recovery, pause and stop, acceptance, budgets, shared checkouts.
 - [Board projects](references/board.md) — working in a project whose plan is a card board.
+- [Executors and the registry](references/executors.md) — building or reviewing the list of agents that may take delegated work, with the owner.
 - [Multi-repository reconciliation](references/multi-repo-sync.md) — preserve work and distinguish recorded, Git and live state across checkouts.

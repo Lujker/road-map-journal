@@ -581,7 +581,7 @@ const dispatched = () => {
 test('help: every dispatcher command has help <cmd> and <cmd> --help with the same text', () => {
   const root = project();
   const cmds = dispatched();
-  for (const c of ['status', 'list', 'next', 'brief', 'show', 'where', 'lint', 'log', 'new', 'review', 'sync', 'pull', 'save', 'approve', 'done', 'hook', 'hook-install', 'hook-uninstall', 'instructions-install', 'instructions-uninstall', 'version', 'delegate', 'tasks', 'claim', 'report', 'accept', 'return', 'agents-install', 'agents-uninstall']) assert.ok(cmds.includes(c), `dispatcher lost ${c}?`);
+  for (const c of ['status', 'list', 'next', 'brief', 'show', 'where', 'lint', 'log', 'new', 'review', 'sync', 'pull', 'save', 'approve', 'done', 'hook', 'hook-install', 'hook-uninstall', 'instructions-install', 'instructions-uninstall', 'version', 'delegate', 'tasks', 'claim', 'report', 'accept', 'return', 'agents-install', 'agents-uninstall', 'limits']) assert.ok(cmds.includes(c), `dispatcher lost ${c}?`);
   assert.deepEqual(cmds.filter((c) => !rc.COMMANDS[c]), [], 'dispatcher commands without a help entry');
   assert.deepEqual(Object.keys(rc.COMMANDS).filter((c) => !cmds.includes(c)), [], 'help entries without a dispatcher command');
   for (const c of cmds) {
@@ -1416,4 +1416,360 @@ test('report and return keep underscores, asterisks and brackets, drop backticks
   const logLine = cardText(root).split('\n').find((l) => l.includes('ab c d'));
   assert.ok(logLine && logLine.length < 450, 'plain log keeps stripping and its cap of 400');
   assert.equal(rc.sanitize('a_b *c* [d]'), 'ab c d');
+});
+
+// ---------------------------------------------------------------- limits: subscription limits and the owner's reserve (fake codex and claude on PATH; no model, no real provider)
+
+const FAR = 4102444800; // 2100-01-01: windows that never reset during a test
+const FAKE_CODEX = `#!/usr/bin/env node
+const fs = require('fs');
+const log = (s) => process.env.FAKE_LOG && fs.appendFileSync(process.env.FAKE_LOG, s + '\\n');
+const mode = process.env.FAKE_MODE || 'ok';
+log('codex ' + process.argv.slice(2).join(' '));
+if (mode === 'exit') { console.error('boom from fake codex'); process.exit(1); }
+if (mode === 'hang') setInterval(() => {}, 1000);
+else {
+  const send = (o) => process.stdout.write(JSON.stringify(o) + '\\n');
+  const rl = require('readline').createInterface({ input: process.stdin });
+  rl.on('line', (line) => {
+    const m = JSON.parse(line);
+    log('rpc ' + m.method + (m.params && m.params.clientInfo ? ' client=' + m.params.clientInfo.name : ''));
+    if (m.id === 1) send({ jsonrpc: '2.0', id: 1, result: { userAgent: 'fake' } });
+    if (m.id === 2) {
+      if (mode === 'rpcerror') return send({ jsonrpc: '2.0', id: 2, error: { code: -1, message: 'not logged in' } });
+      const reset = Number(process.env.FAKE_RESET || ${FAR});
+      send({ jsonrpc: '2.0', id: 2, result: { rateLimits: {
+        primary: { usedPercent: Number(process.env.FAKE_5H ?? 10), windowDurationMins: 300, resetsAt: reset },
+        secondary: { usedPercent: Number(process.env.FAKE_7D ?? 20), windowDurationMins: 10080, resetsAt: reset + 86400 } } } });
+    }
+  });
+}
+`;
+const FAKE_CLAUDE = `#!/usr/bin/env node
+const fs = require('fs');
+const log = (s) => process.env.FAKE_LOG && fs.appendFileSync(process.env.FAKE_LOG, s + '\\n');
+const mode = process.env.FAKE_MODE || 'ok';
+log('claude ' + process.argv.slice(2).map((a) => JSON.stringify(a)).join(' '));
+log('cwd-entries ' + fs.readdirSync(process.cwd()).length);
+if (mode === 'exit') { console.error('boom from fake claude'); process.exit(1); }
+if (mode === 'hang') setInterval(() => {}, 1000);
+else {
+  const reset = Number(process.env.FAKE_RESET || ${FAR});
+  const out = (o) => console.log(JSON.stringify(o));
+  out({ type: 'system', subtype: 'init', model: 'claude-haiku-5-5' });
+  if (mode !== 'noevent') out({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: {
+    five_hour: { utilization: Number(process.env.FAKE_U5 ?? 0.1), resetsAt: reset },
+    seven_day: { utilization: Number(process.env.FAKE_U7 ?? 0.2), resetsAt: reset + 86400 },
+    seven_day_opus: { utilization: 0.99, resetsAt: reset } } } });
+  out({ type: 'assistant', message: { content: [{ type: 'text', text: 'ok' }] } });
+  out({ type: 'result', subtype: 'success' });
+}
+`;
+const FAKE_KIMI = `#!/usr/bin/env node
+const mode = process.env.FAKE_MODE || 'ok';
+if (mode === 'garbage') return console.log('not json');
+console.log(JSON.stringify({ windows: [
+  { name: 'five_hour', used_percent: Number(process.env.FAKE_5H ?? 12), resets_at: '2100-01-01T05:00:00Z' },
+  { name: 'monthly', used_percent: Number(process.env.FAKE_7D ?? 30), resets_at: '2100-02-01T00:00:00Z' }] }));
+`;
+let fakeBin = null;
+const fakes = () => {
+  if (fakeBin) return fakeBin;
+  fakeBin = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-fakebin-'));
+  for (const [n, t] of [['codex', FAKE_CODEX], ['claude', FAKE_CLAUDE], ['kimi-limits', FAKE_KIMI]]) fs.writeFileSync(path.join(fakeBin, n), t, { mode: 0o755 });
+  return fakeBin;
+};
+const LSKIP = { skip: process.platform === 'win32' && 'fake executables are shell scripts' };
+const sandbox = (extraPath = true) => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-lim-'));
+  const sb = { dir: d, cwd: path.join(d, 'cwd'), cache: path.join(d, 'cache'), state: path.join(d, 'state'), log: path.join(d, 'fake.log') };
+  fs.mkdirSync(sb.cwd);
+  sb.env = { PATH: extraPath ? `${fakes()}${path.delimiter}${process.env.PATH}` : path.join(d, 'empty'), XDG_CACHE_HOME: sb.cache, XDG_STATE_HOME: sb.state, HOME: d, USERPROFILE: d, FAKE_LOG: sb.log, ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: '2026-11-11T10:00:00Z', ROADCTL_PROBE_TIMEOUT_MS: '20000' };
+  sb.calls = (what) => (fs.existsSync(sb.log) ? fs.readFileSync(sb.log, 'utf8').split('\n').filter((l) => l.startsWith(what)) : []);
+  return sb;
+};
+const lcli = (sb, args, env = {}) => cli(sb.cwd, args, '', { ...sb.env, ...env });
+const regFile = (obj) => writeRegistry({ version: 1, roles: {}, agents: {}, ...obj });
+
+test('limits: parsers for codex, claude stream-json and command output; boundary math', () => {
+  const codex = rc.parseCodexRateLimits({ rateLimits: { primary: { usedPercent: 12, windowDurationMins: 300, resetsAt: 1794409200 }, secondary: { usedPercent: 57.5, windowDurationMins: 10080, resetsAt: 1794999999 } } });
+  assert.deepEqual(codex, [{ name: 'five_hour', used_percent: 12, resets_at: '2026-11-11T15:00:00Z' }, { name: 'seven_day', used_percent: 57.5, resets_at: '2026-11-18T11:06:39Z' }]);
+  assert.deepEqual(rc.parseCodexRateLimits({ rateLimits: { primary: { usedPercent: 5, windowDurationMins: 10080 }, secondary: { usedPercent: 6, windowDurationMins: 43200 } } }).map((w) => w.name), ['seven_day', 'other'], 'mapped by windowDurationMins, not by position');
+  assert.throws(() => rc.parseCodexRateLimits({ rateLimits: {} }), /no rateLimits windows/);
+  const stream = ['{"type":"system"}', 'noise', JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { unifiedWindows: { five_hour: { utilization: 0.07, resetsAt: 1794409200 }, seven_day: { utilization: 0.76, resetsAt: 1794999999 }, seven_day_opus: { utilization: 0.9 } } } }), '{"type":"result"}'].join('\n');
+  assert.deepEqual(rc.parseClaudeStream(stream).map((w) => [w.name, w.used_percent]), [['five_hour', 7], ['seven_day', 76]], 'fraction to percent, 0.07 without float noise; other keys ignored');
+  assert.throws(() => rc.parseClaudeStream('{"type":"result"}'), /no rate_limit_event/);
+  assert.deepEqual(rc.parseCommandOutput('{"windows":[{"name":"daily","used_percent":3,"resets_at":"2100-01-01T00:00:00Z"}]}'), [{ name: 'other', used_percent: 3, resets_at: '2100-01-01T00:00:00Z' }]);
+  assert.throws(() => rc.parseCommandOutput('{"windows":[{"name":"five_hour","used_percent":101}]}'), /used_percent/);
+  assert.deepEqual(rc.splitCommand('kimi --json "a b" \'c d\''), ['kimi', '--json', 'a b', 'c d']);
+  const ev = (five, seven, reserve = rc.DEFAULT_RESERVE) => rc.evaluateLimits({ state: 'known', windows: [{ name: 'five_hour', used_percent: five }, { name: 'seven_day', used_percent: seven }] }, reserve).verdict;
+  assert.equal(ev(84.99, 0), 'allowed');
+  assert.equal(ev(85, 0), 'reserve', 'exactly the reserve left is NOT above the reserve');
+  assert.equal(ev(0, 89.99), 'allowed');
+  assert.equal(ev(0, 90), 'reserve');
+  assert.equal(ev(85, 0, { five_hour: 5, seven_day: 10 }), 'allowed');
+  assert.equal(rc.evaluateLimits({ state: 'unknown' }, rc.DEFAULT_RESERVE).verdict, 'unknown');
+  assert.deepEqual(rc.reserveFor(null, 'claude'), { seven_day: 10, five_hour: 15 });
+});
+
+test('limits --check codex: JSON-RPC handshake, reserve boundaries 85/84 five-hour and 90/89 weekly, reset time in the message', LSKIP, () => {
+  const sb = sandbox();
+  const chk = (five, seven, extra = []) => lcli(sb, ['limits', '--check', 'codex', '--fresh', ...extra], { FAKE_5H: String(five), FAKE_7D: String(seven), FAKE_RESET: '1794409200' });
+  const ok = chk(84, 89);
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /codex: allowed \(five_hour 84% used, 16% left, reserve 15%; seven_day 89% used, 11% left, reserve 10%\)/);
+  const five = chk(85, 0);
+  assert.equal(five.status, 1);
+  assert.equal(five.stdout, '', 'a refusal goes to stderr');
+  assert.match(five.stderr, /reserve reached: five_hour has 15% left, the owner's reserve is 15%; resets at 2026-11-11T15:00:00Z/);
+  const week = chk(0, 90);
+  assert.equal(week.status, 1);
+  assert.match(week.stderr, /seven_day has 10% left, the owner's reserve is 10%; resets at 2026-11-12T15:00:00Z/);
+  const both = chk(99, 99);
+  assert.match(both.stderr, /five_hour has 1% left.*seven_day has 1% left/);
+  // the handshake: initialize with our client name, then initialized, then the read; no model, no other arguments
+  const rpc = sb.calls('rpc');
+  assert.deepEqual(rpc.slice(0, 3), ['rpc initialize client=roadctl', 'rpc initialized', 'rpc account/rateLimits/read']);
+  assert.ok(sb.calls('codex').every((l) => l === 'codex app-server'));
+  const j = JSON.parse(chk(10, 20, ['--json']).stdout);
+  assert.equal(j.code, 0);
+  assert.equal(j.verdict, 'allowed');
+  assert.deepEqual(j.result.windows.map((w) => w.name), ['five_hour', 'seven_day']);
+  assert.equal(j.result.state, 'known');
+});
+
+test('limits --check claude: one tiny light-model request in an empty directory; reserve and per-provider override', LSKIP, () => {
+  const sb = sandbox();
+  const r = lcli(sb, ['limits', '--check', 'claude', '--fresh'], { FAKE_U5: '0.84', FAKE_U7: '0.89' });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /claude: allowed \(five_hour 84% used, 16% left, reserve 15%; seven_day 89% used, 11% left, reserve 10%\)/, 'seven_day_opus is ignored');
+  const call = sb.calls('claude');
+  assert.equal(call.length, 1);
+  assert.equal(call[0], 'claude "-p" "Reply with: ok" "--model" "claude-haiku-5-5" "--output-format" "stream-json" "--verbose" "--max-turns" "1" "--tools" ""');
+  assert.deepEqual(sb.calls('cwd-entries'), ['cwd-entries 0'], 'run in an empty temp directory');
+  assert.equal(lcli(sb, ['limits', '--check', 'claude', '--fresh'], { FAKE_U5: '0.85' }).status, 1);
+  // the owner lowers the reserve for everything, then for one provider
+  const lower = regFile({ limits: { reserve: { five_hour: 5 } } });
+  assert.equal(lcli(sb, ['limits', '--check', 'claude', '--fresh'], { FAKE_U5: '0.85', ROADCTL_REGISTRY: lower }).status, 0, 'registry limits.reserve');
+  const per = regFile({ limits: { reserve: { five_hour: 5 } }, providers: { claude: { reserve: { five_hour: 20 } } } });
+  const p = lcli(sb, ['limits', '--check', 'claude', '--fresh'], { FAKE_U5: '0.85', ROADCTL_REGISTRY: per });
+  assert.equal(p.status, 1, 'the provider override beats the global reserve');
+  assert.match(p.stderr, /the owner's reserve is 20%/);
+  assert.equal(lcli(sb, ['limits', '--check', 'codex', '--fresh'], { FAKE_5H: '85', ROADCTL_REGISTRY: per }).status, 0, 'codex keeps the global 5%');
+  // a custom probe model
+  const m = regFile({ providers: { claude: { probe_model: 'claude-test-light' } } });
+  lcli(sb, ['limits', '--check', 'claude', '--fresh'], { ROADCTL_REGISTRY: m });
+  assert.match(sb.calls('claude').at(-1), /"--model" "claude-test-light"/);
+});
+
+test('limits: the cache is reused for cache_minutes, --fresh bypasses it, a passed reset invalidates it, only known results are cached', LSKIP, () => {
+  const sb = sandbox();
+  const run = (args = ['limits', '--provider', 'codex'], env = {}) => lcli(sb, args, env);
+  assert.equal(run().status, 0);
+  assert.equal(sb.calls('codex').length, 1);
+  const cacheFile = path.join(sb.cache, 'road-map-journal', 'limits.json');
+  assert.equal(JSON.parse(fs.readFileSync(cacheFile, 'utf8')).providers.codex.state, 'known');
+  const again = run(undefined, { ROADCTL_NOW: '2026-11-11T10:05:00Z' });
+  assert.equal(sb.calls('codex').length, 1, 'within 10 minutes: from the cache');
+  assert.match(again.stdout, /\(cached\)/);
+  run(undefined, { ROADCTL_NOW: '2026-11-11T10:11:00Z' });
+  assert.equal(sb.calls('codex').length, 2, 'older than the cache: probed again');
+  run(['limits', '--provider', 'codex', '--fresh'], { ROADCTL_NOW: '2026-11-11T10:12:00Z' });
+  assert.equal(sb.calls('codex').length, 3, '--fresh bypasses');
+  const long = regFile({ limits: { cache_minutes: 1000 } });
+  run(undefined, { ROADCTL_REGISTRY: long, ROADCTL_NOW: '2026-11-11T12:00:00Z' });
+  assert.equal(sb.calls('codex').length, 3, 'cache_minutes from the registry');
+  const sb2 = sandbox();
+  lcli(sb2, ['limits', '--provider', 'codex'], { FAKE_RESET: '1794409200', ROADCTL_REGISTRY: long });
+  lcli(sb2, ['limits', '--provider', 'codex'], { FAKE_RESET: '1794409200', ROADCTL_REGISTRY: long, ROADCTL_NOW: '2026-11-11T14:00:00Z' });
+  assert.equal(sb2.calls('codex').length, 1, 'still before the reset');
+  lcli(sb2, ['limits', '--provider', 'codex'], { FAKE_RESET: '1794409200', ROADCTL_REGISTRY: long, ROADCTL_NOW: '2026-11-11T16:00:00Z' });
+  assert.equal(sb2.calls('codex').length, 2, 'the window reset since: the old numbers are stale');
+  const sb3 = sandbox();
+  lcli(sb3, ['limits', '--provider', 'codex'], { FAKE_MODE: 'exit' });
+  lcli(sb3, ['limits', '--provider', 'codex'], { FAKE_MODE: 'exit' });
+  assert.equal(sb3.calls('codex').length, 2, 'a failed probe is not cached');
+  assert.ok(!fs.existsSync(path.join(sb3.cache, 'road-map-journal', 'limits.json')));
+  const cacheless = regFile({ limits: { cache_minutes: 0 } });
+  lcli(sb3, ['limits', '--provider', 'codex'], { ROADCTL_REGISTRY: cacheless });
+  lcli(sb3, ['limits', '--provider', 'codex'], { ROADCTL_REGISTRY: cacheless });
+  assert.equal(sb3.calls('codex').length, 4, 'cache_minutes 0 turns the cache off');
+});
+
+test('limits: table lists every provider with windows, used, left, reserve, resets, state, measured_at and source; needs no board', LSKIP, () => {
+  const sb = sandbox();
+  const reg = regFile({ providers: { 'some-api': { kind: 'api' } } });
+  const r = lcli(sb, ['limits'], { FAKE_5H: '30', FAKE_7D: '40', FAKE_U5: '0.5', FAKE_U7: '0.76', ROADCTL_REGISTRY: reg });
+  assert.equal(r.status, 0, r.stderr);
+  const lines = r.stdout.trimEnd().split('\n');
+  assert.match(lines[0], /^provider +window +used +left +reserve +resets +state +measured_at +source$/);
+  const row = (p, w) => lines.find((l) => l.startsWith(p) && l.includes(` ${w} `));
+  assert.match(row('claude', 'five_hour'), /50%\s+50%\s+15%\s+2100-01-01T00:00:00Z\s+known\s+2026-11-11T10:00:00Z\s+claude -p claude-haiku-5-5/);
+  assert.match(row('claude', 'seven_day'), /76%\s+24%\s+10%\s+2100-01-02T00:00:00Z/);
+  assert.match(row('codex', 'five_hour'), /30%\s+70%\s+15%.*known.*codex app-server/);
+  assert.match(row('codex', 'seven_day'), /40%\s+60%\s+10%/);
+  assert.match(lines.find((l) => l.startsWith('some-api')), /not-applicable/);
+  const j = JSON.parse(lcli(sb, ['limits', '--json'], { ROADCTL_REGISTRY: reg }).stdout);
+  assert.deepEqual(j.map((x) => x.provider).sort(), ['claude', 'codex', 'some-api']);
+  assert.deepEqual(j.find((x) => x.provider === 'codex').reserve, { seven_day: 10, five_hour: 15 });
+  const one = lcli(sb, ['limits', '--provider', 'codex']);
+  assert.doesNotMatch(one.stdout, /claude/);
+  const bad = lcli(sb, ['limits', '--provider', 'nope']);
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /unknown provider nope/);
+});
+
+test('limits --check: a failing, hanging or missing probe is unknown (exit 3), never allowed; the message offers the light-model attempt and the owner confirmation', LSKIP, () => {
+  const sb = sandbox();
+  const exit = lcli(sb, ['limits', '--check', 'codex', '--fresh'], { FAKE_MODE: 'exit' });
+  assert.equal(exit.status, 3);
+  assert.equal(exit.stdout, '');
+  assert.match(exit.stderr, /codex: limits unknown \(.*boom from fake codex/);
+  assert.match(exit.stderr, /One attempt with a light model to find out may be made/);
+  assert.match(exit.stderr, /roadctl limits --confirm codex --by NAME/);
+  const rpc = lcli(sb, ['limits', '--check', 'codex', '--fresh'], { FAKE_MODE: 'rpcerror' });
+  assert.equal(rpc.status, 3);
+  assert.match(rpc.stderr, /not logged in/);
+  const hang = lcli(sb, ['limits', '--check', 'codex', '--fresh'], { FAKE_MODE: 'hang', ROADCTL_PROBE_TIMEOUT_MS: '400' });
+  assert.equal(hang.status, 3);
+  assert.match(hang.stderr, /did not answer within/);
+  const chang = lcli(sb, ['limits', '--check', 'claude', '--fresh'], { FAKE_MODE: 'hang', ROADCTL_PROBE_TIMEOUT_MS: '400' });
+  assert.equal(chang.status, 3);
+  assert.match(chang.stderr, /claude did not answer within/);
+  const noev = lcli(sb, ['limits', '--check', 'claude', '--fresh'], { FAKE_MODE: 'noevent' });
+  assert.equal(noev.status, 3);
+  assert.match(noev.stderr, /no rate_limit_event/);
+  const gone = sandbox(false);
+  const miss = lcli(gone, ['limits', '--check', 'codex', '--fresh']);
+  assert.equal(miss.status, 3);
+  assert.match(miss.stderr, /cannot run codex/);
+  const tbl = lcli(sb, ['limits', '--provider', 'codex', '--fresh'], { FAKE_MODE: 'exit' });
+  assert.equal(tbl.status, 0, 'listing does not fail on an unknown provider');
+  assert.match(tbl.stdout, /codex +- +- +- +- +- +unknown/);
+  assert.match(tbl.stdout, /note: codex: .*boom/);
+  assert.equal(JSON.parse(lcli(sb, ['limits', '--check', 'codex', '--fresh', '--json'], { FAKE_MODE: 'exit' }).stdout).verdict, 'unknown');
+});
+
+test('limits --confirm: the owner allows an unknown provider for a while; it expires and never overrides a known breach', LSKIP, () => {
+  const sb = sandbox();
+  const down = { FAKE_MODE: 'exit' };
+  assert.equal(lcli(sb, ['limits', '--check', 'codex', '--fresh'], down).status, 3);
+  const noBy = lcli(sb, ['limits', '--confirm', 'codex']);
+  assert.equal(noBy.status, 2);
+  assert.match(noBy.stderr, /--by NAME/);
+  assert.equal(lcli(sb, ['limits', '--confirm', 'codex', '--by', 'Lujker', '--for', 'soon']).status, 2);
+  assert.equal(lcli(sb, ['limits', '--confirm', 'nope', '--by', 'Lujker']).status, 2);
+  const c = lcli(sb, ['limits', '--confirm', 'codex', '--by', 'Lujker', '--for', '2h']);
+  assert.equal(c.status, 0, c.stderr);
+  assert.match(c.stdout, /codex: limits confirmed by Lujker until 2026-11-11T12:00:00Z/);
+  const stateFile = path.join(sb.state, 'road-map-journal', 'limits-confirm.json');
+  assert.deepEqual(JSON.parse(fs.readFileSync(stateFile, 'utf8')).providers.codex, { by: 'Lujker', at: '2026-11-11T10:00:00Z', until: '2026-11-11T12:00:00Z' });
+  const ok = lcli(sb, ['limits', '--check', 'codex', '--fresh'], { ...down, ROADCTL_NOW: '2026-11-11T11:59:00Z' });
+  assert.equal(ok.status, 0);
+  assert.match(ok.stdout, /codex: limits unknown \(.*\), confirmed by Lujker until 2026-11-11T12:00:00Z/);
+  assert.equal(JSON.parse(lcli(sb, ['limits', '--check', 'codex', '--json'], { ...down, ROADCTL_NOW: '2026-11-11T11:00:00Z' }).stdout).verdict, 'confirmed');
+  assert.equal(lcli(sb, ['limits', '--check', 'codex', '--fresh'], { ...down, ROADCTL_NOW: '2026-11-11T12:00:01Z' }).status, 3, 'expired');
+  assert.equal(lcli(sb, ['limits', '--check', 'claude', '--fresh'], { ...down, FAKE_MODE: 'exit' }).status, 3, 'the confirmation is per provider');
+  // a known breach is not overridden, even with a valid confirmation
+  const breach = lcli(sb, ['limits', '--check', 'codex', '--fresh'], { FAKE_5H: '95', ROADCTL_NOW: '2026-11-11T11:00:00Z' });
+  assert.equal(breach.status, 1);
+  assert.match(breach.stderr, /reserve reached/);
+  // and a confirmation does not make a known provider with room any different
+  assert.equal(lcli(sb, ['limits', '--check', 'codex', '--fresh'], { ROADCTL_NOW: '2026-11-11T11:00:00Z' }).status, 0);
+  assert.match(lcli(sb, ['help', 'limits']).stdout, /only when the owner told you to/);
+});
+
+test('limits: an api provider has no subscription windows (exit 0, reserve does not apply)', LSKIP, () => {
+  const sb = sandbox();
+  const reg = regFile({ providers: { 'some-api': { kind: 'api' } }, agents: { 'api-bot@cloud': { host: 'hermes', provider: 'some-api', roles: [] } } });
+  const r = lcli(sb, ['limits', '--check', 'some-api'], { ROADCTL_REGISTRY: reg });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /some-api: allowed \(api provider: no subscription limits, the reserve does not apply\)/);
+  assert.equal(lcli(sb, ['limits', '--check', 'api-bot@cloud'], { ROADCTL_REGISTRY: reg }).status, 0);
+  assert.equal(sb.calls('').length, 0, 'nothing was probed');
+  assert.match(lcli(sb, ['limits', '--confirm', 'some-api', '--by', 'Lujker'], { ROADCTL_REGISTRY: reg }).stdout, /nothing to confirm/);
+});
+
+test('limits --check resolves an agent name through the registry: explicit provider, host default, unmapped agent, unknown name', LSKIP, () => {
+  const sb = sandbox();
+  const reg = regFile({
+    providers: { kimi: { kind: 'subscription', probe: 'command', command: 'kimi-limits --json' }, ghost: { kind: 'subscription', probe: 'command', command: 'no-such-limits-tool' } },
+    agents: {
+      'claude-code@home-wsl': { host: 'claude-code', roles: ['worker'] },
+      'codex@home-wsl': { host: 'codex', roles: ['worker'] },
+      'hermes@windows': { host: 'hermes', provider: 'kimi', roles: ['worker'] },
+      'hermes@laptop': { host: 'hermes', roles: ['worker'] },
+      'cron:x@y': { host: 'script', roles: [], provider: 'nope' },
+    },
+  });
+  const run = (name, env = {}) => lcli(sb, ['limits', '--check', name, '--fresh'], { ROADCTL_REGISTRY: reg, ...env });
+  const cc = run('claude-code@home-wsl');
+  assert.equal(cc.status, 0, cc.stderr);
+  assert.match(cc.stdout, /^claude-code@home-wsl \(provider claude\): allowed/);
+  assert.equal(sb.calls('claude').length, 1);
+  const cx = run('codex@home-wsl', { FAKE_5H: '90' });
+  assert.equal(cx.status, 1);
+  assert.match(cx.stderr, /^codex@home-wsl \(provider codex\): reserve reached: five_hour has 10% left/);
+  assert.match(run('hermes@windows').stdout, /^hermes@windows \(provider kimi\): allowed/);
+  const lap = run('hermes@laptop');
+  assert.equal(lap.status, 3);
+  assert.match(lap.stderr, /provider of this agent is unknown/);
+  assert.equal(run('whatever').status, 2);
+  assert.match(run('whatever').stderr, /unknown provider or agent whatever/);
+  const bad = run('cron:x@y');
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /names provider nope/);
+  // without a registry the host prefix still maps claude-code and codex
+  assert.equal(lcli(sb, ['limits', '--check', 'codex@elsewhere', '--fresh']).status, 0);
+  assert.equal(lcli(sb, ['limits', '--check', 'hermes@elsewhere']).status, 3);
+});
+
+test('limits: a command provider (Kimi, Z.ai, ...) prints JSON windows; unknown names become "other" and obey the weekly reserve', LSKIP, () => {
+  const sb = sandbox();
+  const reg = regFile({ providers: { kimi: { kind: 'subscription', probe: 'command', command: 'kimi-limits --json', reserve: { five_hour: 20 } } } });
+  const run = (env = {}, args = ['limits', '--check', 'kimi', '--fresh']) => lcli(sb, args, { ROADCTL_REGISTRY: reg, ...env });
+  const ok = run();
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.match(ok.stdout, /kimi: allowed \(five_hour 12% used, 88% left, reserve 20%; other 30% used, 70% left, reserve 10%\)/);
+  assert.equal(run({ FAKE_5H: '80' }).status, 1, 'five_hour reserve 20 from the provider override');
+  const other = run({ FAKE_7D: '90' });
+  assert.equal(other.status, 1);
+  assert.match(other.stderr, /other has 10% left.*resets at 2100-02-01T00:00:00Z/);
+  const g = run({ FAKE_MODE: 'garbage' });
+  assert.equal(g.status, 3);
+  assert.match(g.stderr, /did not print JSON/);
+  assert.equal(run({}, ['limits', '--check', 'kimi', '--fresh']).status, 0);
+  const noCmd = regFile({ providers: { broken: { kind: 'subscription' } } });
+  const b = lcli(sb, ['limits', '--check', 'broken'], { ROADCTL_REGISTRY: noCmd });
+  assert.equal(b.status, 3);
+  assert.match(b.stderr, /has no probe/);
+  assert.match(lcli(sb, ['limits'], { ROADCTL_REGISTRY: reg }).stdout, /^kimi +five_hour/m);
+});
+
+test('limits: bad usage and bad registry are exit 2; sync --check is still a plain flag', LSKIP, () => {
+  const sb = sandbox();
+  for (const args of [['limits', '--check'], ['limits', '--check', '--json'], ['limits', '--check', 'codex', '--confirm', 'codex']]) assert.equal(lcli(sb, args).status, 2, args.join(' '));
+  const badReg = regFile({ limits: { reserve: { five_hour: 150 } } });
+  const r = lcli(sb, ['limits'], { ROADCTL_REGISTRY: badReg });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /limits\.reserve must be an object of percentages/);
+  assert.equal(lcli(sb, ['limits'], { ROADCTL_REGISTRY: regFile({ limits: { cache_minutes: -1 } }) }).status, 2);
+  assert.equal(lcli(sb, ['limits'], { ROADCTL_REGISTRY: regFile({ providers: { x: 3 } }) }).status, 2);
+  const root = project();
+  assert.equal(cli(root, ['sync', '--check']).status, 0, 'sync --check keeps working without a value');
+  assert.match(cli(root, ['help', 'limits']).stdout, /^roadctl limits \[read\]/);
+  assert.match(cli(root, ['help']).stdout, /limits --check <agent> \(0 go, 1 reserve, 3 unknown\)/);
+});
+
+test('the shipped registry example has limits and providers that resolve', () => {
+  const reg = rc.loadRegistry({ ROADCTL_REGISTRY: path.join(here, '..', 'examples', 'agents-registry.example.json') });
+  assert.deepEqual(rc.reserveFor(reg, 'claude'), { seven_day: 10, five_hour: 15 });
+  assert.equal(reg.limits.cache_minutes, 10);
+  const table = rc.providerTable(reg);
+  assert.equal(table.claude.probe_model, 'claude-haiku-5-5');
+  assert.equal(table.kimi.probe, 'command');
+  assert.equal(table['some-api'].kind, 'api');
+  assert.equal(rc.resolveTarget('claude-code@home-wsl', reg).provider, 'claude');
+  assert.equal(rc.resolveTarget('codex@home-wsl', reg).provider, 'codex');
+  assert.equal(rc.resolveTarget('hermes@windows', reg).provider, 'kimi');
 });

@@ -5,6 +5,16 @@
     "worker": { "claude-code": "sonnet", "codex": "gpt-5.5" },
     "reviewer": { "claude-code": "sonnet" }
   },
+  "limits": {
+    "reserve": { "seven_day": 10, "five_hour": 15 },
+    "cache_minutes": 10
+  },
+  "providers": {
+    "claude": { "kind": "subscription", "probe": "claude", "probe_model": "claude-haiku-5-5" },
+    "codex": { "kind": "subscription", "probe": "codex" },
+    "kimi": { "kind": "subscription", "probe": "command", "command": "kimi-limits --json", "reserve": { "five_hour": 20 } },
+    "some-api": { "kind": "api" }
+  },
   "agents": {
     "claude-code@home-wsl": {
       "host": "claude-code",
@@ -22,6 +32,7 @@
     },
     "hermes@windows": {
       "host": "hermes",
+      "provider": "kimi",
       "machine": "windows",
       "roles": ["worker"],
       "can_accept": false
