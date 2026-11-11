@@ -32,6 +32,8 @@
 //   roadctl claim <id> --as AGENT [--lease 2h]   take an open delegation (git decides a race); report/accept/return finish it
 //   roadctl tick --as AGENT [--all] [--no-pull] [--json] [--prompt]   model-free check for a scheduled orchestrator; exit 0 work, 4 idle, 1 reserve, 3 limits unknown, 5 busy
 //   roadctl tick --ledger [--as A] [-n 20]   the last runs of tick (read-only)
+//   roadctl routine list [--all] [--json] | show <id> | new <id> "title" --agent A --model M --env E --every 2h | on|off <id> --by NAME | done <id> --as A --result ok|escalated|failed "summary"   recurring routines
+//   roadctl autonomy routines on|off --by NAME   the board switch for routines (owner only; independent of card autonomy)
 //   roadctl agents-install --claude [--apply] ; agents-uninstall   Claude Code subagents road-worker and road-reviewer
 //   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | pre-commit | pre-commit-all
 //   roadctl hook-install --claude [--user]|--codex|--hermes|--git [--all] [--apply] ; hook-uninstall (same flags)
@@ -227,6 +229,20 @@ export function findBoard(start, explicit, env = process.env) {
 
 // ---------------------------------------------------------------- parsing
 
+/** Flat `key: value` header lines into item.header; format problems go to item.errors. */
+function parseHeaderLines(block, item) {
+  for (const line of block.split('\n')) {
+    if (!line.trim()) continue;
+    const kv = line.match(/^([A-Za-z_][\w-]*):\s?(.*)$/);
+    if (!kv) {
+      item.errors.push(`bad header line: ${sanitize(line, 40)}`);
+      continue;
+    }
+    if (Object.prototype.hasOwnProperty.call(item.header, kv[1])) item.errors.push(`duplicate key ${kv[1]}`);
+    item.header[kv[1]] = kv[2].trim();
+  }
+}
+
 export function parseCard(file) {
   const raw = fs.readFileSync(file, 'utf8');
   const eol = raw.includes('\r\n') ? '\r\n' : '\n';
@@ -237,16 +253,7 @@ export function parseCard(file) {
     card.errors.push('no header between --- lines');
     return card;
   }
-  for (const line of m[1].split('\n')) {
-    if (!line.trim()) continue;
-    const kv = line.match(/^([A-Za-z_][\w-]*):\s?(.*)$/);
-    if (!kv) {
-      card.errors.push(`bad header line: ${sanitize(line, 40)}`);
-      continue;
-    }
-    if (Object.prototype.hasOwnProperty.call(card.header, kv[1])) card.errors.push(`duplicate key ${kv[1]}`);
-    card.header[kv[1]] = kv[2].trim();
-  }
+  parseHeaderLines(m[1], card);
   const parts = m[2].split(/^## (.+)$/m);
   for (let i = 1; i < parts.length; i += 2) {
     const name = parts[i].trim();
@@ -274,7 +281,7 @@ export function loadBoard(dir) {
   const cdir = path.join(dir, 'cards');
   const files = fs.existsSync(cdir) ? fs.readdirSync(cdir).filter((f) => f.endsWith('.md')).sort() : [];
   const cards = files.map((f) => parseCard(path.join(cdir, f)));
-  return { dir, config, cards, project: path.dirname(dir) };
+  return { dir, config, cards, routines: loadRoutines(dir), project: path.dirname(dir) };
 }
 
 const statusOf = (board, card) => {
@@ -482,13 +489,14 @@ const isObj = (x) => Boolean(x) && typeof x === 'object' && !Array.isArray(x);
 /** The `autonomy` section of config.json, validated. A malformed section counts as OFF (fail closed) and is a lint error. */
 export function autonomyOf(board) {
   const raw = board.config.autonomy;
-  const res = { present: raw !== undefined, enabled: false, agents: [], queue: [], errors: [] };
+  const res = { present: raw !== undefined, enabled: false, routines: false, agents: [], queue: [], errors: [] };
   if (raw === undefined) return res;
   if (!isObj(raw)) {
     res.errors.push('autonomy must be an object like {"enabled": false, "agents": [], "queue": []}');
     return res;
   }
   if (raw.enabled !== undefined && typeof raw.enabled !== 'boolean') res.errors.push('autonomy.enabled must be true or false');
+  if (raw.routines !== undefined && typeof raw.routines !== 'boolean') res.errors.push('autonomy.routines must be true or false');
   if (raw.agents !== undefined) {
     if (!Array.isArray(raw.agents) || raw.agents.some((a) => typeof a !== 'string' || !AGENT_RE.test(a))) res.errors.push('autonomy.agents must be a list of agent names like claude-code@home-wsl');
     else res.agents = [...raw.agents];
@@ -500,6 +508,7 @@ export function autonomyOf(board) {
   }
   if (res.errors.length) return { ...res, agents: [], queue: [] };
   res.enabled = raw.enabled === true;
+  res.routines = raw.routines === true; // the switch for recurring routines: independent of `enabled`
   return res;
 }
 
@@ -553,7 +562,8 @@ export function autonomyReport(project, board, reg = null) {
   if (au.agents.length) candidates = au.agents;
   else if (reg) candidates = Object.keys(reg.agents).filter((a) => isOrchestrator(a, reg));
   const would = candidates ? candidates.map((a) => ({ agent: a, orchestrator: isOrchestrator(a, reg), start: autonomyStart(board, a, reg)?.id ?? null })) : null;
-  return { project, enabled: au.enabled, present: au.present, agents: au.agents, errors: au.errors, queue: rows, auto_not_queued: autoNotQueued, next: rows.find((r) => r.next)?.id ?? null, would_start: would };
+  const rr = routineRows(board);
+  return { project, enabled: au.enabled, present: au.present, agents: au.agents, errors: au.errors, queue: rows, auto_not_queued: autoNotQueued, next: rows.find((r) => r.next)?.id ?? null, would_start: would, routines: { enabled: au.routines, items: rr } };
 }
 
 export function formatAutonomy(r, prefix = '') {
@@ -569,6 +579,10 @@ export function formatAutonomy(r, prefix = '') {
   if (!r.would_start) L.push(`${prefix}  would start: ${r.enabled && r.next ? r.next : 'nothing'} for any orchestrator (no registry: roles cannot be listed)`);
   else if (!r.would_start.length) L.push(`${prefix}  would start: no orchestrator is known`);
   else for (const w of r.would_start) L.push(`${prefix}  ${sanitize(w.agent, 60)} would start ${w.start ?? (w.orchestrator ? 'nothing' : 'nothing (not an orchestrator)')}`);
+  if (r.routines && (r.routines.enabled || r.routines.items.length)) {
+    L.push(`${prefix}routines ${r.routines.enabled ? 'ON' : 'OFF'}${r.routines.enabled ? '' : ' (the board switch; nothing runs; independent of the card autonomy above)'} | ${r.routines.items.length} routine(s)`);
+    for (const x of r.routines.items) L.push(formatRoutineRow(x, `${prefix}  `));
+  }
   return L;
 }
 
@@ -799,6 +813,25 @@ export function lint(board, opts = {}) {
     if (!qc) add('error', 22, 'config.json', `autonomy.queue lists ${q}, which is not a card`);
     else if (CLOSED.has(statusOf(board, qc))) add('warning', 23, 'config.json', `autonomy.queue lists ${q}, which is ${statusOf(board, qc)}`);
   }
+  const routineIds = new Map();
+  let reg = null;
+  if (board.routines?.length) {
+    try {
+      reg = loadRegistry();
+    } catch {
+      reg = null; // a broken registry is reported by the commands that need it
+    }
+  }
+  for (const r of board.routines ?? []) {
+    const n = `routines/${r.name}`;
+    for (const x of routineFindings(r)) add(x.level, x.rule, n, x.msg);
+    const id = r.header.id;
+    if (id) {
+      if (routineIds.has(id)) add('error', 28, n, `duplicate routine id ${id} (also ${routineIds.get(id)})`);
+      routineIds.set(id, n);
+    }
+    if (reg && r.header.agent && AGENT_RE.test(r.header.agent) && !reg.agents[r.header.agent]) add('warning', 29, n, `agent ${sanitize(r.header.agent, 60)} is not in the registry (${reg.path})`);
+  }
   if (doing.length > 1) add('warning', 13, '-', `${doing.length} cards are doing`);
   if (!opts.skipSync) {
     const bf = path.join(board.dir, 'BOARD.md');
@@ -847,8 +880,13 @@ export function generateBoard(board, date = today()) {
   const limit = limitOf(board, 'board_bytes', 6144);
   let body = out.slice();
   const readyLines = ready.map((c) => line(c, `approved: ${approvedText(c)}${nextOpen(c) ? `; next: ${nextOpen(c)}` : ''}`));
-  let text = [...body, ...(ready.length ? ['## Ready', ...readyLines, ''] : []), collapsed(), ''].join('\n');
-  if (Buffer.byteLength(text) > limit && ready.length) text = [...body, `Ready (collapsed, board is over its size limit): ${ready.length}`, '', collapsed(), ''].join('\n');
+  // Routines: static facts only (no last_run, no last_result), so a run of a routine never makes BOARD.md stale
+  const rr = routineRows(board);
+  const routineLines = rr.length ? [`## Routines (board switch ${autonomyOf(board).routines ? 'on' : 'off'})`, ...rr.map((r) => `- [${sanitize(r.id ?? '?', 40)}] ${r.enabled ? 'on' : 'off'}; every ${sanitize(r.every ?? '?', 10)}; ${sanitize(r.agent ?? 'no agent', 50)}`), ''] : [];
+  const routinesCollapsed = rr.length ? [`Routines (collapsed, board is over its size limit): ${rr.length}, ${rr.filter((r) => r.enabled).length} on`, ''] : [];
+  let text = [...body, ...(ready.length ? ['## Ready', ...readyLines, ''] : []), ...routineLines, collapsed(), ''].join('\n');
+  if (Buffer.byteLength(text) > limit && ready.length) text = [...body, `Ready (collapsed, board is over its size limit): ${ready.length}`, '', ...routineLines, collapsed(), ''].join('\n');
+  if (Buffer.byteLength(text) > limit && rr.length) text = [...body, ...(ready.length ? [`Ready (collapsed, board is over its size limit): ${ready.length}`, ''] : []), ...routinesCollapsed, collapsed(), ''].join('\n');
   return text;
 }
 
@@ -947,6 +985,11 @@ export function brief(board) {
   if (ready.length) l.push(`READY ${ready.join(' ')}  (* = approved; unapproved cards are not permission to start; auto = the owner allowed unattended work)`);
   const au = autonomyOf(board);
   if (au.enabled || au.queue.length || au.errors.length) l.push(`AUTONOMY ${au.enabled ? 'on' : 'off'} | agents ${au.agents.length ? sanitize(au.agents.join(','), 100) : 'any orchestrator'} | queue ${au.queue.length ? sanitize(au.queue.map((q, i) => `${i + 1}:${q}`).join(' '), 150) : 'empty'}${au.errors.length ? ' | malformed, run roadctl lint' : ''}`);
+  const rr = routineRows(board);
+  if (rr.length || au.routines) {
+    const n = routineCounts(rr);
+    l.push(`ROUTINES switch ${au.routines ? 'on' : 'off'} | ${n.total} routine(s), ${n.enabled} on, due now ${n.due} (roadctl routine list)`);
+  }
   const dl = delegationRows(board);
   if (dl.length) {
     const n = delegationCounts(dl);
@@ -1015,6 +1058,7 @@ export function statusSummary(project, board, { sync = null } = {}) {
     delegations: delegationCounts(delegated),
     delegated,
     autonomy: { enabled: autonomyOf(board).enabled, agents: autonomyOf(board).agents, queue: autonomyOf(board).queue.length },
+    routines: { switch: autonomyOf(board).routines, ...routineCounts(routineRows(board)) },
     doing: rows('doing'),
     review: rows('review'),
     blocked: rows('blocked'),
@@ -1033,6 +1077,7 @@ export function formatStatus(summaries) {
   const out = [row(head), ...table.map(row)];
   for (const s of summaries) {
     for (const c of s.doing) out.push(`${s.project}: DOING [${c.id}] ${sanitize(c.title, 80)} | approved: ${c.approved.join('+') || 'no'}`);
+    if (s.routines?.total) out.push(`${s.project}: ROUTINES switch ${s.routines.switch ? 'on' : 'off'}, ${s.routines.total} routine(s), ${s.routines.enabled} on, due now ${s.routines.due}`);
     if (s.delegated?.length) {
       const n = s.delegations;
       out.push(`${s.project}: DELEGATIONS open ${n.open}, claimed ${n.claimed}, expired ${n.expired}, reported ${n.reported}`);
@@ -1134,6 +1179,7 @@ export function briefJson(board) {
     ready: rows('ready'),
     delegations: delegationRows(board),
     autonomy: { enabled: autonomyOf(board).enabled, agents: autonomyOf(board).agents, queue: autonomyOf(board).queue },
+    routines: { switch: autonomyOf(board).routines, ...routineCounts(routineRows(board)) },
     lint: { errors: f.filter((x) => x.level === 'error').length, warnings: f.filter((x) => x.level === 'warning').length },
   };
 }
@@ -2530,7 +2576,7 @@ export async function limitsCommand(flags, io, env = process.env) {
 // when something changed. It writes nothing to the boards; it pulls (unless --no-pull), keeps a lock and appends to a ledger.
 
 export const TICK_EXIT = { work: 0, idle: 4, 'blocked-reserve': 1, 'blocked-unknown': 3, busy: 5 };
-const TICK_KINDS = ['TAKE', 'ACCEPT', 'START', 'STALE'];
+const TICK_KINDS = ['TAKE', 'ACCEPT', 'START', 'STALE', 'RUN'];
 const TICK_LIVE = new Set(['ready', 'doing', 'review']); // idea, blocked, parked, done and dropped cards are never offered
 const TICK_LOCK_STALE_MS = 10 * 60 * 1000;
 const tickStateDir = (env) => path.join(xdgDir(env, 'XDG_STATE_HOME', ['.local', 'state']), 'road-map-journal');
@@ -2557,6 +2603,7 @@ export function tickItems(project, board, agent, reg = null) {
     const taken = new Set(items.filter((i) => i.kind === 'TAKE').map((i) => i.id));
     for (const r of rows) if (r.effective === 'expired' && !taken.has(r.id)) items.push(mk('STALE', r)); // an expired claim this agent can take is listed as TAKE only
   }
+  items.push(...routineRunItems(project, board, agent)); // a due routine goes to its own agent only, and only when the board switch, enabled, approved, agent, model and env all hold
   return items;
 }
 
@@ -2619,6 +2666,10 @@ export function tickPrompt(t) {
   if (has('ACCEPT')) L.push(`ACCEPT roadctl show <id> --log 10; verify; roadctl accept <id> --as ${A} or roadctl return <id> --as ${A} "what to fix"; roadctl save`);
   if (has('START')) L.push(`START  the owner put it in the autonomous queue (auto); roadctl show <id>; do it within the approved scope, or roadctl delegate <id> --to worker --by ${A} [--criteria a2,a3] [--accept reviewer]; roadctl save`);
   if (has('STALE')) L.push(`STALE  roadctl show <id>; if you delegated it: roadctl undelegate <id> --by ${A} "lease expired"; roadctl save; otherwise tell the owner`);
+  if (has('RUN')) {
+    L.push(`RUN    a recurring routine the owner approved for you; run it with ITS model and environment (below); if you are not that model, start a session or subagent with it (for example the agent's launch note in the registry) and give it this task; it follows the routine file: Steps, May write, Escalate, nothing else; write the board only as May write allows (roadctl log, roadctl delegate, a question for the owner); external writes only if its approved scope has external; hand over as Escalate says; finish with roadctl routine done <id> --as ${A} --result ok|escalated|failed "summary" (it publishes the routine file itself)`);
+    for (const i of t.items.filter((x) => x.kind === 'RUN')) L.push(`  ${i.project}/${i.id}: file ${path.join(t.boardDirs?.[i.project] ?? '?', i.routine.file)}; model ${i.routine.model}; env ${i.routine.env}`);
+  }
   return L.join('\n');
 }
 
@@ -2663,7 +2714,7 @@ function acquireTickLock(agent, env) {
   return { ok: false };
 }
 
-const countKinds = (items) => Object.fromEntries(TICK_KINDS.map((k) => [k.toLowerCase(), items.filter((i) => i.kind === k).length]));
+const countKinds = (items) => Object.fromEntries(TICK_KINDS.map((k) => [k.toLowerCase(), items.filter((i) => i.kind === k).length]).filter(([k, n]) => k !== 'run' || n > 0)); // run appears only when there is one: older ledger lines and the idle line keep their shape
 
 function appendTickLedger(env, entry) {
   try {
@@ -2698,7 +2749,7 @@ function tickLedger(flags, args, out, env) {
   entries = entries.slice(-n);
   if (flags.json) out(JSON.stringify(entries, null, 2));
   else if (!entries.length) out('no ticks recorded');
-  else for (const e of entries) out(`${e.time} ${e.agent} ${e.decision} take=${e.counts?.take ?? 0} accept=${e.counts?.accept ?? 0} start=${e.counts?.start ?? 0} stale=${e.counts?.stale ?? 0} limits=${e.limits?.provider ?? '-'}:${e.limits?.state ?? '-'}`);
+  else for (const e of entries) out(`${e.time} ${e.agent} ${e.decision} take=${e.counts?.take ?? 0} accept=${e.counts?.accept ?? 0} start=${e.counts?.start ?? 0} stale=${e.counts?.stale ?? 0}${e.counts?.run ? ` run=${e.counts.run}` : ''} limits=${e.limits?.provider ?? '-'}:${e.limits?.state ?? '-'}`);
   return 0;
 }
 
@@ -2821,6 +2872,390 @@ export function boardsCommand(flags, args, io, env = process.env) {
   throw new Error('usage: roadctl boards [list] [--json] | boards add [dir] | boards remove <dir|name>');
 }
 
+// ---------------------------------------------------------------- recurring routines (P4.9)
+//
+// `board/routines/<id>.md`: a flat header and the sections Goal, Steps, May write, Escalate, Log. A routine runs only when ALL of this holds:
+// the board switch `autonomy.routines` is true, the routine has `enabled: true`, an `approved` record, and agent, model and env
+// (the executor the owner named when creating it). `tick --as AGENT` offers it as RUN to that agent only, when it is due. The text of a routine is
+// the owner's instruction for that agent within its approved scope; nothing injects it into a prompt, `tick --prompt` names the file only.
+
+export const ROUTINE_RESULTS = ['ok', 'escalated', 'failed'];
+export const ROUTINE_SCOPES = ['read', 'board', 'external'];
+const ROUTINE_KEYS = new Set(['id', 'title', 'every', 'enabled', 'agent', 'model', 'env', 'approved', 'last_run', 'last_result']);
+const ROUTINE_SECTIONS = ['Goal', 'Steps', 'May write', 'Escalate', 'Log'];
+const MODEL_RE = /^[A-Za-z0-9][\w.:[\]-]*$/;
+const ENV_RE = /^[A-Za-z0-9][\w.:@-]*$/;
+const ROUTINE_MIN_MS = 5 * 60e3;
+const ROUTINE_LOG_KEEP = 50; // Log lines kept in a routine file: a routine that runs every 30 minutes would otherwise grow it without end
+
+/** `30m`, `2h`, `1d`: at least 5 minutes, at most 30 days. */
+export function parseEvery(s) {
+  const m = String(s ?? '').match(/^(\d+)(m|h|d)$/);
+  if (!m) return { error: 'every must be like 30m, 2h or 1d' };
+  const ms = Number(m[1]) * { m: 60e3, h: 3600e3, d: 864e5 }[m[2]];
+  if (ms < ROUTINE_MIN_MS) return { error: 'every is at least 5m' };
+  if (ms > 30 * 864e5) return { error: 'every is at most 30d' };
+  return { ms };
+}
+
+export function parseRoutine(file) {
+  const raw = fs.readFileSync(file, 'utf8');
+  const eol = raw.includes('\r\n') ? '\r\n' : '\n';
+  const text = raw.replace(/\r\n/g, '\n');
+  const r = { file, name: path.basename(file), eol, header: {}, errors: [], warnings: [], sections: {}, log: [] };
+  const m = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
+  if (!m) {
+    r.errors.push('no header between --- lines');
+    return r;
+  }
+  parseHeaderLines(m[1], r);
+  const parts = m[2].split(/^## (.+)$/m);
+  for (let i = 1; i < parts.length; i += 2) {
+    const name = parts[i].trim();
+    if (!ROUTINE_SECTIONS.includes(name)) r.warnings.push(`unknown section ${name}`);
+    r.sections[name] = parts[i + 1] ?? '';
+  }
+  for (const line of (r.sections.Log ?? '').split('\n')) {
+    const l = line.match(/^- (\d{4}-\d{2}-\d{2}) \[([^\]]+)\] (.*)$/);
+    if (l) r.log.push({ date: l[1], author: l[2], text: l[3] });
+  }
+  for (const k of Object.keys(r.header)) if (!ROUTINE_KEYS.has(k)) r.warnings.push(`unknown key ${k}`);
+  return r;
+}
+
+export function loadRoutines(dir) {
+  const rdir = path.join(dir, 'routines');
+  let files = [];
+  try {
+    files = fs.readdirSync(rdir, { withFileTypes: true }).filter((e) => e.isFile() && e.name.endsWith('.md')).map((e) => e.name).sort();
+  } catch {
+    return [];
+  }
+  return files.map((f) => parseRoutine(path.join(rdir, f)));
+}
+
+/** Findings of one routine file by itself (lint rules 11, 24, 25, 26, 27). */
+function routineFindings(r) {
+  const h = r.header;
+  const f = [];
+  const add = (level, rule, msg) => f.push({ level, rule, msg });
+  for (const e of r.errors) add('error', 25, e);
+  for (const w of r.warnings) add('warning', 11, w);
+  for (const k of ['id', 'title', 'every', 'enabled']) if (!h[k]) add('error', 25, `missing ${k}`);
+  if (h.id && !ID_RE.test(h.id)) add('error', 25, `bad id ${sanitize(h.id, 30)} (letters, digits, . _ -)`);
+  if (h.every) {
+    const e = parseEvery(h.every);
+    if (e.error) add('error', 25, e.error);
+  }
+  if (h.enabled && !['true', 'false'].includes(h.enabled)) add('error', 25, 'enabled must be true or false');
+  const miss = ['agent', 'model', 'env'].filter((k) => !h[k]);
+  if (miss.length) add('error', 26, `missing ${miss.join(', ')}: a routine without agent, model and environment never runs`);
+  if (h.agent && !AGENT_RE.test(h.agent)) add('error', 25, 'agent must be an agent name like claude-code@work-notebook');
+  if (h.model && !MODEL_RE.test(h.model)) add('error', 25, `bad model ${sanitize(h.model, 30)}`);
+  if (h.env && !ENV_RE.test(h.env)) add('error', 25, `bad env ${sanitize(h.env, 30)} (no spaces)`);
+  if (h.last_run && !ISO_RE.test(h.last_run)) add('error', 25, 'last_run must be an ISO-8601 UTC time like 2026-11-11T09:30:00Z');
+  if (h.last_result && !ROUTINE_RESULTS.includes(h.last_result)) add('error', 25, `last_result must be one of ${ROUTINE_RESULTS.join('|')}`);
+  const scopes = scopesOf(h.approved);
+  if (h.approved && !scopes.length) add('error', 27, 'approved has no scope=...');
+  if (h.enabled === 'true' && !scopes.length) add('error', 27, 'enabled without approved: the owner approves with roadctl routine on <id> --by NAME --source REF');
+  const bad = scopes.filter((x) => !ROUTINE_SCOPES.includes(x));
+  if (bad.length) add('warning', 24, `approved has unknown scope ${bad.map((x) => sanitize(x, 20)).join(',')} (known: ${ROUTINE_SCOPES.join(', ')})`);
+  return f;
+}
+
+/** One row per routine: the facts, whether it is due by the clock and why it would not run now. A row with no reasons is allowed to run. */
+export function routineRows(board, ms = nowMs()) {
+  const sw = autonomyOf(board).routines;
+  const count = new Map();
+  for (const r of board.routines ?? []) count.set(r.header.id, (count.get(r.header.id) ?? 0) + 1);
+  return (board.routines ?? []).map((r) => {
+    const h = r.header;
+    const found = routineFindings(r);
+    const reasons = [];
+    const miss = ['agent', 'model', 'env'].filter((k) => !h[k]);
+    if (miss.length) reasons.push(`missing ${miss.join(', ')}`);
+    const invalid = found.filter((x) => x.level === 'error' && x.rule === 25);
+    if (invalid.length) reasons.push(`invalid: ${invalid.slice(0, 2).map((x) => x.msg).join('; ')}`);
+    if (h.id && count.get(h.id) > 1) reasons.push('duplicate id');
+    if (!scopesOf(h.approved).length) reasons.push('not approved');
+    const enabled = h.enabled === 'true';
+    if (!enabled) reasons.push('disabled');
+    if (!sw) reasons.push('board switch off');
+    const every = parseEvery(h.every);
+    let due = false;
+    if (!every.error) {
+      if (!h.last_run) due = true;
+      else if (ISO_RE.test(h.last_run)) due = ms >= Date.parse(h.last_run) + every.ms;
+    }
+    return { id: h.id ?? null, title: h.title ?? '', enabled, every: h.every ?? null, agent: h.agent ?? null, model: h.model ?? null, env: h.env ?? null, approved: scopesOf(h.approved), last_run: h.last_run ?? null, last_result: h.last_result ?? null, due, run_now: reasons.length === 0 && due, reasons, file: `routines/${r.name}` };
+  });
+}
+
+export function routineCounts(rows) {
+  return { total: rows.length, enabled: rows.filter((r) => r.enabled).length, due: rows.filter((r) => r.run_now).length };
+}
+
+export function formatRoutineRow(r, prefix = '') {
+  const last = r.last_run ? `${sanitize(r.last_run, 25)} ${sanitize(r.last_result ?? '-', 10)}` : 'never run';
+  const why = r.reasons.length ? ` | would not run: ${sanitize(r.reasons.join('; '), 160)}` : r.due ? ' | would run now' : '';
+  return `${prefix}[${sanitize(r.id ?? '?', 40)}] ${r.enabled ? 'on' : 'off'} | every ${sanitize(r.every ?? '?', 10)} | agent ${sanitize(r.agent ?? '-', 60)} | model ${sanitize(r.model ?? '-', 40)} | env ${sanitize(r.env ?? '-', 40)} | ${last} | ${r.due ? 'due' : 'not due'}${why} | ${sanitize(r.title, 70)}`;
+}
+
+/** RUN items of tick: routines that may run now and whose agent is exactly `agent`. */
+export function routineRunItems(project, board, agent) {
+  return routineRows(board)
+    .filter((r) => r.run_now && r.agent === agent)
+    .map((r) => ({ kind: 'RUN', project, id: r.id, title: sanitize(r.title, 80), routine: { agent: r.agent, model: r.model, env: r.env, every: r.every, file: r.file } }));
+}
+
+export function findRoutine(board, id) {
+  const found = (board.routines ?? []).filter((x) => x.header.id === id);
+  if (!found.length) throw new Error(`no routine with id ${id}`);
+  return found[0];
+}
+
+/** Add a Log line to the `## Log` section of routine text, keeping the last ROUTINE_LOG_KEEP entries. */
+function insertRoutineLog(t, entry) {
+  if (!/^## Log$/m.test(t)) return `${t.replace(/\n*$/, '\n')}\n## Log\n${entry}\n`;
+  const out = t.replace(/(^## Log\n)([\s\S]*?)(?=^## |\s*$(?![\s\S]))/m, (all, h, body) => {
+    const lines = body.split('\n').filter((l) => l.trim());
+    lines.push(entry);
+    let drop = lines.filter((l) => l.startsWith('- ')).length - ROUTINE_LOG_KEEP;
+    const kept = [];
+    for (const l of lines) {
+      if (drop > 0 && l.startsWith('- ')) drop--; // the oldest entries go first
+      else kept.push(l);
+    }
+    return `${h}${kept.join('\n')}\n\n`;
+  });
+  return out.replace(/\n{3,}/g, '\n\n');
+}
+
+const ROUTINE_TEMPLATE = (x) => `---
+id: ${x.id}
+title: ${x.title}
+every: ${x.every}
+enabled: false
+agent: ${x.agent}
+model: ${x.model}
+env: ${x.env}
+---
+
+## Goal
+(what this routine collects or watches, and why)
+
+## Steps
+1. (what to read, for example merge requests, issues, messages, servers; read only)
+2. (what to update on the board, for example one Log line on a card)
+
+## May write
+- Board: Log lines on cards (roadctl log), delegations (roadctl delegate), questions for the owner.
+- External systems: read only. External writes only if the approved scope has external.
+
+## Escalate
+- (when to hand over: roadctl delegate to an orchestrator or a stronger worker, or a question for the owner)
+
+## Log
+`;
+
+/** `roadctl routine new`: a routine file from the template, switched off and not approved. agent, model and env are required; they are the owner's choice. */
+export function newRoutine(board, id, title, { agent, model, env, every }) {
+  if (!id || !ID_RE.test(id)) throw new Error('bad id (letters, digits, . _ -)');
+  if (!String(title ?? '').trim()) throw new Error('usage: roadctl routine new <id> "title" --agent A --model M --env E --every 2h');
+  const miss = [['--agent', agent], ['--model', model], ['--env', env], ['--every', every]].filter(([, v]) => typeof v !== 'string' || !v || v.startsWith('--')).map(([k]) => k);
+  if (miss.length) throw new Error(`routine new needs ${miss.join(', ')}: the agent, the model and the environment are chosen by the owner when the routine is created (ask, never guess); a routine without them never runs`);
+  const e = checkAgent(agent, '--agent');
+  if (e) throw new Error(e);
+  if (!MODEL_RE.test(model)) throw new Error('--model must be a model name like claude-haiku-5-5');
+  if (!ENV_RE.test(env)) throw new Error('--env must be an environment or machine name without spaces, like Work-notebook-wsl');
+  const ev = parseEvery(every);
+  if (ev.error) throw new Error(`--every: ${ev.error}`);
+  const dir = path.join(board.dir, 'routines');
+  if ((board.routines ?? []).some((r) => r.header.id === id)) throw new Error(`routine ${id} already exists`);
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, `${id}.md`);
+  fs.writeFileSync(file, ROUTINE_TEMPLATE({ id, title: sanitize(title, 120), every, agent, model, env }), { flag: 'wx' });
+  return file;
+}
+
+/** `routine on|off`: the owner's switch for one routine. `on` records the approval when it is missing (source required) or when --scope is given. */
+export function setRoutineEnabled(board, id, on, { by, scope, source, date = today() }) {
+  const r = findRoutine(board, id);
+  const h = r.header;
+  const who = sanitizeText(by, 60).replace(/[\[\]]/g, '');
+  let t = readNorm(r);
+  let note = '';
+  if (on) {
+    const miss = ['agent', 'model', 'env'].filter((k) => !h[k]);
+    if (miss.length) return refuse(`${id} has no ${miss.join(', ')}: a routine without agent, model and environment never runs; the owner names them (ask, never guess) and they are set in the header`);
+    const every = parseEvery(h.every);
+    if (every.error) return refuse(`${id}: ${every.error}`);
+    if (board.routines.filter((x) => x.header.id === id).length > 1) return refuse(`${id} is a duplicate routine id; run roadctl lint`);
+    const given = typeof scope === 'string' && scope && !scope.startsWith('--');
+    const have = scopesOf(h.approved);
+    if (given || !have.length) {
+      const sc = given ? scope : 'read+board';
+      const tokens = sc.split('+');
+      const bad = tokens.filter((x) => !ROUTINE_SCOPES.includes(x));
+      if (bad.length || tokens.some((x) => !x)) throw new Error(`bad scope ${sanitize(sc, 40)}; known: ${ROUTINE_SCOPES.join(', ')}, joined with +`);
+      if (!tokens.includes('read') || !tokens.includes('board')) throw new Error('--scope must include read and board (a routine reads and writes the board), for example read+board or read+board+external');
+      if (typeof source !== 'string' || !source || source.startsWith('--')) throw new Error(`${id} has no approval yet: --source REF (where the owner said so) is required to record one`);
+      t = setHeader(t, 'approved', `${who}, ${date}, scope=${sc}, source=${sanitizeText(source, 200)}`);
+      note = ` (approval recorded: scope=${sc})`;
+    }
+    t = setHeader(t, 'enabled', 'true');
+    t = insertRoutineLog(t, `- ${date} [${who}] ON${note}`);
+  } else {
+    t = setHeader(t, 'enabled', 'false');
+    t = insertRoutineLog(t, `- ${date} [${who}] OFF`);
+  }
+  writeCard(r, t);
+  return { ok: true, note };
+}
+
+function applyRoutineDone(r, as, result, text, date = today()) {
+  let t = setHeader(readNorm(r), 'last_run', isoAt());
+  t = setHeader(t, 'last_result', result);
+  writeCard(r, insertRoutineLog(t, `- ${date} [${as}] RUN ${result}: ${sanitizeText(text, 1500)}`));
+}
+
+/**
+ * The routine's own agent records a run: last_run (now), last_result and a Log line; then ONLY that file is committed and pushed, like `report`.
+ * Statuses: recorded (pushed), recorded-local (offline, no remote or no git), refused, lost (the file is gone on the server), error.
+ */
+export function routineDone(board, id, { as, result, text, timeout = netTimeout() }) {
+  const e = checkAgent(as, '--as');
+  if (e) return { status: 'refused', message: e };
+  if (!ROUTINE_RESULTS.includes(result)) return { status: 'refused', message: `--result must be one of ${ROUTINE_RESULTS.join('|')}` };
+  if (!String(text ?? '').trim()) return { status: 'refused', message: 'a run needs a summary: roadctl routine done <id> --as AGENT --result ok|escalated|failed "what was checked, changed, handed over"' };
+  const r = findRoutine(board, id);
+  const miss = ['agent', 'model', 'env'].filter((k) => !r.header[k]);
+  if (miss.length) return { status: 'refused', message: `${id} has no ${miss.join(', ')}; a routine without agent, model and environment never runs` };
+  if (r.header.agent !== as) return { status: 'refused', message: `only the routine's agent (${r.header.agent}) may record a run, not ${as}` };
+  if (board.routines.filter((x) => x.header.id === id).length > 1) return { status: 'refused', message: `${id} is a duplicate routine id; run roadctl lint` };
+  const ctx = syncContext(board);
+  const remote = ctx && gitx(['remote'], ctx.root).out;
+  const rel = ctx ? path.relative(ctx.root, real(r.file)).split(path.sep).join('/') : null;
+  if (remote && cardPending(ctx, rel)) return { status: 'refused', message: 'the routine file has uncommitted changes besides this run; run roadctl save first so the run is the only change pushed' };
+  applyRoutineDone(r, as, result, text);
+  const base = { id };
+  if (!ctx) return { ...base, status: 'recorded-local', message: 'recorded on the local board only (not a git repository): not yet visible to others' };
+  if (!remote) return { ...base, status: 'recorded-local', message: 'recorded locally (the repository has no remote): not yet visible to others' };
+  const commit = () => {
+    gitx(['add', '--', rel], ctx.root);
+    return gitx(['commit', '-q', '-m', `board ${path.basename(board.project)}: routine ${id} run by ${as}`, '--', rel], ctx.root);
+  };
+  const cm = commit();
+  if (!cm.ok) return { status: 'error', message: `git commit failed: ${failureHint(cm)}` };
+  if (!upstreamOf(ctx.root)) return { ...base, status: 'recorded-local', message: 'recorded and committed locally (the branch has no upstream): not yet visible to others; the next roadctl save pushes it' };
+  const local = (why) => ({ ...base, status: 'recorded-local', message: `${why}; the run is committed locally and NOT yet visible to others; the next roadctl save pushes it` });
+  for (let attempt = 0; attempt < 4; attempt++) {
+    const unpushed = gitx(['log', '@{u}..HEAD', '--name-only', '--format='], ctx.root).out.split('\n').filter(Boolean);
+    const foreign = unpushed.filter((x) => !inScope(ctx, x));
+    if (foreign.length) return local(`unpushed commits touch paths outside the board (${foreign.slice(0, 3).join(', ')})`);
+    const p = gitx(['push', '--quiet'], ctx.root, { timeout });
+    if (p.ok) return { ...base, status: 'recorded', message: `recorded the run of ${id} as ${as} (pushed; others see it after roadctl pull)` };
+    if (looksOffline(p)) return local(`could not push (${failureHint(p) || 'timeout'})`);
+    if (!/rejected|non-fast-forward|fetch first/i.test(p.err)) return { status: 'error', ...base, message: `git push failed: ${failureHint(p)}; the run is committed locally and not visible to others` };
+    const i = integrate(ctx, board, timeout);
+    if (i.status === 'offline') return local(i.message);
+    if (i.status === 'conflict') {
+      // our commit is HEAD: take the server's file, then record the run on it again
+      gitx(['reset', '-q', '--soft', 'HEAD~1'], ctx.root);
+      gitx(['checkout', 'HEAD', '--', rel], ctx.root);
+      integrate(ctx, board, timeout);
+      const again = loadRoutines(board.dir).find((x) => x.header.id === id);
+      if (!again) return { status: 'lost', ...base, message: 'the run was not published: the routine file is gone on the server; tell the owner' };
+      applyRoutineDone(again, as, result, text);
+      const c2 = commit();
+      if (!c2.ok) return { status: 'error', ...base, message: `git commit failed: ${failureHint(c2)}` };
+      continue;
+    }
+    if (!['pulled', 'up-to-date'].includes(i.status)) return { status: 'error', ...base, message: `${i.message}; the run is committed locally and not visible to others` };
+  }
+  return { status: 'error', ...base, message: 'git push was rejected repeatedly; the run is committed locally and not visible to others' };
+}
+
+export function showRoutine(board, id, { log = 5 } = {}) {
+  const r = findRoutine(board, id);
+  const row = routineRows(board).find((x) => x.file === `routines/${r.name}`);
+  const o = [`# ${r.header.id ?? '?'} — ${r.header.title ?? ''}`, ...Object.entries(r.header).filter(([k]) => k !== 'id' && k !== 'title').map(([k, v]) => `${k}: ${v}`), ''];
+  o.push(`state: ${row.reasons.length ? `would not run: ${row.reasons.join('; ')}` : 'allowed to run'} | ${row.due ? 'due' : 'not due'}`, '');
+  for (const s of ['Goal', 'Steps', 'May write', 'Escalate']) if (r.sections[s]) o.push(`## ${s}`, r.sections[s].trim(), '');
+  o.push('## Log (latest)', ...r.log.slice(-log).map((e) => `- ${e.date} [${e.author}] ${e.text}`));
+  return { text: o.join('\n'), json: { header: r.header, sections: r.sections, state: row, log: r.log.slice(-log) } };
+}
+
+/** The board switch: `roadctl autonomy routines on|off`. */
+export const setRoutinesSwitch = (board, on) => writeAutonomy(board, { routines: on });
+
+const ROUTINE_USAGE = 'usage: roadctl routine list [--all] [--json] | show <id> [--json] | new <id> "title" --agent A --model M --env E --every 2h | on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME | done <id> --as AGENT --result ok|escalated|failed "summary"';
+
+/** `roadctl routine ...`. Needs its own board lookup because `list --all` covers every board. */
+export function routineCommand(flags, args, io, env = process.env) {
+  const out = (s) => io.out(`${s}\n`);
+  const sub = args[1] ?? 'list';
+  const one = () => {
+    const dir = findBoard(process.cwd(), flags.board, env);
+    if (!dir) throw new Error('no board found (looked for board/config.json upwards, then the central workspace and the user list of boards); use --board <dir>, --project NAME or roadctl where <path>');
+    return loadBoard(dir);
+  };
+  const str = (k) => (typeof flags[k] === 'string' && !flags[k].startsWith('--') ? flags[k] : undefined);
+  if (sub === 'list') {
+    let boards;
+    if (flags.all) {
+      if (!hasBoardSources(env)) throw new Error('no workspace found; set ROADCTL_WORKSPACE, use --workspace DIR or add a board with roadctl boards add');
+      boards = knownBoards(env).map((b) => ({ name: b.name, board: loadBoard(b.dir) }));
+    } else {
+      const b = one();
+      boards = [{ name: path.basename(b.project), board: b }];
+    }
+    const res = boards.map((b) => ({ ...b, rows: routineRows(b.board), on: autonomyOf(b.board).routines }));
+    if (flags.json) out(JSON.stringify(res.flatMap((b) => b.rows.map((x) => ({ project: b.name, board_switch: b.on, ...x }))), null, 2));
+    else
+      for (const b of res) {
+        const p = flags.all ? `${b.name}: ` : '';
+        out(`${p}routines: board switch ${b.on ? 'ON' : 'OFF (nothing runs; the owner turns it on with roadctl autonomy routines on --by NAME)'} | ${b.rows.length} routine(s), ${b.rows.filter((x) => x.enabled).length} on`);
+        for (const x of b.rows) out(formatRoutineRow(x, `${p}  `));
+      }
+    return 0;
+  }
+  if (sub === 'show') {
+    if (!args[2]) throw new Error(ROUTINE_USAGE);
+    const r = showRoutine(one(), args[2]);
+    out(flags.json ? JSON.stringify(r.json, null, 2) : r.text);
+    return 0;
+  }
+  if (sub === 'new') {
+    if (!args[2]) throw new Error(ROUTINE_USAGE);
+    const board = one();
+    const file = newRoutine(board, args[2], args[3] ?? '', { agent: str('agent'), model: str('model'), env: str('env'), every: str('every') });
+    out(file);
+    io.err(`routine ${args[2]} created, switched off and not approved. Fill in Goal, Steps, May write and Escalate; the owner turns it on with roadctl routine on ${args[2]} --by NAME --source REF (and the board switch with roadctl autonomy routines on --by NAME). Not committed: run roadctl save\n`);
+    return 0;
+  }
+  if (sub === 'on' || sub === 'off') {
+    if (!args[2] || !str('by')) throw new Error(`usage: roadctl routine ${sub} <id> --by NAME${sub === 'on' ? ' [--scope read+board[+external]] [--source REF]' : ''}; the owner decides this, only run it when the owner told you to`);
+    const board = one();
+    io.err(staleWarning(board));
+    const r = setRoutineEnabled(board, args[2], sub === 'on', { by: str('by'), scope: flags.scope, source: flags.source });
+    if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
+    const sw = autonomyOf(board).routines;
+    out(`${args[2]}: ${sub === 'on' ? 'enabled' : 'disabled'}${r.note}.${sub === 'on' && !sw ? ' The board switch is OFF, so nothing runs until the owner runs roadctl autonomy routines on --by NAME.' : ''} Not committed: run roadctl save`);
+    return 0;
+  }
+  if (sub === 'done') {
+    if (!args[2] || !str('as') || !str('result') || !args[3]) throw new Error('usage: roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary"');
+    const r = routineDone(one(), args[2], { as: str('as'), result: str('result'), text: args[3] });
+    const ok = ['recorded', 'recorded-local'].includes(r.status);
+    if (flags.json) out(JSON.stringify(r, null, 2));
+    else if (ok) out(`roadctl routine done: ${r.status} — ${r.message}`);
+    else io.err(`roadctl routine done: ${r.status} — ${r.message}\n`);
+    return ok ? 0 : 1;
+  }
+  throw new Error(ROUTINE_USAGE);
+}
+
 // ---------------------------------------------------------------- help
 //
 // One table feeds both the overview (`roadctl help`) and the per-command help (`roadctl help <command>`,
@@ -2873,19 +3308,19 @@ export const COMMANDS = {
   },
   tick: {
     group: 'Look', effect: 'git', summary: 'model-free check for a scheduled orchestrator',
-    purpose: 'The first step of a scheduled run, without a model: pulls the board repositories, finds what AGENT could TAKE (open or expired delegations it may claim), ACCEPT (reported results it may accept), START (approved ready cards with every depends_on done and no delegation; orchestrators only) or look at (STALE: claimed with an expired lease; orchestrators only), asks the limits gate (cache, never --fresh; only when there is something to do) and answers with a decision and an exit code. A scheduler starts a model only on exit 0. When idle the text is the single line "tick AGENT: idle" and no limits are probed. The text has no times and no percentages and is sorted, so a monitor that compares it with the last run (Hermes --monitor-script) starts the agent only when something changed. Outside a board it covers every board of the workspace. One tick per agent at a time (lock; second run prints busy, exit 5). Every run is appended to a ledger.',
+    purpose: 'The first step of a scheduled run, without a model: pulls the board repositories, finds what AGENT could TAKE (open or expired delegations it may claim), ACCEPT (reported results it may accept), START (approved ready cards with every depends_on done and no delegation; orchestrators only) or look at (STALE: claimed with an expired lease; orchestrators only) or RUN (a recurring routine that is due and whose own agent is AGENT; needs the board switch autonomy.routines, enabled, approved, agent, model and env), asks the limits gate (cache, never --fresh; only when there is something to do) and answers with a decision and an exit code. A scheduler starts a model only on exit 0. When idle the text is the single line "tick AGENT: idle" and no limits are probed. The text has no times and no percentages and is sorted, so a monitor that compares it with the last run (Hermes --monitor-script) starts the agent only when something changed. Outside a board it covers every board of the workspace. One tick per agent at a time (lock; second run prints busy, exit 5). Every run is appended to a ledger.',
     usage: ['roadctl tick --as AGENT [--all] [--no-pull] [--json] [--prompt]', 'roadctl tick --ledger [--as AGENT] [-n 20] [--json]'],
-    flags: [['--as AGENT', 'the agent the run is for (registry roles decide what applies)'], ALL('check'), ['--no-pull', 'do not pull first (default: git pull of each repository; a failure is a stable "sync:" line)'], ['--prompt', 'with work: print the instruction for the orchestrator model instead of the item list'], ['--ledger', 'print the last runs and exit (read-only); -n N how many (default 20), --as filters'], J],
+    flags: [['--as AGENT', 'the agent the run is for (registry roles decide what applies)'], ALL('check'), ['--no-pull', 'do not pull first (default: git pull of each repository; a failure is a stable "sync:" line)'], ['--prompt', 'with work: print the instruction for the orchestrator model instead of the item list (a RUN item names the routine file, its model and environment; the routine text is not inserted)'], ['--ledger', 'print the last runs and exit (read-only); -n N how many (default 20), --as filters'], J],
     examples: ['roadctl tick --as claude-code@home-wsl', 'roadctl tick --as claude-code@home-wsl --prompt > p.txt && claude -p "$(cat p.txt)"', 'roadctl tick --ledger -n 5'],
     changes: 'No card. It pulls (unless --no-pull), writes the limits cache, a lock file and one line per run in $XDG_STATE_HOME/road-map-journal/ticks.jsonl (not printed). Starts no model.', exits: '0 work (a model may be started); 4 idle; 1 reserve reached; 3 limits unknown; 5 another tick of this agent is running; 2 usage error',
   },
   autonomy: {
     group: 'Look', effect: 'read', summary: 'what may start unattended; on|off is owner only',
-    purpose: 'Per board: whether autonomous work is on, which agents may start work, the queue in order with each card\'s status, auto mark and why it is not eligible now (not auto, not ready, deps open, delegated, done), auto cards outside the queue, and which card each allowed orchestrator would get now. Nothing is autonomous by default: the owner turns it on for a board, queues cards and gives each the auto approval scope. autonomy on|off changes the board\'s config.json: only when the owner told you to.',
-    usage: ['roadctl autonomy [--all] [--json]', 'roadctl autonomy on|off [--agents a,b|any] [--by NAME]   (only when the owner told you to)'],
-    flags: [ALL('show'), ['--agents a,b', 'with on|off: only these agents may start work from this board ("any": every orchestrator)'], ['--by NAME', 'the owner who decided (shown in the answer)'], J],
-    examples: ['roadctl autonomy', 'roadctl autonomy --all --json', 'roadctl autonomy on --agents hermes@home-host --by Lujker', 'roadctl autonomy off --by Lujker'],
-    changes: 'Overview: nothing. on|off: the "autonomy" key of board/config.json (other keys keep their text). Nothing is written to cards. Not committed: run roadctl save.', exits: '0 ok; 2 usage error, malformed autonomy section or no board found',
+    purpose: 'Per board: whether autonomous work is on, which agents may start work, the queue in order with each card\'s status, auto mark and why it is not eligible now (not auto, not ready, deps open, delegated, done), auto cards outside the queue, and which card each allowed orchestrator would get now. Nothing is autonomous by default: the owner turns it on for a board, queues cards and gives each the auto approval scope. autonomy on|off changes the board\'s config.json: only when the owner told you to. The same page lists the recurring routines with their run state; their own switch is autonomy routines on|off (key autonomy.routines, default off, independent of the card autonomy).',
+    usage: ['roadctl autonomy [--all] [--json]', 'roadctl autonomy on|off [--agents a,b|any] [--by NAME]   (only when the owner told you to)', 'roadctl autonomy routines on|off --by NAME   (the board switch for recurring routines; only when the owner told you to)'],
+    flags: [ALL('show'), ['--agents a,b', 'with on|off: only these agents may start work from this board ("any": every orchestrator)'], ['--by NAME', 'the owner who decided (shown in the answer; required with routines on|off)'], J],
+    examples: ['roadctl autonomy', 'roadctl autonomy --all --json', 'roadctl autonomy on --agents hermes@home-host --by Lujker', 'roadctl autonomy off --by Lujker', 'roadctl autonomy routines on --by Lujker'],
+    changes: 'Overview: nothing. on|off and routines on|off: the "autonomy" key of board/config.json (other keys keep their text). Nothing is written to cards. Not committed: run roadctl save.', exits: '0 ok; 2 usage error, malformed autonomy section or no board found',
   },
   brief: {
     group: 'Look', effect: 'read', summary: 'short summary of the board for an agent',
@@ -3022,6 +3457,14 @@ export const COMMANDS = {
     flags: [['--as AGENT', 'the acceptor (required)']],
     examples: ['roadctl return P4.2 --as claude-code@home-wsl "a3: the race test does not use two clones"'],
     changes: 'The delegate and claim headers and one Log line of that card (not committed: run roadctl save).', exits: '0 ok; 1 refused; 2 usage error, unknown card or no board found',
+  },
+  routine: {
+    group: 'Delegate', effect: 'git', summary: 'recurring routines (list, show read; new, on, off write; done git)',
+    purpose: 'Recurring, mostly mechanical project tasks (collect merge request, issue or message state, watch servers) in board/routines/<id>.md. Each has an executor the owner names when creating it: agent, model and env are REQUIRED; a routine without any of them never runs. A routine runs only when the board switch autonomy.routines is on (roadctl autonomy routines on), the routine is enabled, approved, and due (no last_run, or now is at least last_run + every); roadctl tick --as AGENT then offers it as RUN to that agent only. list shows every routine with its run state and why it would not run now (--all: every board); show prints one routine. new creates a routine from a template, switched off and not approved. on and off are the owner\'s switch: on records the approval (default scope read+board, --source required) and refuses without agent, model and env; only when the owner told you to. done is for the routine\'s own agent: sets last_run and last_result, appends a Log line (up to 1500 characters, the last 50 lines are kept) and commits and pushes ONLY that file, like report (offline it stays local; a conflict is applied again on the server file). The routine text is the owner\'s instruction within the approved scope (default: read external systems, write the board); hand over with roadctl delegate or a question for the owner, as its Escalate section says.',
+    usage: ['roadctl routine list [--all] [--json]', 'roadctl routine show <id> [--json]', 'roadctl routine new <id> "title" --agent A --model M --env E --every 2h', 'roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF]   (only when the owner told you to)', 'roadctl routine off <id> --by NAME   (only when the owner told you to)', 'roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary" [--json]'],
+    flags: [ALL('list routines of'), ['--agent A / --model M / --env E', 'new: the executor (an agent name like claude-code@work-notebook, a model like claude-haiku-5-5, an environment like Work-notebook-wsl); all three are required, ask the owner, never guess'], ['--every SPAN', 'new: how often it is due: 30m, 2h, 1d (at least 5m)'], ['--by NAME', 'on, off: the owner who decided'], ['--scope S', 'on: read+board (default) or read+board+external'], ['--source REF', 'on: where the owner said so (required when no approval is recorded yet)'], ['--as AGENT', 'done: the routine\'s own agent'], ['--result R', 'done: ok, escalated or failed'], J],
+    examples: ['roadctl routine list', 'roadctl routine new atom-status "Collect MR and issue status" --agent claude-code@work-notebook --model claude-haiku-5-5 --env Work-notebook-wsl --every 2h', 'roadctl routine on atom-status --by Lujker --source "chat 2026-11-12"', 'roadctl routine done atom-status --as claude-code@work-notebook --result ok "3 cards updated, nothing to hand over"'],
+    changes: 'list, show: nothing. new: creates board/routines/<id>.md. on, off: the enabled (and approved) header and one Log line of that routine file (not committed: run roadctl save). done: the last_run, last_result headers and one Log line of that file, then a git commit and push of that file only (needs the network; offline keeps the commit local).', exits: '0 ok (done: recorded or recorded-local); 1 refused (on: missing agent, model or env; done: not the routine\'s agent) or failed; 2 usage error, missing agent/model/env on new, unknown routine or no board found',
   },
   approve: {
     group: 'Owner only', effect: 'write', summary: 'record the owner approval on a card',
@@ -3166,6 +3609,7 @@ export function helpOverview() {
     '  - Before an automatic start: roadctl limits --check <agent> (0 go, 1 reserve, 3 unknown); limits --confirm only when the owner told you to.',
     '  - Delegation: roadctl tasks --for <you>, then claim and report; only a non-script agent accepts.',
     '  - Autonomous or personal work is the owner\'s decision: change auto, queue, autonomy on|off only on the owner\'s words.',
+    '  - Recurring routines: tick offers RUN only to the routine\'s own agent; routine on|off and autonomy routines on|off only on the owner\'s words.',
     '',
     'roadctl help <command> for details',
   );
@@ -3186,7 +3630,7 @@ export function helpFor(name) {
 
 function parse(argv) {
   const o = { _: [], flags: {} };
-  const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at']);
+  const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -3232,6 +3676,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
     }
     if (cmd === 'limits') return await limitsCommand(flags, io);
     if (cmd === 'tick') return await tickCommand(flags, args, io);
+    if (cmd === 'routine') return routineCommand(flags, args, io);
     if (cmd === 'hook-install' || cmd === 'hook-uninstall') {
       const kind = flags.claude ? 'claude' : flags.codex ? 'codex' : flags.hermes ? 'hermes' : flags.git ? 'git' : null;
       const dir = flags.all || flags.user ? null : findBoard(process.cwd(), flags.board);
@@ -3251,7 +3696,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
       return f.some((x) => x.level === 'error') ? 1 : 0;
     }
     if (OVERVIEW.has(cmd) && flags.all) {
-      if (cmd === 'autonomy' && ['on', 'off'].includes(args[1])) throw new Error('autonomy on|off changes one board: run it inside the project or with --board DIR / --project NAME, without --all');
+      if (cmd === 'autonomy' && (['on', 'off'].includes(args[1]) || args[1] === 'routines')) throw new Error('autonomy on|off (and autonomy routines on|off) changes one board: run it inside the project or with --board DIR / --project NAME, without --all');
       if (!hasBoardSources()) throw new Error('no workspace found; set ROADCTL_WORKSPACE, use --workspace DIR or add a board with roadctl boards add');
       return overview(cmd, knownBoards().map((b) => ({ name: b.name, board: loadBoard(b.dir) })), flags, out, true);
     }
@@ -3294,13 +3739,19 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
       case 'tasks':
       case 'next': return overview(cmd, [{ name: path.basename(board.project), board }], flags, out, false);
       case 'autonomy': {
+        if (args[1] === 'routines') {
+          if (!['on', 'off'].includes(args[2]) || !flags.by || flags.by === true) throw new Error('usage: roadctl autonomy routines on|off --by NAME; the owner decides this, only run it when the owner told you to');
+          io.err(staleWarning(board));
+          const a = setRoutinesSwitch(board, args[2] === 'on');
+          return out(`routines ${a.routines ? 'ON' : 'OFF'} (set by ${sanitize(flags.by, 40)}) in ${path.join(dir, 'config.json')}; the card autonomy is not affected (${a.enabled ? 'on' : 'off'}). Only routines that are enabled and approved run; check with roadctl routine list. Not committed: run roadctl save`), 0;
+        }
         if (args[1] === 'on' || args[1] === 'off') {
           if (flags.agents === true) throw new Error('usage: roadctl autonomy on|off [--agents a,b|any] [--by NAME]; only when the owner told you to');
           const a = setAutonomy(board, { on: args[1] === 'on', agents: flags.agents });
           const forWho = a.enabled && a.agents.length ? ` for ${a.agents.join(', ')}` : '';
           return out(`autonomy ${a.enabled ? 'ON' : 'OFF'}${forWho}${flags.by && flags.by !== true ? ` (set by ${sanitize(flags.by, 40)})` : ''} in ${path.join(dir, 'config.json')}${a.enabled && !a.queue.length ? '; the queue is empty, add cards with roadctl queue add <id>' : ''}. Not committed: run roadctl save. Check with roadctl autonomy`), 0;
         }
-        if (args[1]) throw new Error('usage: roadctl autonomy [--all] [--json]   |   roadctl autonomy on|off [--agents a,b|any] [--by NAME]');
+        if (args[1]) throw new Error('usage: roadctl autonomy [--all] [--json]   |   roadctl autonomy on|off [--agents a,b|any] [--by NAME]   |   roadctl autonomy routines on|off --by NAME');
         return overview(cmd, [{ name: path.basename(board.project), board }], flags, out, false);
       }
       case 'queue': {

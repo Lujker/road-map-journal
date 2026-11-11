@@ -1,6 +1,6 @@
 ---
 name: road-map-journal
-description: "Use when working with a project's roadmap, development plan, queue, work journal or item status: asking what is next, continuing or resuming planned work, recording a decision, updating an item, or reconciling status with evidence. Follows the project's own conventions. Triggers include «дорожная карта», «что дальше по плану?», «продолжай разработку по плану», «запиши решение», «обнови статус пункта», «давай составим список агентов и исполнителей», «отдай F8 в автономную работу», «оставь это мне»."
+description: "Use when working with a project's roadmap, development plan, queue, work journal or item status: asking what is next, continuing or resuming planned work, recording a decision, updating an item, or reconciling status with evidence. Follows the project's own conventions. Triggers include «дорожная карта», «что дальше по плану?», «продолжай разработку по плану», «запиши решение», «обнови статус пункта», «давай составим список агентов и исполнителей», «отдай F8 в автономную работу», «оставь это мне», «заведи регулярную задачу»."
 license: MIT
 metadata:
   version: "0.4.0"
@@ -52,4 +52,5 @@ After an authorized edit, check the affected status, queue, links, and consisten
 - [Board projects](references/board.md) — working in a project whose plan is a card board.
 - [Executors and the registry](references/executors.md) — building or reviewing the list of agents that may take delegated work, with the owner.
 - [Autonomous or personal work](references/autonomy.md) — the owner's decision which cards go to unattended work; how to act on «отдай в автономную работу», «оставь это мне».
+- [Recurring routines](references/routines.md) — regular mostly mechanical tasks with an executor the owner names (agent, model, environment: required); creating one, permissions, escalation, finishing a run; switching on and off only on the owner's words.
 - [Multi-repository reconciliation](references/multi-repo-sync.md) — preserve work and distinguish recorded, Git and live state across checkouts.

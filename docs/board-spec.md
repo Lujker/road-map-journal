@@ -11,6 +11,7 @@ board/
   config.json              format version, language, status mapping, limits
   BOARD.md                 generated, one line per card, never edited by hand
   cards/<id>-<slug>.md     one card per file
+  routines/<id>.md         optional: recurring routines, one per file (see Recurring routines)
   notes/                   research and design, linked from cards
 ```
 
@@ -18,7 +19,7 @@ Closed cards stay where they are (links keep working); the board collapses them 
 
 **Central workspace.** The board may instead live in a separate repository that holds the plans of several projects: `<workspace>/projects/<name>/board/`. `roadctl` then finds it from any directory under the code project when that directory or one of its ancestors is named `<name>` (case-insensitive, `_` and `-` equal) or listed in the board's `config.json` under `"match"`. The workspace is `$ROADCTL_WORKSPACE`, else `~/projects/agent-workspace` or `~/Projects/agent-workspace`. Without a central workspace a user can list boards in `${XDG_CONFIG_HOME:-~/.config}/road-map-journal/boards` (one absolute board directory per line, `#` comments; `roadctl boards add`): the name of such a board is its project folder name (the parent of `board/`), found the same way as a workspace board. A board in the project root wins when both exist. In this mode the code repository holds no plan files, the Stop reminder looks at the code repository's changes and counts the board as updated when its own directory has uncommitted changes in the workspace repository, and `roadctl lint --all` / `hook pre-commit-all` check every board in the workspace.
 
-`config.json` is plain JSON: `{"board_version": 1, "title": "Project", "language": "ru", "match": [], "status_map": {}, "limits": {"board_bytes": 6144, "doing_stale_days": 14}}` (`title`, `match`, `autosync` and `autonomy` are optional; `autosync: true` lets the SessionStart and Stop hooks pull and save the board by themselves, see [roadctl.md](roadctl.md); `autonomy` is described below). `autonomy` is `{"enabled": false, "agents": [], "queue": []}` and is the owner's switch for unattended work (see [Autonomous or personal work](#autonomous-or-personal-work)); missing means off. `status_map` is optional and maps a project's own status words to the vocabulary below. `board_version` lets tools refuse to write a newer format. Defaults: 6 KB for `BOARD.md` keeps the board cheap to read each session; 14 days before a `doing` card is reported stale is a starting guess to be revised after use.
+`config.json` is plain JSON: `{"board_version": 1, "title": "Project", "language": "ru", "match": [], "status_map": {}, "limits": {"board_bytes": 6144, "doing_stale_days": 14}}` (`title`, `match`, `autosync` and `autonomy` are optional; `autosync: true` lets the SessionStart and Stop hooks pull and save the board by themselves, see [roadctl.md](roadctl.md); `autonomy` is described below). `autonomy` is `{"enabled": false, "agents": [], "queue": [], "routines": false}` and holds the owner's switches for unattended work (see [Autonomous or personal work](#autonomous-or-personal-work)) and for recurring routines (`routines`, see [Recurring routines](#recurring-routines)); missing means off. `status_map` is optional and maps a project's own status words to the vocabulary below. `board_version` lets tools refuse to write a newer format. Defaults: 6 KB for `BOARD.md` keeps the board cheap to read each session; 14 days before a `doing` card is reported stale is a starting guess to be revised after use.
 
 ## Card file
 
@@ -115,16 +116,21 @@ Errors block a git commit when a pre-commit check runs; warnings never block. A 
 | 18 | `claim` without `delegate`, or with a `delegate` whose state is not `claimed`; `state=claimed` without `claim` | error |
 | 19 | The lease of a `claim` has expired (`until` is in the past) | warning |
 | 20 | A delegation (`delegate` or `claim`) on a `done` or `dropped` card | error |
-| 21 | `config.json` has a malformed `autonomy` section: not an object, `enabled` not a boolean, `agents` not agent names, `queue` not card ids or with a repeated id | error |
+| 21 | `config.json` has a malformed `autonomy` section: not an object, `enabled` or `routines` not a boolean, `agents` not agent names, `queue` not card ids or with a repeated id | error |
 | 22 | `autonomy.queue` lists an id that is not a card | error |
 | 23 | `autonomy.queue` lists a `done` or `dropped` card | warning |
-| 24 | `approved` has a scope token other than `analysis`, `implementation`, `external`, `auto` | warning |
+| 24 | `approved` has a scope token other than `analysis`, `implementation`, `external`, `auto` (for a routine: other than `read`, `board`, `external`) | warning |
+| 25 | A routine file is malformed: header does not parse, `id`, `title`, `every` or `enabled` missing, `every` not like `30m`, `2h`, `1d` (at least 5m), `enabled` not `true` or `false`, a bad agent, model or env value, `last_run` not an ISO-8601 UTC time, `last_result` not `ok`, `escalated` or `failed` | error |
+| 26 | A routine lacks `agent`, `model` or `env` | error |
+| 27 | A routine is `enabled: true` without an `approved` record, or `approved` has no `scope=` | error |
+| 28 | Two routines have the same `id` | error |
+| 29 | A routine's `agent` is not in the registry (only checked when a registry exists) | warning |
 
 ## `BOARD.md`
 
-Generated and committed, so readers and tier-1 agents have it; never edited by hand. The first lines state that it is generated, the generation time and the tool or spec version. Then, in this order: `doing`, `review`, `blocked`, `ready` (approved first), then `idea`, `parked`, `done` and `dropped` collapsed to counts. One line per listed card: `- [id] title — status; approved: scope; next: id — first open criterion text`. Titles and criterion text are sanitized (markup and control characters removed) and capped, because they can reach a model. Closed work is a count, not a list.
+Generated and committed, so readers and tier-1 agents have it; never edited by hand. The first lines state that it is generated, the generation time and the tool or spec version. Then, in this order: `doing`, `review`, `blocked`, `ready` (approved first), then `idea`, `parked`, `done` and `dropped` collapsed to counts. One line per listed card: `- [id] title — status; approved: scope; next: id — first open criterion text`. Titles and criterion text are sanitized (markup and control characters removed) and capped, because they can reach a model. Closed work is a count, not a list. When the board has routines, a short `## Routines (board switch on|off)` section follows `Ready`: one line per routine, `- [id] on|off; every 2h; agent`. It holds only facts that change when the owner changes a routine, never `last_run` or `last_result`, so a run of a routine does not make `BOARD.md` out of date; the last result is in `roadctl routine list`.
 
-When the board exceeds `limits.board_bytes`, collapse in this order: `idea` and `parked` first, then `ready`; `doing`, `review` and `blocked` are never collapsed. If a merge conflicts in `BOARD.md`, regenerate it from the cards.
+When the board exceeds `limits.board_bytes`, collapse in this order: `idea` and `parked` first, then `ready`, then the routines to a count; `doing`, `review` and `blocked` are never collapsed. If a merge conflicts in `BOARD.md`, regenerate it from the cards.
 
 ## Writing and merging
 
@@ -151,9 +157,50 @@ The owner decides what goes to unattended work and what stays personal. **Defaul
 
 A card may be started unattended only when the board is enabled, the agent is allowed, the card is in `queue`, its `approved` scope includes `auto`, it is `ready`, every `depends_on` is `done` and it has no delegation. Of the cards that qualify, only the **first in queue order** is offered, one per board at a time. A card without `auto` is personal work: an agent does it only with the owner. The owner's words in the current conversation are the only way to turn any of this on; an agent never does it on its own initiative. By hand: add `+auto` to the `scope=` of the card's `approved` line (a card without an approval first needs the owner's approval record with its `source`), edit the `autonomy` object of `config.json`, and add a Log line for a change of a card.
 
+## Recurring routines
+
+Mostly mechanical work that repeats and can be switched on and off: collect the state of merge requests, issues and messages and update cards; watch servers and support requests. A routine is **not** a card: it has no acceptance and no status, it is run again and again by an executor the owner named when the routine was created. One file per routine, `board/routines/<id>.md` (ids: letters, digits, `.`, `_`, `-`; the file name may differ from the id, the id must be unique among the routines).
+
+### Header: flat `key: value`, like a card
+
+| Key | Required | Meaning |
+| --- | --- | --- |
+| `id` | yes | Unique among routines. |
+| `title` | yes | One line. |
+| `every` | yes | How often it is due: `30m`, `2h`, `1d`; at least `5m`, at most `30d`. |
+| `enabled` | yes | `true` or `false`: the owner's switch for this routine. A new routine is `false`. |
+| `agent` | **yes** | The executor that runs it, an agent name as in delegation (`claude-code@work-notebook`). Only this agent is offered the routine. |
+| `model` | **yes** | The model it must run with (`claude-haiku-5-5`). |
+| `env` | **yes** | The environment or machine it runs in (`Work-notebook-wsl`), one word without spaces. |
+| `approved` | before it is enabled | The same record as on a card: `<by>, <date>, scope=<scopes>[, source=<ref>]`, with the scopes `read` (read external systems), `board` (write the board) and `external` (write external systems), joined with `+`. The default is `read+board`. |
+| `last_run` | no | ISO-8601 UTC time of the last recorded run (written by `roadctl routine done`). |
+| `last_result` | no | `ok`, `escalated` or `failed`. |
+
+`agent`, `model` and `env` are required by the owner's decision (the person who creates the routine names them; nobody guesses): **a routine missing any of them never runs** (a tool offers nothing, lint reports an error, `roadctl routine on` refuses).
+
+### Sections
+
+- `## Goal` — what the routine collects or watches, and why.
+- `## Steps` — what to read and what to update, in order. The executor follows it.
+- `## May write` — what the routine may change. By default: Log lines on cards, delegations and questions for the owner on the board; external systems are read only. External writes only when the approved scope has `external`.
+- `## Escalate` — when and how to hand over: `roadctl delegate` to an orchestrator or a stronger worker (a card with an `approved` record), or a question for the owner. The routine does not change a card's status itself; a card becomes `blocked: decision: ...` only through the normal tools.
+- `## Log` — one line per run, `- 2026-11-12 [claude-code@work-notebook] RUN ok: summary`, newest last. `roadctl` keeps the last 50 lines of a routine file.
+
+### When it runs
+
+All of this must hold, and nothing but the owner's words turns any of it on:
+
+1. The board switch `autonomy.routines` is `true` (default `false`; independent of `autonomy.enabled`, which concerns cards).
+2. The routine has `enabled: true`, an `approved` record, and `agent`, `model` and `env`.
+3. It is due: no `last_run`, or now is at least `last_run` plus `every`.
+
+A tool that schedules work (`roadctl tick --as AGENT`) then offers the routine as a `RUN` item to that agent only. The executor runs it with the named model in the named environment (starting a session with that model when it is not that model), follows Steps, May write and Escalate, and records the run (`roadctl routine done`), which sets `last_run` and `last_result`, adds the Log line and publishes only that file. The text of a routine is the owner's instruction for that executor within the approved scope; unlike card text it is the executor's task, but nothing injects it into a prompt automatically (a prompt names the file, never copies Steps), and `BOARD.md`, `brief` and the hooks never carry it. A routine's permission never exceeds its `approved` scope.
+
+Examples (generic, switched off, not approved): [`examples/routines/`](../examples/routines/).
+
 ## Data, not instructions
 
-Card text can be written by any agent or contributor and reaches a model as context. Anything that injects it automatically should inject only header fields and, at most, the id and a sanitized, length-capped text of the first open criterion, never Log, Goal, Plan, Delegation or Handoff text. In a repository that accepts outside contributions, card files are an injection path.
+Card text can be written by any agent or contributor and reaches a model as context. Anything that injects it automatically should inject only header fields and, at most, the id and a sanitized, length-capped text of the first open criterion, never Log, Goal, Plan, Delegation or Handoff text, and never the text of a routine. In a repository that accepts outside contributions, card files are an injection path.
 
 ## Language
 

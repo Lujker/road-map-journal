@@ -17,3 +17,5 @@ How it works (board format: `docs/board-spec.md`): the board's `config.json` has
 Without `roadctl`, edit the same fields by hand and keep the rest: add `+auto` to the `scope=` of the card's `approved:` line (keep the existing record; for a card without one the owner's approval with its `source` comes first, never invent it) and append a Log line `AUTO on by <owner>`; for the queue and the switch edit the `autonomy` object in `board/config.json` (2-space JSON, keep other keys). `<owner>` is the owner's name as given in the conversation.
 
 After any of these run `roadctl autonomy` and show the owner what it says (queue, reasons, who would start what), then `roadctl save` if board files may be saved without asking in this setup. If the owner's request is ambiguous (which card, which board, which agent), ask. Do not run these commands to find out what would happen; `roadctl autonomy` is the preview.
+
+Recurring routines have their own switch (`autonomy.routines`, `roadctl autonomy routines on|off --by <owner>`) that is independent of everything above; see [Recurring routines](routines.md).
