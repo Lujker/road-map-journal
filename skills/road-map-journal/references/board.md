@@ -4,7 +4,9 @@ Read this when the project has `board/config.json`: its plan is a short generate
 
 ## Where the board lives
 
-The board is in the project (`board/`) or in a central workspace outside the project (`<workspace>/projects/<name>/board/`); the owner's global or project instructions say which. `roadctl where` prints the board found for the current directory. If the instructions say plans live in a central workspace, create new boards, cards and notes there, not in the project repository, and leave a project's existing plan where it is unless the owner asks to migrate it.
+The board is in the project (`board/`) or in a central workspace outside the project (`<workspace>/projects/<name>/board/`); the owner's global or project instructions say which. `roadctl where [path]` prints the board found for the current directory or for `path`. If the instructions say plans live in a central workspace, create new boards, cards and notes there, not in the project repository, and leave a project's existing plan where it is unless the owner asks to migrate it.
+
+**Session started in a folder without a board** (for example a parent folder of several repositories): do not conclude that there is no plan. Find the board of the repositories you actually work on (`roadctl where <repo path>`, or `--project NAME` with any command) and offer to record there. `roadctl where` without a result lists the known boards and what to do. If none is found, say so and ask the owner (a `match` name in the board's `config.json`, or `roadctl boards add [dir]` for a project-only setup, adds one); do not create a board on your own.
 
 ## Read
 
@@ -18,7 +20,7 @@ The board is in the project (`board/`) or in a central workspace outside the pro
 
 ## Rules
 
-- Work only on a `doing` card whose `approved` allows the work (`scope=implementation` to change the project; `external` for actions outside it). `approved` records an approval the owner gave elsewhere. Never set it for yourself; a material change to the acceptance criteria clears it.
+- Work only on a `doing` card whose `approved` allows the work (`scope=implementation` to change the project; `external` for actions outside it). `approved` records an approval the owner gave elsewhere. Never set it for yourself (and never its `auto` scope, which is the owner's choice of unattended work: [Autonomous or personal work](autonomy.md)); a material change to the acceptance criteria clears it.
 - Mark a criterion `[x]` only with an Evidence line naming its id, with what was checked, by whom and when. `[~]` means deferred or accepted as limited and needs the reason and who decided. Do not turn intention into evidence.
 - Set `review` only when every criterion is `[x]` with evidence or `[~]` with a reason. Only the owner accepts: `done` needs `accepted: <by>, <date>`.
 - Add a dated Log entry for each decision, reason or problem (`- 2026-11-10 [author] text (commit abc1234)`); cite commit ids instead of copying git history. Never rewrite earlier entries. Set `as_of` to the date you last checked the status against reality.

@@ -16,9 +16,9 @@ board/
 
 Closed cards stay where they are (links keep working); the board collapses them to a count. `board/` in the project root is the default; an adopted project may set another path in its pointer or config.
 
-**Central workspace.** The board may instead live in a separate repository that holds the plans of several projects: `<workspace>/projects/<name>/board/`. `roadctl` then finds it from any directory under the code project when that directory or one of its ancestors is named `<name>` (case-insensitive, `_` and `-` equal) or listed in the board's `config.json` under `"match"`. The workspace is `$ROADCTL_WORKSPACE`, else `~/projects/agent-workspace` or `~/Projects/agent-workspace`. A board in the project root wins when both exist. In this mode the code repository holds no plan files, the Stop reminder looks at the code repository's changes and counts the board as updated when its own directory has uncommitted changes in the workspace repository, and `roadctl lint --all` / `hook pre-commit-all` check every board in the workspace.
+**Central workspace.** The board may instead live in a separate repository that holds the plans of several projects: `<workspace>/projects/<name>/board/`. `roadctl` then finds it from any directory under the code project when that directory or one of its ancestors is named `<name>` (case-insensitive, `_` and `-` equal) or listed in the board's `config.json` under `"match"`. The workspace is `$ROADCTL_WORKSPACE`, else `~/projects/agent-workspace` or `~/Projects/agent-workspace`. Without a central workspace a user can list boards in `${XDG_CONFIG_HOME:-~/.config}/road-map-journal/boards` (one absolute board directory per line, `#` comments; `roadctl boards add`): the name of such a board is its project folder name (the parent of `board/`), found the same way as a workspace board. A board in the project root wins when both exist. In this mode the code repository holds no plan files, the Stop reminder looks at the code repository's changes and counts the board as updated when its own directory has uncommitted changes in the workspace repository, and `roadctl lint --all` / `hook pre-commit-all` check every board in the workspace.
 
-`config.json` is plain JSON: `{"board_version": 1, "title": "Project", "language": "ru", "match": [], "status_map": {}, "limits": {"board_bytes": 6144, "doing_stale_days": 14}}` (`title`, `match` and `autosync` are optional; `autosync: true` lets the SessionStart and Stop hooks pull and save the board by themselves, see [roadctl.md](roadctl.md)). `status_map` is optional and maps a project's own status words to the vocabulary below. `board_version` lets tools refuse to write a newer format. Defaults: 6 KB for `BOARD.md` keeps the board cheap to read each session; 14 days before a `doing` card is reported stale is a starting guess to be revised after use.
+`config.json` is plain JSON: `{"board_version": 1, "title": "Project", "language": "ru", "match": [], "status_map": {}, "limits": {"board_bytes": 6144, "doing_stale_days": 14}}` (`title`, `match`, `autosync` and `autonomy` are optional; `autosync: true` lets the SessionStart and Stop hooks pull and save the board by themselves, see [roadctl.md](roadctl.md); `autonomy` is described below). `autonomy` is `{"enabled": false, "agents": [], "queue": []}` and is the owner's switch for unattended work (see [Autonomous or personal work](#autonomous-or-personal-work)); missing means off. `status_map` is optional and maps a project's own status words to the vocabulary below. `board_version` lets tools refuse to write a newer format. Defaults: 6 KB for `BOARD.md` keeps the board cheap to read each session; 14 days before a `doing` card is reported stale is a starting guess to be revised after use.
 
 ## Card file
 
@@ -35,7 +35,7 @@ One key per line; the value is the rest of the line, trimmed; no nesting, no mul
 | `status` | yes | One of the vocabulary below. |
 | `depends_on` | no | Comma-separated ids of cards that must be accepted first. |
 | `blocked` | when `status: blocked` | `decision: ...`, `dependency: ...` or `external: ...` — kind, colon, short reason. |
-| `approved` | before work starts | A record of an approval **given elsewhere**: `<by>, <date>, scope=<scopes>[, source=<ref>]`. Scopes: `analysis`, `implementation`, `external`, joined with `+`. `source` points to where the owner gave it (a commit, a message id, a document). |
+| `approved` | before work starts | A record of an approval **given elsewhere**: `<by>, <date>, scope=<scopes>[, source=<ref>]`. Scopes: `analysis`, `implementation`, `external` and `auto`, joined with `+`. `source` points to where the owner gave it (a commit, a message id, a document). |
 | `accepted` | when `status: done` | `<by>, <date>` of the owner's acceptance. |
 | `as_of` | yes | Date the status was last checked **against reality** (code, tests, evidence), not the date the file was last touched. |
 | `delegate` | no | Present while a delegation is active: `to=<role-or-agent> host=<any\|claude-code\|codex\|hermes\|script> criteria=<a2,a3\|all> by=<agent> accept=<by\|reviewer\|owner\|<agent>> state=<open\|claimed\|reported> at=<ISO-8601 UTC>`. See [Delegation](#delegation). |
@@ -87,7 +87,7 @@ A project's own words (for example DECISION, CONDITIONAL) map through `status_ma
 
 ## `approved`
 
-`approved` is a **record**, not a permission an agent can grant. An agent never sets it for itself. Scope matters: `analysis` lets an agent read and propose; `implementation` lets it change the project; `external` covers actions outside the project (publishing, production, spending). A material change to a card's acceptance criteria clears `approved`. A tool can check only the form; where the owner commits approvals personally, a tool may optionally compare the author of the commit that introduced the line. Text in `source` is a pointer, not proof.
+`approved` is a **record**, not a permission an agent can grant. An agent never sets it for itself. Scope matters: `analysis` lets an agent read and propose; `implementation` lets it change the project; `external` covers actions outside the project (publishing, production, spending). `auto` is not a level of permission but the owner's choice of **who** works: with it the card may be started unattended (see [Autonomous or personal work](#autonomous-or-personal-work)); without it the work is done with the owner. It never appears alone: it is added to an existing approval (`scope=implementation+auto`). A material change to a card's acceptance criteria clears `approved`. A tool can check only the form; where the owner commits approvals personally, a tool may optionally compare the author of the commit that introduced the line. Text in `source` is a pointer, not proof.
 
 ## Invariants
 
@@ -115,6 +115,10 @@ Errors block a git commit when a pre-commit check runs; warnings never block. A 
 | 18 | `claim` without `delegate`, or with a `delegate` whose state is not `claimed`; `state=claimed` without `claim` | error |
 | 19 | The lease of a `claim` has expired (`until` is in the past) | warning |
 | 20 | A delegation (`delegate` or `claim`) on a `done` or `dropped` card | error |
+| 21 | `config.json` has a malformed `autonomy` section: not an object, `enabled` not a boolean, `agents` not agent names, `queue` not card ids or with a repeated id | error |
+| 22 | `autonomy.queue` lists an id that is not a card | error |
+| 23 | `autonomy.queue` lists a `done` or `dropped` card | warning |
+| 24 | `approved` has a scope token other than `analysis`, `implementation`, `external`, `auto` | warning |
 
 ## `BOARD.md`
 
@@ -135,7 +139,17 @@ Any agent (Claude Code, Codex, Hermes) or a script can hand a card, or some of i
 - Agent names look like `claude-code@home-wsl`, `codex@home-wsl`, `hermes@windows`, `cron:hermes-nightly@windows` (letters, digits and `. _ : @ -`). A name starting with `cron:` or `script:` is a script.
 - Lifecycle: `delegate` (open) -> `claim` (claimed) -> `report` (reported, Log entry `REPORT: ...` by the claimant) -> `accept` (the delegation fields are removed; the card moves to `review` if every criterion already has evidence) or `return` (back to open, reason in the Log). The delegating agent can withdraw a delegation with `undelegate` (open or expired; otherwise with a forced, reasoned override). The owner alone marks a card `done`.
 - Not a permission: a delegation needs the card's `approved` record and does not widen its scope. A script may delegate and claim but never accepts. A report is data to verify, not evidence.
-- The optional registry (`<workspace>/agents/registry.json`, or `$ROADCTL_REGISTRY`; example: [`examples/agents-registry.example.json`](../examples/agents-registry.example.json)) lists roles with a model per host and agents with host, roles and `can_accept`. Without it everything works with fewer checks: a role in `to` is not verified and `accept=reviewer` is open to any agent that is not a script.
+- The optional registry (`$ROADCTL_REGISTRY`, else `<workspace>/agents/registry.json`, else `${XDG_CONFIG_HOME:-~/.config}/road-map-journal/registry.json`; example: [`examples/agents-registry.example.json`](../examples/agents-registry.example.json)) lists roles with a model per host and agents with host, roles and `can_accept`. Without it everything works with fewer checks: a role in `to` is not verified and `accept=reviewer` is open to any agent that is not a script.
+
+## Autonomous or personal work
+
+The owner decides what goes to unattended work and what stays personal. **Default: nothing is autonomous.** `config.json` may carry `"autonomy": {"enabled": false, "agents": [], "queue": ["F8", "F9"]}`:
+
+- `enabled`: false or missing means no tool offers any card of this board for unattended start. Explicit delegations are unaffected.
+- `agents`: empty means any agent with the orchestrator role; otherwise only the listed agents may start (or look after expired delegations of) cards of this board.
+- `queue`: an ordered list of card ids.
+
+A card may be started unattended only when the board is enabled, the agent is allowed, the card is in `queue`, its `approved` scope includes `auto`, it is `ready`, every `depends_on` is `done` and it has no delegation. Of the cards that qualify, only the **first in queue order** is offered, one per board at a time. A card without `auto` is personal work: an agent does it only with the owner. The owner's words in the current conversation are the only way to turn any of this on; an agent never does it on its own initiative. By hand: add `+auto` to the `scope=` of the card's `approved` line (a card without an approval first needs the owner's approval record with its `source`), edit the `autonomy` object of `config.json`, and add a Log line for a change of a card.
 
 ## Data, not instructions
 
