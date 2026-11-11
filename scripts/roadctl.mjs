@@ -935,7 +935,7 @@ export function findCard(board, id) {
 export function appendLog(board, id, msg, { author = 'agent', commit, date = today(), loose = false } = {}) {
   const c = findCard(board, id);
   let t = readNorm(c);
-  const entry = `- ${date} [${author}] ${loose ? sanitizeText(msg, 1500) : sanitize(msg, 400)}${commit ? ` (commit ${sanitize(commit, 40)})` : ''}`;
+  const entry = `- ${date} [${author}] ${sanitizeText(msg, loose ? 1500 : 400)}${commit ? ` (commit ${sanitize(commit, 40)})` : ''}`;
   if (/^## Log$/m.test(t)) {
     t = t.replace(/(^## Log\n)([\s\S]*?)(?=^## |\s*$(?![\s\S]))/m, (all, h, body) => `${h}${body.replace(/\n*$/, '\n')}${entry}\n\n`);
   } else if (/^## Handoff$/m.test(t)) {

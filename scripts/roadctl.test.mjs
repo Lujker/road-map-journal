@@ -121,6 +121,15 @@ test('log creates a Log section when missing', () => {
   assert.match(fs.readFileSync(p, 'utf8'), /## Log\n- 2026-11-10 \[agent\] note/);
 });
 
+test('log keeps underscores and brackets, drops backticks and angle brackets, caps at 400', () => {
+  const root = project();
+  const p = edit(root, 'W-5', (t) => t);
+  assert.equal(cli(root, ['log', 'W-5', 'adcu_soc_sw!2576 [F1] #3 `x` <b>']).status, 0);
+  assert.match(fs.readFileSync(p, 'utf8'), /\[agent\] adcu_soc_sw!2576 \[F1\] #3 x b\n/);
+  assert.equal(cli(root, ['log', 'W-5', 'y'.repeat(500)]).status, 0);
+  assert.match(fs.readFileSync(p, 'utf8'), new RegExp(`\\[agent\\] ${'y'.repeat(399)}…\\n`));
+});
+
 test('review and done refuse without evidence and succeed with it', () => {
   const root = project();
   const refused = cli(root, ['review', 'W-3']);
@@ -1397,7 +1406,7 @@ test('undelegate: by the delegating agent only; open or expired freely, otherwis
   assert.deepEqual(rc.lint(load(root)), []);
 });
 
-test('report and return keep underscores, asterisks and brackets, drop backticks, angle brackets and control characters, and allow 1500 characters; log keeps its 400', () => {
+test('report and return keep underscores, asterisks and brackets, drop backticks, angle brackets and control characters, and allow 1500 characters; log cleans the same way with a cap of 400', () => {
   const root = project();
   delegated(root);
   assert.equal(dcli(root, ['claim', 'W-3', '--as', CODEX]).status, 0);
@@ -1415,8 +1424,8 @@ test('report and return keep underscores, asterisks and brackets, drop backticks
   assert.match(cardText(root), /RETURNED: fix test_a2 \[a2\] \*now\*/);
   assert.equal(rc.lint(load(root), { skipSync: true }).filter((x) => x.level === 'error').length, 0);
   dcli(root, ['log', 'W-3', 'a_b *c* [d] ' + 'z'.repeat(500)]);
-  const logLine = cardText(root).split('\n').find((l) => l.includes('ab c d'));
-  assert.ok(logLine && logLine.length < 450, 'plain log keeps stripping and its cap of 400');
+  const logLine = cardText(root).split('\n').find((l) => l.includes('a_b *c* [d]'));
+  assert.ok(logLine && logLine.length < 450, 'plain log keeps markup characters and its cap of 400');
   assert.equal(rc.sanitize('a_b *c* [d]'), 'ab c d');
 });
 
