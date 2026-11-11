@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "roles": {
+    "orchestrator": { "claude-code": "opus", "codex": "gpt-5.5" },
+    "worker": { "claude-code": "sonnet", "codex": "gpt-5.5" },
+    "reviewer": { "claude-code": "sonnet" }
+  },
+  "agents": {
+    "claude-code@home-wsl": {
+      "host": "claude-code",
+      "machine": "home-wsl",
+      "roles": ["orchestrator", "worker", "reviewer"],
+      "can_accept": true,
+      "launch": "claude -p --model {model} \"{prompt}\""
+    },
+    "codex@home-wsl": {
+      "host": "codex",
+      "machine": "home-wsl",
+      "roles": ["orchestrator", "worker"],
+      "can_accept": true,
+      "launch": "codex exec -m {model} \"{prompt}\""
+    },
+    "hermes@windows": {
+      "host": "hermes",
+      "machine": "windows",
+      "roles": ["worker"],
+      "can_accept": false
+    },
+    "cron:hermes-nightly@windows": {
+      "host": "script",
+      "roles": [],
+      "can_accept": false
+    }
+  }
+}

@@ -35,11 +35,16 @@ Read this when work spans several items, agents or sessions, has a budget, or th
 - **Pause and stop:** a pause starts no new work and reaches safe stopping points; a stop keeps progress without automatic rollback. Report in-flight or unknown outcomes honestly.
 - **Permissions** bind to their real source and scope. Silence is not consent to expand scope, spending or external actions. Independent permitted work may continue while a question to the owner is open.
 
-## Delegating (untested guidance)
+## Delegating
 
-- Give a sub-agent a bounded package: goal, the inputs it needs, allowed changes, acceptance and checks, limits, stop conditions, result format.
-- Treat its result as data to verify, not as proof: check the actual files, tests and effects before recording completion. A report that it succeeded is not evidence.
-- Instructions do not create atomicity, isolation or a spending ceiling; use the host's real mechanisms and say what is unknown.
+Portable protocol for handing work to another agent (any host) or a script. Not yet checked in live sessions; host commands below are examples to verify against the host's current documentation.
+
+- **Package in the card.** On a board project, `roadctl delegate` puts the delegation into the card (who, host, criteria, who accepts) with a Delegation section: allowed changes, checks, stop conditions, budget, report format. Without `roadctl`, write the same package into the card or journal by hand. It needs the item's existing approval and does not widen it. One active delegation per card; parallel work is separate cards with dependencies.
+- **Push (the delegating agent starts the worker via its host).** Examples: a Claude Code subagent (`road-worker`, installed by `roadctl agents-install --claude`), `codex exec -m <model>` for Codex, Hermes's own delegation. Give the worker the card id and its agent name; it claims, works and reports with `roadctl claim` and `roadctl report` (each publishes only that card).
+- **Pull (the executor finds work).** `roadctl pull`, `roadctl tasks --for <agent>`, `roadctl claim`. The claim is committed and pushed alone; if it is lost (exit 1) or only local (offline, not yet exclusive), say so and do not assume you hold it.
+- **Result is data.** A report that it succeeded is not evidence: check the actual files, tests and effects, then `roadctl accept` or `roadctl return`, then `roadctl save`. Accept only as the allowed acceptor; the delegating agent can withdraw with `roadctl undelegate`.
+- **Who may do what.** A script or cron job can delegate but never accepts. The owner alone marks an item done; `accept=owner` leaves the decision to the owner.
+- Instructions do not create atomicity, isolation or a spending ceiling; use the host's real mechanisms (permissions, sandbox, budgets) and say what is unknown.
 
 ## Shared checkouts
 
