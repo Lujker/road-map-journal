@@ -40,7 +40,7 @@ One key per line; the value is the rest of the line, trimmed; no nesting, no mul
 | `accepted` | when `status: done` | `<by>, <date>` of the owner's acceptance. |
 | `as_of` | yes | Date the status was last checked **against reality** (code, tests, evidence), not the date the file was last touched. |
 | `delegate` | no | Present while a delegation is active: `to=<role-or-agent> host=<any\|claude-code\|codex\|hermes\|script> criteria=<a2,a3\|all> by=<agent> accept=<by\|reviewer\|owner\|<agent>> state=<open\|claimed\|reported> at=<ISO-8601 UTC>`. See [Delegation](#delegation). |
-| `claim` | only while `delegate` has `state=claimed` | `<agent> at=<ISO-8601 UTC> until=<ISO-8601 UTC>`: who holds the delegation and until when (the lease). |
+| `claim` | only while `delegate` has `state=claimed` | `<agent> at=<ISO-8601 UTC> until=<ISO-8601 UTC>[ workdir=<absolute path>]`: who holds the delegation and until when (the lease). `workdir` (optional, set by `roadctl claim --workdir DIR`) is the working directory of the work, for example its git worktree; whitespace and `%` in the path are percent-encoded (`%20`, `%25`). |
 
 Not in v1, by decision: `summary`, `parent`, `rank`. (`claim` was added together with `delegate`, see below.) Times in `delegate` and `claim` are full ISO-8601 UTC (`2026-11-11T09:30:00Z`); every other date stays `YYYY-MM-DD`.
 
@@ -112,7 +112,7 @@ Errors block a git commit when a pre-commit check runs; warnings never block. A 
 | 14 | `doing` card whose `as_of` is newer than its last Log entry | warning |
 | 15 | Past Log lines edited (needs git history) | warning, **not implemented in roadctl 0.1** |
 | 16 | `approved` older than the last edit of Acceptance (needs git history) | warning, **not implemented in roadctl 0.1** |
-| 17 | `delegate` or `claim` does not parse: a field missing, unknown or duplicated, a bad host, state, agent name or time, criteria ids that are not on the card | error |
+| 17 | `delegate` or `claim` does not parse: a field missing, unknown or duplicated, a bad host, state, agent name or time, criteria ids that are not on the card; in `claim`, a repeated field or a `workdir` that is not an absolute path | error |
 | 18 | `claim` without `delegate`, or with a `delegate` whose state is not `claimed`; `state=claimed` without `claim` | error |
 | 19 | The lease of a `claim` has expired (`until` is in the past) | warning |
 | 20 | A delegation (`delegate` or `claim`) on a `done` or `dropped` card | error |
@@ -120,7 +120,7 @@ Errors block a git commit when a pre-commit check runs; warnings never block. A 
 | 22 | `autonomy.queue` lists an id that is not a card | error |
 | 23 | `autonomy.queue` lists a `done` or `dropped` card | warning |
 | 24 | `approved` has a scope token other than `analysis`, `implementation`, `external`, `auto` (for a routine: other than `read`, `board`, `external`) | warning |
-| 25 | A routine file is malformed: header does not parse, `id`, `title`, `every` or `enabled` missing, `every` not like `30m`, `2h`, `1d` (at least 5m), `enabled` not `true` or `false`, a bad agent, model or env value, `last_run` not an ISO-8601 UTC time, `last_result` not `ok`, `escalated` or `failed` | error |
+| 25 | A routine file is malformed: header does not parse, `id`, `title`, `every` or `enabled` missing, `every` not like `30m`, `2h`, `1d` (at least 5m), `hours` not like `mon-fri 09:00-19:00 [tz=Zone]` (bad days or times, end not after start, unknown zone), `enabled` not `true` or `false`, a bad agent, model or env value, `last_run` not an ISO-8601 UTC time, `last_result` not `ok`, `escalated` or `failed` | error |
 | 26 | A routine lacks `agent`, `model` or `env` | error |
 | 27 | A routine is `enabled: true` without an `approved` record, or `approved` has no `scope=` | error |
 | 28 | Two routines have the same `id` | error |
@@ -141,7 +141,7 @@ One writer per card at a time. Two agents appending to one Log conflict in git. 
 Any agent (Claude Code, Codex, Hermes) or a script can hand a card, or some of its criteria, to another executor and take the result back. The delegation lives **in the card**; no other store is needed and `roadctl` only automates the edits. One active delegation per card; for parallel work make separate cards and link them with `depends_on`.
 
 - `delegate: to=... host=... criteria=... by=... accept=... state=... at=...`: `to` is a role (`worker`, `reviewer`) or an agent; `host` restricts where it may run (`any` by default); `criteria` lists the criterion ids the work covers or `all`; `by` is the delegating agent; `accept` says who may take the result: `by` (the delegating agent), `reviewer` (an agent allowed to accept, see the registry), `owner` (the owner, by hand) or an agent name; `state` is `open`, `claimed` or `reported`.
-- `claim: <agent> at=... until=...` exists only while `state=claimed`. The lease ends at `until`; after that the delegation is `expired` (shown, linted with a warning) and may be claimed again.
+- `claim: <agent> at=... until=... [workdir=...]` exists only while `state=claimed`. The lease ends at `until`; after that the delegation is `expired` (shown, linted with a warning) and may be claimed again. `workdir` names where the claimant works (autonomous code work uses its own git worktree). When an expired claim is taken over and that directory exists on the machine and has uncommitted changes, `roadctl claim` warns and `roadctl tick` marks the `STALE` item `(workdir dirty)`; the unfinished changes are reconciled, not overwritten.
 - Agent names look like `claude-code@home-wsl`, `codex@home-wsl`, `hermes@windows`, `cron:hermes-nightly@windows` (letters, digits and `. _ : @ -`). A name starting with `cron:` or `script:` is a script.
 - Lifecycle: `delegate` (open) -> `claim` (claimed) -> `report` (reported, Log entry `REPORT: ...` by the claimant) -> `accept` (the delegation fields are removed; the card moves to `review` if every criterion already has evidence) or `return` (back to open, reason in the Log). The delegating agent can withdraw a delegation with `undelegate` (open or expired; otherwise with a forced, reasoned override). The owner alone marks a card `done`.
 - Not a permission: a delegation needs the card's `approved` record and does not widen its scope. A script may delegate and claim but never accepts. A report is data to verify, not evidence.
@@ -168,6 +168,7 @@ Mostly mechanical work that repeats and can be switched on and off: collect the 
 | `id` | yes | Unique among routines. |
 | `title` | yes | One line. |
 | `every` | yes | How often it is due: `30m`, `2h`, `1d`; at least `5m`, at most `30d`. |
+| `hours` | no | A time window in which it may run: `<days> <HH:MM>-<HH:MM>[ tz=<IANA zone>]`, for example `mon-fri 09:00-19:00`, `daily 08:00-23:00`, `sat,sun 10:00-14:00 tz=Europe/Moscow`. Days: `daily`, a comma list of `mon`..`sun` and ranges (`mon-fri`). Start included, end excluded (`24:00` allowed), never across midnight. Without `tz` the local time of the machine that runs `roadctl`. Outside it a due routine is not offered. |
 | `enabled` | yes | `true` or `false`: the owner's switch for this routine. A new routine is `false`. |
 | `agent` | **yes** | The executor that runs it, an agent name as in delegation (`claude-code@work-notebook`). Only this agent is offered the routine. |
 | `model` | **yes** | The model it must run with (`claude-haiku-5-5`). |
@@ -192,7 +193,7 @@ All of this must hold, and nothing but the owner's words turns any of it on:
 
 1. The board switch `autonomy.routines` is `true` (default `false`; independent of `autonomy.enabled`, which concerns cards).
 2. The routine has `enabled: true`, an `approved` record, and `agent`, `model` and `env`.
-3. It is due: no `last_run`, or now is at least `last_run` plus `every`.
+3. It is due: no `last_run`, or now is at least `last_run` plus `every`; and, when the routine has `hours`, now is inside that window.
 
 A tool that schedules work (`roadctl tick --as AGENT`) then offers the routine as a `RUN` item to that agent only. The executor runs it with the named model in the named environment (starting a session with that model when it is not that model), follows Steps, May write and Escalate, and records the run (`roadctl routine done`), which sets `last_run` and `last_result`, adds the Log line and publishes only that file. The text of a routine is the owner's instruction for that executor within the approved scope; unlike card text it is the executor's task, but nothing injects it into a prompt automatically (a prompt names the file, never copies Steps), and `BOARD.md`, `brief` and the hooks never carry it. A routine's permission never exceeds its `approved` scope.
 

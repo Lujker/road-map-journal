@@ -3074,3 +3074,303 @@ test('the shipped routine examples parse and lint clean, are marked as examples,
   }
   assert.equal(cli(root, ['routine', 'on', 'server-watch', '--by', 'x', '--source', 's']).status, 0, 'a complete example can be switched on by the owner');
 });
+
+// ---------------------------------------------------------------- P4.11: one routine per scheduler job, a time window for routines, the working directory of a claim
+
+const gq = (dir, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: dir, encoding: 'utf8' });
+/** A throwaway git repository; with dirty: true it has an uncommitted file. */
+function gitRepo({ dirty = false, name = 'wt' } = {}) {
+  const dir = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rc-wd-')), name);
+  fs.mkdirSync(dir);
+  gq(dir, 'init', '-q');
+  fs.writeFileSync(path.join(dir, 'a.txt'), 'a');
+  gq(dir, 'add', '-A');
+  gq(dir, 'commit', '-q', '-m', 'init');
+  if (dirty) fs.writeFileSync(path.join(dir, 'unfinished.txt'), 'work in progress');
+  return dir;
+}
+const lastLedger = (t) => JSON.parse(fs.readFileSync(rc.tickLedgerPath({ XDG_STATE_HOME: t.sb.state }), 'utf8').trimEnd().split('\n').at(-1));
+
+test('tick --routine and --kinds: only the chosen items; idle stays one stable line without a limits probe; the prompt has the RUN instruction only; own lock; the ledger records the filter', LSKIP, () => {
+  const t = tenv();
+  routineOn(t, 'atom-status');
+  assert.equal(rnew(t, 'server-watch', { title: 'Watch servers' }).status, 0);
+  assert.equal(t.bcli(['routine', 'on', 'server-watch', '--by', 'Lujker', '--source', 'chat']).status, 0);
+  assert.equal(t.bcli(['delegate', 'W-3', '--to', 'worker', '--by', ME]).status, 0);
+  const lines = (r) => r.stdout.trimEnd().split('\n');
+  const all = t.run(ME);
+  assert.equal(all.status, 0, all.stderr);
+  assert.deepEqual(lines(all).filter((l) => /^(TAKE|RUN) /.test(l)).sort(), [`RUN my-app/atom-status ${RTITLE}`, 'RUN my-app/server-watch Watch servers', `TAKE my-app/W-3 ${W3}`]);
+  // --routine: that routine's RUN item only
+  const one = t.run(ME, ['--routine', 'atom-status']);
+  assert.equal(one.status, 0, one.stderr);
+  assert.equal(one.stdout, `${head(ME, 'work')}\n${RUNLINE}\nlimits: claude allowed\n`);
+  assert.equal(t.run(ME, ['--routine', 'atom-status']).stdout, one.stdout, 'stable');
+  assert.equal(t.run(ME, ['--routine', 'server-watch']).stdout, `${head(ME, 'work')}\nRUN my-app/server-watch Watch servers\nlimits: claude allowed\n`);
+  assert.equal(t.run(ME, ['--routine', 'atom-status', '--kinds', 'run']).stdout, one.stdout, '--kinds run is compatible');
+  // --kinds
+  assert.equal(t.run(ME, ['--kinds', 'take']).stdout, `${head(ME, 'work')}\nTAKE my-app/W-3 ${W3}\nlimits: claude allowed\n`);
+  assert.deepEqual(lines(t.run(ME, ['--kinds', 'RUN'])).filter((l) => /^RUN /.test(l)), [RUNLINE, 'RUN my-app/server-watch Watch servers']);
+  assert.deepEqual(lines(t.run(ME, ['--kinds', 'run,take'])).filter((l) => /^(TAKE|RUN) /.test(l)).length, 3);
+  assert.equal(JSON.parse(t.run(ME, ['--routine', 'atom-status', '--json']).stdout).items.length, 1);
+  // idle: one line, exit 4, no limits probe (a later clock makes the cache stale, so a probe would show in the calls)
+  const calls = t.sb.calls('claude').length;
+  const later = { ROADCTL_NOW: '2026-11-12T00:00:00Z' };
+  for (const [agent, args] of [[ME, ['--routine', 'nope']], [CODEX, ['--routine', 'atom-status']], [HERMES, ['--routine', 'atom-status']], [ME, ['--kinds', 'accept,start,stale']]]) {
+    const r = t.run(agent, args, later);
+    assert.equal(r.status, 4, `${agent} ${args}: ${r.stdout}${r.stderr}`);
+    assert.equal(r.stdout, `${head(agent, 'idle')}\n`, `${agent} ${args}`);
+  }
+  assert.match(t.run(ME, ['--routine', 'nope']).stderr, /warning: no routine nope on the boards/);
+  assert.doesNotMatch(t.run(CODEX, ['--routine', 'atom-status']).stderr, /warning/, 'the routine exists, it just is not CODEX\'s');
+  assert.equal(t.sb.calls('claude').length, calls, 'idle probes nothing');
+  // a routine that was just run is not due: idle for it, the other one still runs
+  assert.equal(t.bcli(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'checked']).status, 0);
+  assert.equal(t.run(ME, ['--routine', 'atom-status']).stdout, `${head(ME, 'idle')}\n`);
+  assert.match(t.run(ME, ['--routine', 'server-watch']).stdout, /^RUN my-app\/server-watch /m);
+  // usage errors: exit 2, nothing printed on stdout
+  for (const args of [['--kinds', 'bogus'], ['--kinds'], ['--kinds', ''], ['--routine'], ['--routine', 'a b'], ['--routine', 'atom-status', '--kinds', 'take,run']]) {
+    const r = t.run(ME, args);
+    assert.equal(r.status, 2, String(args));
+    assert.equal(r.stdout, '', String(args));
+    assert.match(r.stderr, /usage: roadctl tick --as AGENT .*--routine ID.*--kinds take,accept,start,stale,run/, String(args));
+  }
+  // --prompt: the RUN instruction of that routine only
+  const p = t.run(ME, ['--routine', 'server-watch', '--prompt']);
+  assert.equal(p.status, 0, p.stderr);
+  assert.match(p.stdout, /^RUN {4}a recurring routine the owner approved for you/m);
+  assert.ok(p.stdout.includes('my-app/server-watch: file '), p.stdout);
+  assert.doesNotMatch(p.stdout, /atom-status|W-3|^TAKE {3}roadctl/m);
+  assert.equal(t.run(ME, ['--routine', 'server-watch', '--prompt']).stdout, p.stdout, 'stable');
+  // the ledger records the filter; an unfiltered run keeps the old shape
+  t.run(ME, ['--routine', 'server-watch']);
+  assert.deepEqual(lastLedger(t).filter, { routine: 'server-watch' });
+  t.run(ME, ['--kinds', 'take,run']);
+  assert.deepEqual(lastLedger(t).filter, { kinds: ['take', 'run'] });
+  t.run(ME);
+  assert.equal('filter' in lastLedger(t), false);
+  t.run(ME, ['--routine', 'server-watch']);
+  assert.match(cli(t.c.ws, ['tick', '--ledger', '-n', '1'], '', t.env).stdout, / routine=server-watch$/m);
+  // its own lock: a running general tick does not make the routine job busy, and the other way round
+  const general = rc.tickLockPath(ME, { XDG_STATE_HOME: t.sb.state });
+  assert.equal(path.basename(rc.tickLockPath(ME, { XDG_STATE_HOME: t.sb.state }, 'server-watch')), 'tick-claude-code_home-wsl.server-watch.lock');
+  fs.mkdirSync(path.dirname(general), { recursive: true });
+  fs.writeFileSync(general, '{}');
+  assert.equal(t.run(ME).status, 5, 'the general tick is busy');
+  assert.equal(t.run(ME, ['--routine', 'server-watch']).status, 0, 'the routine tick has its own lock');
+});
+
+test('hours: format (parseHours), the window with weekday and minute edges, a time zone across midnight, local time of the machine; list and tick respect it; lint and routine new check the format', LSKIP, () => {
+  for (const bad of ['', 'mon-fri', '9:00-19:00', 'mon-fri 09:00-19', 'mon-fri 09:00-19:00 tz=', 'mon-fri 09:00-19:00 tz=Nowhere/Land', 'funday 09:00-10:00', 'mon-fun 09:00-10:00', 'mon-fri 19:00-09:00', 'mon-fri 09:00-09:00', 'mon-fri 09:60-10:00', 'mon-fri 24:00-24:00', 'mon-fri 09:00-24:01', 'mon-fri  09:00-19:00 extra', 'mon,, 09:00-10:00']) assert.ok(rc.parseHours(bad).error, JSON.stringify(bad));
+  const okDays = (s) => [...rc.parseHours(s).days].sort((a, b) => a - b);
+  assert.deepEqual(okDays('daily 08:00-23:00'), [0, 1, 2, 3, 4, 5, 6]);
+  assert.deepEqual(okDays('MON-FRI 09:00-19:00'), [0, 1, 2, 3, 4]);
+  assert.deepEqual(okDays('sat,sun 10:00-14:00'), [5, 6]);
+  assert.deepEqual(okDays('fri-mon 00:00-24:00'), [0, 4, 5, 6], 'a range may wrap over the weekend');
+  assert.equal(rc.parseHours('mon-fri 09:00-19:00 tz=Europe/Moscow').tz, 'Europe/Moscow');
+  assert.equal(rc.parseHours('daily 08:00-23:00').tz, null);
+  // Moscow is UTC+3 all year: 2026-11-09 is a Monday
+  const MSK = 'mon-fri 09:00-19:00 tz=Europe/Moscow';
+  const at = (iso) => rc.withinHours(MSK, Date.parse(iso));
+  assert.equal(at('2026-11-09T05:59:59Z'), false, 'Monday 08:59:59');
+  assert.equal(at('2026-11-09T06:00:00Z'), true, 'Monday 09:00 is inside (the start is included)');
+  assert.equal(at('2026-11-13T15:59:59Z'), true, 'Friday 18:59:59');
+  assert.equal(at('2026-11-13T16:00:00Z'), false, 'Friday 19:00 is outside (the end is excluded)');
+  assert.equal(at('2026-11-14T10:00:00Z'), false, 'Saturday noon');
+  assert.equal(at('2026-11-15T10:00:00Z'), false, 'Sunday noon');
+  assert.equal(at('2026-11-13T20:30:00Z'), false, 'Friday 20:30 UTC is already Saturday 23:30 in Moscow');
+  assert.equal(at('2026-11-15T22:00:00Z'), false, 'Sunday night UTC is Monday 01:00 in Moscow: before the window');
+  assert.equal(rc.withinHours('tue 09:00-12:00 tz=Pacific/Auckland', Date.parse('2026-11-09T21:00:00Z')), true, 'Monday 21:00 UTC is Tuesday 10:00 in Auckland');
+  assert.equal(rc.withinHours('tue 09:00-12:00 tz=Pacific/Auckland', Date.parse('2026-11-10T09:00:00Z')), false, 'Tuesday 09:00 UTC is Tuesday 22:00 in Auckland');
+  assert.equal(rc.withinHours('daily 22:00-24:00 tz=UTC', Date.parse('2026-11-10T23:59:00Z')), true, '24:00 is the end of the day');
+  assert.equal(rc.withinHours('daily 22:00-24:00 tz=UTC', Date.parse('2026-11-11T00:00:00Z')), false);
+  assert.equal(rc.withinHours(undefined, 0), true, 'no hours: always');
+  // a routine with hours: due, but not offered outside the window
+  const t = tenv();
+  assert.equal(rnew(t).status, 0);
+  assert.equal(t.bcli(['routine', 'on', 'atom-status', '--by', 'Lujker', '--source', 'chat']).status, 0);
+  assert.equal(t.bcli(['autonomy', 'routines', 'on', '--by', 'Lujker']).status, 0);
+  redit(t.c.board, 'atom-status', (x) => x.replace('every: 2h\n', `every: 2h\nhours: ${MSK}\n`));
+  const idle = `${head(ME, 'idle')}\n`;
+  const rowAt = (now) => JSON.parse(cli(t.c.ws, ['routine', 'list', '--json', '--board', t.c.board], '', { ...t.env, ROADCTL_NOW: now }).stdout)[0];
+  assert.equal(t.run(ME, [], { ROADCTL_NOW: '2026-11-09T05:59:59Z' }).stdout, idle, 'outside hours: due, not offered');
+  assert.equal(rowAt('2026-11-09T05:59:59Z').due, true);
+  assert.deepEqual(rowAt('2026-11-09T05:59:59Z').reasons, ['outside hours']);
+  assert.equal(rowAt('2026-11-09T05:59:59Z').hours, MSK);
+  assert.match(cli(t.c.ws, ['routine', 'list', '--board', t.c.board], '', { ...t.env, ROADCTL_NOW: '2026-11-09T05:59:59Z' }).stdout, /every 2h \| hours mon-fri 09:00-19:00 tz=Europe\/Moscow \| agent .*\| due \| would not run: outside hours/);
+  const inside = t.run(ME, [], { ROADCTL_NOW: '2026-11-09T06:00:00Z' });
+  assert.equal(inside.status, 0, inside.stderr);
+  assert.equal(inside.stdout, `${head(ME, 'work')}\n${RUNLINE}\nlimits: claude allowed\n`, 'inside: offered because it is due');
+  assert.deepEqual(rowAt('2026-11-09T06:00:00Z').reasons, []);
+  assert.equal(t.run(ME, [], { ROADCTL_NOW: '2026-11-14T10:00:00Z' }).stdout, idle, 'Saturday');
+  assert.equal(t.run(ME, ['--routine', 'atom-status'], { ROADCTL_NOW: '2026-11-13T16:00:00Z' }).stdout, idle, 'Friday 19:00 with --routine');
+  // inside the window but not due: still not offered (the clock of every is unchanged)
+  redit(t.c.board, 'atom-status', (x) => x.replace('every: 2h\n', 'every: 2h\nlast_run: 2026-11-09T06:00:00Z\nlast_result: ok\n'));
+  assert.equal(t.run(ME, [], { ROADCTL_NOW: '2026-11-09T07:59:59Z' }).stdout, idle);
+  assert.match(t.run(ME, [], { ROADCTL_NOW: '2026-11-09T08:00:00Z' }).stdout, /^RUN /m);
+  // without tz the local time of the machine counts (TZ drives the process)
+  redit(t.c.board, 'atom-status', (x) => x.replace(/last_run: .*\nlast_result: .*\n/, '').replace(/hours: .*\n/, 'hours: daily 10:00-12:00\n'));
+  const now = '2026-11-11T01:30:00Z'; // 10:30 in Tokyo, 01:30 in UTC
+  assert.match(t.run(ME, [], { ROADCTL_NOW: now, TZ: 'Asia/Tokyo' }).stdout, /^RUN /m, 'Tokyo');
+  assert.equal(t.run(ME, [], { ROADCTL_NOW: now, TZ: 'UTC' }).stdout, idle, 'UTC');
+  // lint: a bad format is an error of rule 25, the row says why it does not run
+  redit(t.c.board, 'atom-status', (x) => x.replace(/hours: .*\n/, 'hours: mon-fri 19:00-09:00\n'));
+  const found = lintWith(NOREG, rc.loadBoard(t.c.board));
+  assert.ok(found.some((x) => x.rule === 25 && x.level === 'error' && /end must be later than the start/.test(x.msg)), JSON.stringify(found));
+  assert.equal(t.run(ME, [], { ROADCTL_NOW: now, TZ: 'Asia/Tokyo' }).stdout, idle, 'an invalid routine never runs');
+  redit(t.c.board, 'atom-status', (x) => x.replace(/hours: .*\n/, 'hours: mon-fri 09:00-19:00 tz=Mars/Base\n'));
+  assert.ok(lintWith(NOREG, rc.loadBoard(t.c.board)).some((x) => x.rule === 25 && /unknown time zone/.test(x.msg)));
+  redit(t.c.board, 'atom-status', (x) => x.replace(/hours: .*\n/, `hours: ${MSK}\n`));
+  assert.deepEqual(lintWith(NOREG, rc.loadBoard(t.c.board)).filter((x) => x.level === 'error' && x.rule !== 9), [], 'a good value lints clean (the key is known)'); // rule 9: BOARD.md of the copied example is not regenerated here
+  assert.ok(!lintWith(NOREG, rc.loadBoard(t.c.board)).some((x) => /unknown key/.test(x.msg)));
+  // routine new --hours: checked, written, refused (exit 2, nothing written) when bad
+  const t2 = tenv();
+  const mk = (id, hours) => t2.bcli(['routine', 'new', id, 'T', '--agent', ME, '--model', RMODEL, '--env', RENV, '--every', '30m', ...(hours === undefined ? [] : ['--hours', hours])]);
+  const bad = mk('bad', 'mon-fri 25:00-26:00');
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /--hours: hours: times are 00:00 to 23:59/);
+  assert.equal(fs.existsSync(rfile(t2.c.board, 'bad')), false);
+  assert.equal(mk('bad2', '').status, 2);
+  assert.equal(mk('good', '  daily   08:00-23:00 tz=Europe/Moscow ').status, 0);
+  assert.match(fs.readFileSync(rfile(t2.c.board, 'good'), 'utf8'), /^every: 30m\nhours: daily 08:00-23:00 tz=Europe\/Moscow\nenabled: false$/m);
+  assert.equal(mk('plain').status, 0);
+  assert.doesNotMatch(fs.readFileSync(rfile(t2.c.board, 'plain'), 'utf8'), /^hours:/m, 'no hours: no line');
+  assert.match(t2.bcli(['routine', 'show', 'good']).stdout, /^hours: daily 08:00-23:00 tz=Europe\/Moscow$/m);
+});
+
+test('claim --workdir: stored in the claim header (valid for lint, spaces encoded), report and accept keep working, bad directories are refused', () => {
+  const root = project();
+  const env = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 };
+  const wd = gitRepo({ name: 'my worktree' }); // a space in the path
+  assert.equal(cli(root, ['delegate', 'W-3', '--to', 'worker', '--by', ME], '', env).status, 0);
+  const miss = cli(root, ['claim', 'W-3', '--as', CODEX, '--workdir', path.join(wd, 'nope')], '', env);
+  assert.equal(miss.status, 1);
+  assert.match(miss.stderr, /--workdir .* is not a directory on this machine/);
+  assert.equal(cli(root, ['claim', 'W-3', '--as', CODEX, '--workdir'], '', env).status, 2);
+  assert.doesNotMatch(cardText(root), /^claim:/m, 'refused: nothing written');
+  const r = cli(root, ['claim', 'W-3', '--as', CODEX, '--workdir', wd, '--json'], '', env);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout).claim.workdir, wd);
+  const header = cardText(root).match(/^claim: (.*)$/m)[1];
+  assert.equal(header, `${CODEX} at=${T0} until=2026-11-10T12:00:00Z workdir=${wd.replace(/ /g, '%20')}`);
+  assert.deepEqual(rc.parseClaim(header).value, { agent: CODEX, at: T0, until: '2026-11-10T12:00:00Z', workdir: wd });
+  assert.deepEqual(rc.lint(load(root), { skipSync: true }).filter((x) => x.rule >= 17 && x.level === 'error'), []);
+  assert.equal(JSON.parse(cli(root, ['tasks', '--json'], '', env).stdout)[0].claim.workdir, wd);
+  // lint: a relative or empty workdir, a repeated field
+  for (const [bad, why] of [['workdir=relative/dir', 'relative'], ['workdir=', 'empty'], [`workdir=/a workdir=/b`, 'repeated'], ['workdir=/a%0Ab', 'control character']]) {
+    edit(root, 'W-3', (x) => x.replace(/^claim: .*$/m, `claim: ${CODEX} at=${T0} until=2026-11-10T12:00:00Z ${bad}`));
+    assert.ok(rc.lint(load(root), { skipSync: true }).some((x) => x.rule === 17 && x.level === 'error'), why);
+  }
+  edit(root, 'W-3', (x) => x.replace(/^claim: .*$/m, `claim: ${CODEX} at=${T0} until=2026-11-10T12:00:00Z workdir=${wd.replace(/ /g, '%20')}`));
+  // report and accept work as before
+  assert.equal(cli(root, ['report', 'W-3', '--as', CODEX, 'done'], '', env).status, 0);
+  assert.doesNotMatch(cardText(root), /^claim:/m);
+  assert.equal(cli(root, ['accept', 'W-3', '--as', ME], '', env).status, 0);
+  // a claim without a workdir is unchanged
+  const root2 = project();
+  assert.equal(cli(root2, ['delegate', 'W-3', '--to', 'worker', '--by', ME], '', env).status, 0);
+  assert.equal(cli(root2, ['claim', 'W-3', '--as', CODEX], '', env).status, 0);
+  assert.equal(cardText(root2).match(/^claim: (.*)$/m)[1], `${CODEX} at=${T0} until=2026-11-10T12:00:00Z`);
+});
+
+test('taking over an expired claim: a WARNING on stderr when the previous workdir is here and dirty (the claim still goes ahead); none when clean, missing or not named', () => {
+  const late = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: '2026-11-10T14:00:00Z' };
+  const first = (wd) => {
+    const root = project();
+    assert.equal(cli(root, ['delegate', 'W-3', '--to', 'worker', '--by', ME], '', { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 }).status, 0);
+    assert.equal(cli(root, ['claim', 'W-3', '--as', CODEX, ...(wd ? ['--workdir', wd] : [])], '', { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 }).status, 0);
+    return root;
+  };
+  // dirty: warned, claim proceeds, exit 0
+  const dirty = gitRepo({ dirty: true });
+  const root = first(dirty);
+  const r = cli(root, ['claim', 'W-3', '--as', 'hermes@windows'], '', late);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /roadctl claim: claimed-local/);
+  assert.match(r.stderr, /^roadctl claim: WARNING: the previous claim of codex@home-wsl on W-3 named the working directory .*uncommitted changes on this machine.*do not overwrite someone else's changes/m);
+  assert.ok(r.stderr.includes(dirty), 'names the directory');
+  assert.match(cardText(root), /^claim: hermes@windows /m, 'the claim went ahead');
+  assert.doesNotMatch(cardText(root), /workdir=/, 'the new claim names no workdir unless it passes one');
+  const j = JSON.parse(cli(first(dirty), ['claim', 'W-3', '--as', 'hermes@windows', '--json'], '', late).stdout);
+  assert.equal(j.status, 'claimed-local');
+  assert.equal(j.warnings.length, 1);
+  // clean (committed), a directory that is gone, no workdir, a directory that is not a git work tree: no warning
+  const clean = gitRepo();
+  const gone = gitRepo({ dirty: true });
+  const plain = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-plain-'));
+  fs.writeFileSync(path.join(plain, 'x'), 'x');
+  for (const [wd, why] of [[clean, 'clean'], [gone, 'gone'], [null, 'no workdir'], [plain, 'not a git work tree']]) {
+    const rt = first(wd);
+    if (wd === gone) fs.rmSync(gone, { recursive: true, force: true });
+    const x = cli(rt, ['claim', 'W-3', '--as', 'hermes@windows'], '', late);
+    assert.equal(x.status, 0, `${why}: ${x.stderr}`);
+    assert.doesNotMatch(x.stderr, /WARNING/, why);
+    assert.match(cardText(rt), /^claim: hermes@windows /m, why);
+  }
+  // an open delegation (no previous claim) never warns; a new workdir can be passed by the new holder
+  const rt = project();
+  assert.equal(cli(rt, ['delegate', 'W-3', '--to', 'worker', '--by', ME], '', late).status, 0);
+  const mine = gitRepo();
+  const fresh = cli(rt, ['claim', 'W-3', '--as', CODEX, '--workdir', mine], '', late);
+  assert.equal(fresh.status, 0);
+  assert.doesNotMatch(fresh.stderr, /WARNING/);
+  assert.match(cardText(rt), new RegExp(`workdir=${mine.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+});
+
+test('tick STALE: the stable suffix " (workdir dirty)" only when the claim\'s workdir is on this machine and has uncommitted changes; the path is only in --json; TAKE and the prompt', LSKIP, () => {
+  const later = { ROADCTL_NOW: '2026-11-11T13:00:00Z' };
+  const stale = (wd) => {
+    const t = tenv();
+    assert.equal(t.bcli(['delegate', 'W-3', '--to', CODEX, '--by', ME]).status, 0);
+    assert.equal(t.bcli(['claim', 'W-3', '--as', CODEX, '--lease', '30m', ...(wd ? ['--workdir', wd] : [])]).status, 0);
+    return t;
+  };
+  const wd = gitRepo({ dirty: true });
+  const t = stale(wd);
+  const r = t.run(ME, [], later);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(r.stdout, `${head(ME, 'work')}\nSTALE my-app/W-3 ${W3} (workdir dirty)\nlimits: claude allowed\n`);
+  assert.doesNotMatch(r.stdout, new RegExp(path.basename(path.dirname(wd))), 'no path in the text');
+  assert.equal(t.run(ME, [], later).stdout, r.stdout, 'stable');
+  const item = JSON.parse(t.run(ME, ['--json'], later).stdout).items[0];
+  assert.equal(item.workdir_dirty, true);
+  assert.equal(item.delegate.claim.workdir, wd, 'the path is in --json');
+  const p = t.run(ME, ['--prompt'], later).stdout;
+  assert.match(p, /^STALE my-app\/W-3 .* \(workdir dirty\)$/m);
+  assert.match(p, /for an item marked \(workdir dirty\) the last holder left uncommitted changes/);
+  assert.match(t.run(ME, ['--kinds', 'stale'], later).stdout, /\(workdir dirty\)/);
+  assert.equal(t.run(ME, ['--kinds', 'take'], later).stdout, `${head(ME, 'idle')}\n`);
+  // the same claim, the directory is clean now: no suffix, and no workdir_dirty in the JSON
+  fs.rmSync(path.join(wd, 'unfinished.txt'));
+  assert.equal(t.run(ME, [], later).stdout, `${head(ME, 'work')}\nSTALE my-app/W-3 ${W3}\nlimits: claude allowed\n`);
+  assert.equal('workdir_dirty' in JSON.parse(t.run(ME, ['--json'], later).stdout).items[0], false);
+  // a claim without a workdir, or with a directory that is not here
+  assert.equal(stale(null).run(ME, [], later).stdout, `${head(ME, 'work')}\nSTALE my-app/W-3 ${W3}\nlimits: claude allowed\n`);
+  const gone = gitRepo({ dirty: true });
+  const tg = stale(gone);
+  fs.rmSync(gone, { recursive: true, force: true });
+  assert.equal(tg.run(ME, [], later).stdout, `${head(ME, 'work')}\nSTALE my-app/W-3 ${W3}\nlimits: claude allowed\n`);
+  // an agent that can take the card itself sees TAKE (no suffix: the warning comes with the claim)
+  const t3 = stale(gitRepo({ dirty: true }));
+  assert.equal(t3.run(CODEX, [], later).stdout, `${head(CODEX, 'work')}\nTAKE my-app/W-3 ${W3}\nlimits: codex allowed\n`);
+});
+
+test('P4.11 help entries and docs: tick, claim and routine name --routine, --kinds, --workdir and --hours; the Hermes routine script is shipped', () => {
+  const root = project();
+  const flat = (c) => cli(root, ['help', c]).stdout.replace(/\s+/g, ' ');
+  const tick = flat('tick');
+  for (const w of ['[--routine ID] [--kinds take,accept,start,stale,run]', '--routine ID', '--kinds LIST', '(workdir dirty)', 'roadctl tick --as hermes@home-host --routine server-watch --prompt']) assert.ok(tick.includes(w), w);
+  const claim = flat('claim');
+  for (const w of ['[--workdir DIR]', '--workdir DIR', 'WARNING on stderr', '(workdir dirty)']) assert.ok(claim.includes(w), w);
+  const routine = flat('routine');
+  for (const w of ['[--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]', '--hours H', 'outside hours']) assert.ok(routine.includes(w), w);
+  assert.equal(cli(root, ['tick', '--help']).stdout.replace(/\s+/g, ' '), tick);
+  const script = fs.readFileSync(path.join(here, '..', 'examples', 'scheduler', 'hermes-routine-tick.py'), 'utf8');
+  assert.match(script, /--routine/);
+  assert.match(script, /returncode == 0/);
+  const docs = fs.readFileSync(path.join(here, '..', 'docs', 'roadctl.md'), 'utf8');
+  assert.match(docs, /hermes cron create "every 30m" --name road-routine-<id> --model <routine model> --monitor-script hermes-routine-tick\.py/);
+  const top = fs.readFileSync(SELF, 'utf8').split('\n').slice(0, 45).join('\n');
+  assert.match(top, /--routine ID/);
+  assert.match(top, /--workdir DIR/);
+});

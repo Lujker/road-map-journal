@@ -2,7 +2,7 @@
 
 Read this when the owner wants a regular, mostly mechanical task to run by itself or asks to turn one on or off, for example «заведи регулярную задачу», «проверяй MR и задачи раз в два часа и обновляй карточки», «включи рутину atom-status», «выключи мониторинг серверов», "set up a recurring check", "watch the servers every 30 minutes". Board format and lint rules: `docs/board-spec.md` (Recurring routines).
 
-A routine is a file `board/routines/<id>.md` with the sections Goal, Steps, May write, Escalate and Log. It runs only when the board switch `autonomy.routines` is on, the routine is `enabled` and `approved`, it is due, and it has `agent`, `model` and `env`. `roadctl tick --as <agent>` then offers it to that agent as `RUN`.
+A routine is a file `board/routines/<id>.md` with the sections Goal, Steps, May write, Escalate and Log. It runs only when the board switch `autonomy.routines` is on, the routine is `enabled` and `approved`, it is due, and it has `agent`, `model` and `env`. An optional `hours: mon-fri 09:00-19:00 [tz=Europe/Moscow]` limits it to a time window (outside it a due routine is not offered; ask the owner for working days and hours when the routine should not run at night). For its own scheduler job with its own model: `roadctl tick --as <agent> --routine <id>` (see `docs/roadctl.md`). `roadctl tick --as <agent>` then offers it to that agent as `RUN`.
 
 ## Creating one with the owner
 
