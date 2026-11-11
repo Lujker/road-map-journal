@@ -1516,6 +1516,7 @@ export function claimCard(board, id, { as, lease = '2h', workdir, registry = loa
   // taking over an expired claim: the previous holder may have left unfinished changes in its working directory (when that is on this machine)
   const prev = chk.d.state === 'claimed' ? chk.info.claim : null;
   const warnings = prev?.workdir && workdirDirty(prev.workdir) ? [`the previous claim of ${prev.agent} on ${id} named the working directory ${sanitize(prev.workdir, 200)}, which has uncommitted changes on this machine; reconcile it (look at git status and git diff there, ask the previous holder or the owner) before continuing, and do not overwrite someone else's changes`] : [];
+  const original = fs.readFileSync(c.file);
   let t = setHeader(readNorm(c), 'delegate', formatDelegate({ ...chk.d, state: 'claimed' }));
   t = setHeader(t, 'claim', `${claim.agent} at=${claim.at} until=${claim.until}${wd ? ` workdir=${encodeWorkdir(wd)}` : ''}`);
   writeCard(c, t);
@@ -1524,7 +1525,7 @@ export function claimCard(board, id, { as, lease = '2h', workdir, registry = loa
   if (!remote) return { ...base, status: 'claimed-local', message: 'claimed locally (the repository has no remote): not yet exclusive' };
   gitx(['add', '--', rel], ctx.root);
   const cm = gitx(['commit', '-q', '-m', `board ${path.basename(board.project)}: claim ${id} by ${as}`, '--', rel], ctx.root);
-  if (!cm.ok) return { status: 'error', message: `git commit failed: ${failureHint(cm)}` };
+  if (!cm.ok) { restoreFailedCommit(ctx, rel, c.file, original); return { status: 'error', message: `git commit failed: ${failureHint(cm)}` }; }
   if (!upstreamOf(ctx.root)) return { ...base, status: 'claimed-local', message: 'claimed and committed locally (the branch has no upstream): not yet exclusive' };
   const local = (why) => ({ ...base, status: 'claimed-local', message: `${why}; the claim is committed locally and NOT yet exclusive: another agent may take it; run roadctl save to push it` });
   const drop = (note) => {
@@ -1563,6 +1564,13 @@ const need = (info, state) => {
 
 const cardPending = (ctx, rel) => pendingIn(ctx).some((l) => l.replace(/\\/g, '/').endsWith(` ${rel}`) || l.replace(/\\/g, '/') === rel);
 
+// The file was clean before the operation; undo both the staging and the edit on commit failure.
+function restoreFailedCommit(ctx, rel, file, original) {
+  gitx(['reset', '-q', 'HEAD', '--', rel], ctx.root);
+  fs.writeFileSync(file, original);
+}
+
+
 function writeReport(board, id, info, as, text) {
   const c = findCard(board, id);
   let t = setHeader(readNorm(c), 'delegate', formatDelegate({ ...info.delegate, state: 'reported' }));
@@ -1590,6 +1598,7 @@ export function reportCard(board, id, { as, text, timeout = netTimeout() }) {
   const remote = ctx && gitx(['remote'], ctx.root).out;
   const rel = ctx ? path.relative(ctx.root, real(c.file)).split(path.sep).join('/') : null;
   if (remote && cardPending(ctx, rel)) return { status: 'refused', message: 'the card file has uncommitted changes besides the report; run roadctl save first so the report is the only change pushed' };
+  let original = fs.readFileSync(c.file);
   writeReport(board, id, info, as, text);
   const base = { id };
   if (!ctx) return { ...base, status: 'reported-local', message: 'reported on the local board only (not a git repository): not yet visible to others' };
@@ -1599,7 +1608,7 @@ export function reportCard(board, id, { as, text, timeout = netTimeout() }) {
     return gitx(['commit', '-q', '-m', `board ${path.basename(board.project)}: report ${id} by ${as}`, '--', rel], ctx.root);
   };
   const cm = commit();
-  if (!cm.ok) return { status: 'error', message: `git commit failed: ${failureHint(cm)}` };
+  if (!cm.ok) { restoreFailedCommit(ctx, rel, c.file, original); return { status: 'error', message: `git commit failed: ${failureHint(cm)}` }; }
   if (!upstreamOf(ctx.root)) return { ...base, status: 'reported-local', message: 'reported and committed locally (the branch has no upstream): not yet visible to others; the next roadctl save pushes it' };
   const local = (why) => ({ ...base, status: 'reported-local', message: `${why}; the report is committed locally and NOT yet visible to others; the next roadctl save pushes it` });
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -1620,9 +1629,10 @@ export function reportCard(board, id, { as, text, timeout = netTimeout() }) {
       const b2 = loadBoard(board.dir);
       const inf = delegationInfo(findCard(b2, id));
       if (inf.delegate?.state === 'claimed' && inf.claim?.agent === as) {
+        original = fs.readFileSync(c.file);
         writeReport(b2, id, inf, as, text);
         const again = commit();
-        if (!again.ok) return { status: 'error', ...base, message: `git commit failed: ${failureHint(again)}` };
+        if (!again.ok) { restoreFailedCommit(ctx, rel, c.file, original); return { status: 'error', ...base, message: `git commit failed: ${failureHint(again)}` }; }
         continue;
       }
       const why = inf.claim && inf.delegate?.state === 'claimed' ? `the claim is now held by ${inf.claim.agent} until ${inf.claim.until}` : `the delegation is now ${inf.delegate?.state ?? 'gone'}`;
@@ -2701,7 +2711,7 @@ export function tickPrompt(t) {
   if (has('STALE')) L.push(`STALE  roadctl show <id>; if you delegated it: roadctl undelegate <id> --by ${A} "lease expired"; roadctl save; otherwise tell the owner${t.items.some((i) => i.workdir_dirty) ? '; for an item marked (workdir dirty) the last holder left uncommitted changes in its working directory: do not hand the card on before they are reconciled, tell the owner' : ''}`);
   if (has('RUN')) {
     L.push(`RUN    a recurring routine the owner approved for you; run it with ITS model and environment (below); if you are not that model, start a session or subagent with it (for example the agent's launch note in the registry) and give it this task; it follows the routine file: Steps, May write, Escalate, nothing else; write the board only as May write allows (roadctl log, roadctl delegate, a question for the owner); external writes only if its approved scope has external; hand over as Escalate says; finish with roadctl routine done <id> --as ${A} --result ok|escalated|failed "summary" (it publishes the routine file itself)`);
-    for (const i of t.items.filter((x) => x.kind === 'RUN')) L.push(`  ${i.project}/${i.id}: file ${path.join(t.boardDirs?.[i.project] ?? '?', i.routine.file)}; model ${i.routine.model}; env ${i.routine.env}`);
+    for (const i of t.items.filter((x) => x.kind === 'RUN')) L.push(`  ${i.project}/${i.id}: file ${path.join(t.boardDirs?.[i.project] ?? '?', i.routine.file)}; model ${i.routine.model}; env ${i.routine.env}; previous run: ${i.routine.last_run ?? 'never'}`);
   }
   return L.join('\n');
 }
@@ -3125,7 +3135,7 @@ export function formatRoutineRow(r, prefix = '') {
 export function routineRunItems(project, board, agent) {
   return routineRows(board)
     .filter((r) => r.run_now && r.agent === agent)
-    .map((r) => ({ kind: 'RUN', project, id: r.id, title: sanitize(r.title, 80), routine: { agent: r.agent, model: r.model, env: r.env, every: r.every, file: r.file } }));
+    .map((r) => ({ kind: 'RUN', project, id: r.id, title: sanitize(r.title, 80), routine: { agent: r.agent, model: r.model, env: r.env, every: r.every, file: r.file, last_run: r.last_run } }));
 }
 
 export function findRoutine(board, id) {
@@ -3261,6 +3271,7 @@ export function routineDone(board, id, { as, result, text, timeout = netTimeout(
   const remote = ctx && gitx(['remote'], ctx.root).out;
   const rel = ctx ? path.relative(ctx.root, real(r.file)).split(path.sep).join('/') : null;
   if (remote && cardPending(ctx, rel)) return { status: 'refused', message: 'the routine file has uncommitted changes besides this run; run roadctl save first so the run is the only change pushed' };
+  let original = fs.readFileSync(r.file);
   applyRoutineDone(r, as, result, text);
   const base = { id };
   if (!ctx) return { ...base, status: 'recorded-local', message: 'recorded on the local board only (not a git repository): not yet visible to others' };
@@ -3270,7 +3281,7 @@ export function routineDone(board, id, { as, result, text, timeout = netTimeout(
     return gitx(['commit', '-q', '-m', `board ${path.basename(board.project)}: routine ${id} run by ${as}`, '--', rel], ctx.root);
   };
   const cm = commit();
-  if (!cm.ok) return { status: 'error', message: `git commit failed: ${failureHint(cm)}` };
+  if (!cm.ok) { restoreFailedCommit(ctx, rel, r.file, original); return { status: 'error', message: `git commit failed: ${failureHint(cm)}` }; }
   if (!upstreamOf(ctx.root)) return { ...base, status: 'recorded-local', message: 'recorded and committed locally (the branch has no upstream): not yet visible to others; the next roadctl save pushes it' };
   const local = (why) => ({ ...base, status: 'recorded-local', message: `${why}; the run is committed locally and NOT yet visible to others; the next roadctl save pushes it` });
   for (let attempt = 0; attempt < 4; attempt++) {
@@ -3290,9 +3301,10 @@ export function routineDone(board, id, { as, result, text, timeout = netTimeout(
       integrate(ctx, board, timeout);
       const again = loadRoutines(board.dir).find((x) => x.header.id === id);
       if (!again) return { status: 'lost', ...base, message: 'the run was not published: the routine file is gone on the server; tell the owner' };
+      original = fs.readFileSync(again.file);
       applyRoutineDone(again, as, result, text);
       const c2 = commit();
-      if (!c2.ok) return { status: 'error', ...base, message: `git commit failed: ${failureHint(c2)}` };
+      if (!c2.ok) { restoreFailedCommit(ctx, rel, again.file, original); return { status: 'error', ...base, message: `git commit failed: ${failureHint(c2)}` }; }
       continue;
     }
     if (!['pulled', 'up-to-date'].includes(i.status)) return { status: 'error', ...base, message: `${i.message}; the run is committed locally and not visible to others` };

@@ -17,6 +17,7 @@ Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. 
 - Repository: recurring routines (`board/routines/<id>.md`; board switch `autonomy.routines`, per-routine `enabled` and approval; `tick` offers a due routine as `RUN` only to its own agent; `roadctl routine new|list|show|on|off|done`, `done` publishes the routine file itself; lint rules 25-29; examples in `examples/routines/`). 127 model-free tests.
 - `references/long-running.md`: autonomous code work uses its own git worktree, passed with `claim --workdir`; reconcile it after an interruption. `references/routines.md`: optional time window.
 - Repository: `tick --routine <id>` and `--kinds` (one routine as its own scheduler job, e.g. a Hermes cron job with its own model; `examples/scheduler/hermes-routine-tick.py`); routine time window `hours` (`mon-fri 09:00-19:00 tz=Europe/Moscow`); `claim --workdir` and a warning when an expired claim is taken over while that directory has uncommitted changes (`tick` marks it `(workdir dirty)`). 133 model-free tests.
+- Repository: the Hermes monitor scripts keep printing their last output while there is nothing new (no extra model run after finished work); a routine prompt names its previous run; `examples/scheduler/hermes-routines-tick.py` starts a routine of another machine over ssh without a Hermes model; `claim`, `report` and `routine done` restore the file when they cannot commit. Done by a Codex executor through a board delegation. 135 model-free tests.
 
 ## 0.4.0 — 2026-11-10
 
