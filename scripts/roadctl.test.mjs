@@ -3422,9 +3422,11 @@ test('scheduler monitors retain output and launch external routines once under r
   fake('wsl.exe', `case "$*" in\n  *claude-code@work-notebook*) cat "$FAKE_EXTERNAL"; exit 0 ;;\n  *) if [ -f "$FAKE_IDLE" ]; then exit 4; fi; printf 'hermes work\\n'; exit 0 ;;\nesac`);
   fake('ssh', 'shift; exec sh -c "$*"');
   fake('claude', 'printf "%s\\n" "$*" >> "$FAKE_CALLS"; sleep 2');
+  // The remote host builds the prompt with its own roadctl; idle there means Claude is not started.
+  fake('roadctl', 'printf "roadctl %s\\n" "$*" >> "$FAKE_CALLS"; if [ -f "$FAKE_REMOTE_IDLE" ]; then echo "tick claude-code@work-notebook: idle"; exit 4; fi; cat "$FAKE_EXTERNAL"');
   const external = path.join(dir, 'external');
   fs.writeFileSync(external, 'Work items:\nRUN my-app/atom-status Title\nCommands:\nRUN    a recurring routine the owner approved\n  my-app/atom-status: file /board/routines/a.md; model haiku; env laptop; previous run: never\n');
-  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: dir, PYTHONDONTWRITEBYTECODE: '1', ROAD_MONITOR_STATE_DIR: path.join(dir, 'state'), FAKE_EXTERNAL: external, FAKE_IDLE: path.join(dir, 'idle'), FAKE_CALLS: path.join(dir, 'calls') };
+  const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: dir, PYTHONDONTWRITEBYTECODE: '1', ROAD_MONITOR_STATE_DIR: path.join(dir, 'state'), FAKE_EXTERNAL: external, FAKE_IDLE: path.join(dir, 'idle'), FAKE_REMOTE_IDLE: path.join(dir, 'remote-idle'), FAKE_CALLS: path.join(dir, 'calls') };
   const script = (name) => spawnSync('python3', [path.join(here, '..', 'examples', 'scheduler', name)], { env, encoding: 'utf8' });
   const a = script('hermes-monitor-tick.py');
   assert.equal(a.status, 0, a.stderr); assert.equal(a.stdout, 'hermes work\n');
@@ -3440,4 +3442,12 @@ test('scheduler monitors retain output and launch external routines once under r
   assert.equal(calls.length, 1, 'second launch is excluded while the first runs');
   assert.match(calls[0], /-p --model haiku --max-turns 30/);
   assert.match(fs.readFileSync(env.FAKE_CALLS, 'utf8'), /RUN my-app\/atom-status Title/);
+  assert.match(fs.readFileSync(env.FAKE_CALLS, 'utf8'), /^roadctl tick --as claude-code@work-notebook --routine atom-status --project my-app --prompt$/m);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 2200);
+  fs.writeFileSync(env.FAKE_REMOTE_IDLE, '');
+  fs.unlinkSync(env.FAKE_IDLE);
+  assert.equal(script('hermes-routines-tick.py').status, 0);
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
+  assert.equal(fs.readFileSync(env.FAKE_CALLS, 'utf8').split('\n').filter((line) => line.startsWith('-p ')).length, 1, 'remote idle starts no Claude');
+  assert.match(fs.readFileSync(path.join(dir, '.local', 'state', 'road-map-journal', 'external-routine.log'), 'utf8'), /remote tick: not started/);
 });
