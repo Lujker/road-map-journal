@@ -5,6 +5,11 @@
 //     name: 'run-ledger',                       // unique, [a-z][a-z0-9-]*
 //     commands: { 'my-command': { ...help fields, run(ctx) } },   // optional
 //     headerKeys: ['run_id'],                   // optional: extra card header keys that are not "unknown"
+//     routineKeys: ['hold'],                    // optional (P5.28): extra routine header keys that are not "unknown" (`headerKeys` is for cards only)
+//     cardSections: ['Questions'],              // optional (P5.28): extra card `## Section` names that are not "unknown section"
+//     routineSections: ['Checks'],              // optional (P5.28): the same for routine files
+//     helpTopics: { unattended: { summary, text } }, // optional (P5.28): a `roadctl help <topic>` page (lines of text) beyond the core ones
+//     tickKinds: { RESUME: { prompt, text } },  // optional (P5.28): a new kind of `tick` item, see below
 //     tick(ctx) {},                             // optional: observer called once per finished `tick` decision
 //     hooks: { 'routine-done-before'(ctx) {} }, // optional: named hooks at the places listed in HOOK_NAMES (below)
 //   };
@@ -28,16 +33,30 @@
 //   report-before        { board, id, as, text, flags, env, api } -> { text } replaces the report text, { refuse } refuses the report
 //   claim-after          { board, id, as, r, flags, env, api }
 //   report-after         { board, id, as, r, text, flags, env, api, prior } -> { print: [lines] }
+//   routine-reasons      (P5.28) { board, routine, facts, reasons, now, env, api } -> { reasons: ['text'], lint?: 'warning'|'error'|'none' } why a routine would not run (called from routineRows, so `tick`, `routine list`,
+//                        `status`, `brief`, `digest` and `lint` agree; `lint` shows each module reason as rule 30, level `lint`, default warning; `facts` = { id, agent, model, env, enabled, approved, due }, `reasons` = the core ones so far)
+//   tick-items           (P5.28) { project, board, agent, env, api } -> { items: [{ kind, id, title, ...fields }] } extra items of a kind the module declared in `tickKinds` (once per board, after the core items)
+//   start-admit          (P5.28) { board, card, row, env, api } -> { admit: false, reason: 'text' } refuses a START for a queued card that passed every core check (autonomy rows, `tick`, `autonomy`, `lint` rule 31)
+//   dep-satisfied        (P5.28) { board, card, by, status, env, api } -> { satisfied: true } when the module treats a dependency in `status` (other than done) as met (`tick` START, `autonomy`, `next`, `status`)
 //   pause-state          { env, api } -> { paused: { since, by, reason, until }, line } while the machine is paused, else {} (`tick` stops before any lock, pull or limits gate and exits 6; `status` and `routine list` show the line)
+//
+// `tickKinds` (P5.28): { KIND: { prompt, text? } } with KIND like RESUME (capital letters, not a core kind, appended to the order of kinds). Items of that kind come from
+// the `tick-items` hook; `prompt` (string, or function({ agent, items }) -> string or [string]) is added to the `tick --prompt` text when such items exist; `text(item)` replaces the
+// one-line text of an item. The ledger counts them (`counts.<kind in lower case>`, only when more than zero) and `--kinds` accepts them. The strict schema
+// scripts/testkit/tick-schema.mjs knows no module kind unless the test passes it (a kind changes `tick --json`: schema and docs change with the module that adds it).
+//
+// A command entry may carry `owner: true` (P5.28): a command only the owner's explicit words may run; `help <name>` says so and the test "help = docs" checks the list in docs/roadctl.md.
 //
 // Node standard library only, no side effects at import.
 
 const NAME_RE = /^[a-z][a-z0-9-]*$/;
 const KEY_RE = /^[a-z][a-z0-9_]*$/;
+const SECTION_RE = /^[A-Z][A-Za-z]*( [A-Za-z]+)*$/;
+const KIND_RE = /^[A-Z][A-Z_]*$/;
 const EFFECTS = ['read', 'write', 'git'];
 const STRING_FIELDS = ['summary', 'purpose', 'changes', 'exits'];
 const ARRAY_FIELDS = ['usage', 'flags', 'examples'];
-export const HOOK_NAMES = ['tick-before', 'tick-ledger', 'routine-done-before', 'routine-done-after', 'claim-after', 'report-before', 'report-after', 'pause-state'];
+export const HOOK_NAMES = ['tick-before', 'tick-ledger', 'routine-done-before', 'routine-done-after', 'claim-after', 'report-before', 'report-after', 'pause-state', 'routine-reasons', 'tick-items', 'start-admit', 'dep-satisfied']; // the last four: P5.28
 
 function fail(mod, msg) {
   throw new Error(`roadctl module ${mod}: ${msg}`);
@@ -48,10 +67,15 @@ function fail(mod, msg) {
  * built-in command or another module, or a header key that is already known: a silent clash would change old behaviour.
  * opts: builtin (object of built-in command entries), groups (allowed help groups), knownKeys (Set of known header keys).
  */
-export function buildRegistry(modules, { builtin = {}, groups = [], knownKeys = new Set() } = {}) {
+export function buildRegistry(modules, { builtin = {}, groups = [], knownKeys = new Set(), knownRoutineKeys = new Set(), knownSections = [], knownRoutineSections = [], knownTickKinds = [], knownTopics = [] } = {}) {
   const names = new Set();
   const commands = {};
   const headerKeys = new Set();
+  const routineKeys = new Set();
+  const cardSections = [];
+  const routineSections = [];
+  const tickKinds = {};
+  const helpTopics = {};
   const tickHooks = [];
   const hooks = Object.fromEntries(HOOK_NAMES.map((n) => [n, []]));
   for (const [i, m] of modules.entries()) {
@@ -61,19 +85,47 @@ export function buildRegistry(modules, { builtin = {}, groups = [], knownKeys = 
     names.add(m.name);
     for (const [cmd, c] of Object.entries(m.commands ?? {})) {
       if (!NAME_RE.test(cmd)) fail(label, `bad command name ${JSON.stringify(cmd)}`);
-      if (Object.hasOwn(builtin, cmd) || Object.hasOwn(commands, cmd)) fail(label, `command ${cmd} already exists`);
+      if (Object.hasOwn(builtin, cmd) || Object.hasOwn(commands, cmd) || knownTopics.includes(cmd) || Object.hasOwn(helpTopics, cmd)) fail(label, `command ${cmd} already exists`);
       if (typeof c?.run !== 'function') fail(label, `command ${cmd} needs run(ctx)`);
       if (!groups.includes(c.group)) fail(label, `command ${cmd}: group must be one of ${groups.join(', ')}`);
       if (!EFFECTS.includes(c.effect)) fail(label, `command ${cmd}: effect must be one of ${EFFECTS.join(', ')}`);
       for (const f of STRING_FIELDS) if (typeof c[f] !== 'string' || !c[f]) fail(label, `command ${cmd}: help field ${f} is missing`);
       for (const f of ARRAY_FIELDS) if (!Array.isArray(c[f])) fail(label, `command ${cmd}: help field ${f} must be an array`);
       if (!c.usage.length || !c.examples.length) fail(label, `command ${cmd}: usage and examples must not be empty`);
+      if (c.owner !== undefined && typeof c.owner !== 'boolean') fail(label, `command ${cmd}: owner must be true or false`);
       commands[cmd] = c;
     }
     for (const k of m.headerKeys ?? []) {
       if (!KEY_RE.test(k)) fail(label, `bad header key ${JSON.stringify(k)}`);
       if (knownKeys.has(k) || headerKeys.has(k)) fail(label, `header key ${k} is already known`);
       headerKeys.add(k);
+    }
+    for (const k of m.routineKeys ?? []) {
+      if (!KEY_RE.test(k)) fail(label, `bad routine key ${JSON.stringify(k)}`);
+      if (knownRoutineKeys.has(k) || routineKeys.has(k)) fail(label, `routine key ${k} is already known`);
+      routineKeys.add(k);
+    }
+    for (const [list, known, into, what] of [[m.cardSections, knownSections, cardSections, 'card'], [m.routineSections, knownRoutineSections, routineSections, 'routine']]) {
+      for (const n of list ?? []) {
+        if (typeof n !== 'string' || !SECTION_RE.test(n)) fail(label, `bad ${what} section ${JSON.stringify(n)}`);
+        if (known.includes(n) || into.includes(n)) fail(label, `${what} section ${n} is already known`);
+        into.push(n);
+      }
+    }
+    for (const [kind, spec] of Object.entries(m.tickKinds ?? {})) {
+      if (!KIND_RE.test(kind)) fail(label, `bad tick kind ${JSON.stringify(kind)} (capital letters)`);
+      if (knownTickKinds.includes(kind) || Object.hasOwn(tickKinds, kind)) fail(label, `tick kind ${kind} already exists`);
+      if (spec === null || typeof spec !== 'object') fail(label, `tick kind ${kind} needs { prompt, text? }`);
+      if (!['string', 'function'].includes(typeof spec.prompt)) fail(label, `tick kind ${kind}: prompt must be a string or a function`);
+      if (spec.text !== undefined && typeof spec.text !== 'function') fail(label, `tick kind ${kind}: text must be a function`);
+      tickKinds[kind] = spec;
+    }
+    for (const [topic, t] of Object.entries(m.helpTopics ?? {})) {
+      if (!NAME_RE.test(topic)) fail(label, `bad help topic name ${JSON.stringify(topic)}`);
+      if (knownTopics.includes(topic) || Object.hasOwn(builtin, topic) || Object.hasOwn(commands, topic) || Object.hasOwn(helpTopics, topic)) fail(label, `help topic ${topic} already exists (as a topic or a command)`);
+      const lines = Array.isArray(t?.text) ? t.text : [t?.text];
+      if (typeof t?.summary !== 'string' || !t.summary || !lines.length || lines.some((l) => typeof l !== 'string')) fail(label, `help topic ${topic} needs { summary, text } (text: a string or an array of lines)`);
+      helpTopics[topic] = { summary: t.summary, text: lines.join('\n').split('\n') };
     }
     if (m.tick !== undefined) {
       if (typeof m.tick !== 'function') fail(label, 'tick must be a function');
@@ -89,6 +141,11 @@ export function buildRegistry(modules, { builtin = {}, groups = [], knownKeys = 
     modules: [...names],
     commands,
     headerKeys,
+    routineKeys,
+    cardSections,
+    routineSections,
+    tickKinds,
+    helpTopics,
     tickHooks,
     hooks,
     /** Call the named hook of every module: [{ module, value }]. Synchronous; a hook that throws is a warning and gives no value. No hooks: returns [] at once. */

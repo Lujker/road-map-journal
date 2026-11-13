@@ -125,6 +125,8 @@ Errors block a git commit when a pre-commit check runs; warnings never block. A 
 | 27 | A routine is `enabled: true` without an `approved` record, or `approved` has no `scope=` | error |
 | 28 | Two routines have the same `id` | error |
 | 29 | A routine's `agent` is not in the registry (only checked when a registry exists) | warning |
+| 30 | A roadctl module gives a reason why a routine would not run (for example a hold); the module may make it an error or silent | warning |
+| 31 | A roadctl module refuses to START a queued card that passed every other check (for example outside the project's mandate) | warning |
 
 ## `BOARD.md`
 

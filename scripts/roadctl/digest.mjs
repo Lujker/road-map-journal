@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { readPause, pauseLine } from './pause.mjs';
 import { parseRunTrailer } from './run-ledger.mjs';
+import { LOCK_STALE_MS, acquireLock } from './state.mjs';
 import { cleanText, hostName, isoAt, nowMs, readJsonl, readRuns, stateDir } from './run-store.mjs';
 import { parseLogText, renderSummary, wordsFor } from './run-summary.mjs';
 
@@ -28,6 +29,7 @@ const NAME_RE = /^[A-Za-z0-9._-]{1,40}$/;
 const BAD = new Set(['crashed', 'timeout', 'aborted']); // outcomes that only the local ledger knows
 
 const stateFile = (env) => path.join(stateDir(env), 'digest.state.json');
+export const digestStateFile = stateFile; // seam (P5.28): the state-directory test compares it with the other modules
 export const ownerCommandsFile = (env) => path.join(stateDir(env), 'owner-commands.jsonl');
 
 // ---------------------------------------------------------------- the delivery state
@@ -50,21 +52,11 @@ function writeState(env, state) {
   fs.renameSync(tmp, file);
 }
 
-/** One digest at a time per machine: two schedulers must not both print (and so both deliver) the same event. { ok, release }. */
+/** One digest at a time per machine: two schedulers must not both print (and so both deliver) the same event. { ok, release }. seam (P5.28): the lock is state.mjs `acquireLock` (stale after 60 s, no waiting). */
 function lockDigest(env) {
-  const file = `${stateFile(env)}.lock`;
-  try {
-    fs.mkdirSync(path.dirname(file), { recursive: true });
-    try {
-      if (Date.now() - fs.statSync(file).mtimeMs > 60000) fs.rmSync(file, { force: true });
-    } catch {
-      /* no lock */
-    }
-    fs.writeFileSync(file, String(process.pid), { flag: 'wx' });
-    return { ok: true, release: () => fs.rmSync(file, { force: true }) };
-  } catch (e) {
-    return { ok: false, reason: e.code === 'EEXIST' ? 'another digest is running' : `the state directory cannot be used (${e.code ?? 'error'})` };
-  }
+  const l = acquireLock(`${stateFile(env)}.lock`, { staleMs: LOCK_STALE_MS.digest, strict: true, content: String(process.pid) });
+  if (l.ok) return { ok: true, release: () => l.release() };
+  return { ok: false, reason: l.reason === 'held' ? 'another digest is running' : `the state directory cannot be used (${l.reason})` };
 }
 
 // ---------------------------------------------------------------- events

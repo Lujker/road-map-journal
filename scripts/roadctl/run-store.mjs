@@ -12,6 +12,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { LOCK_STALE_MS, acquireLock, stateDir as sharedStateDir } from './state.mjs'; // seam (P5.28): one state directory and one lock helper
 
 export const MAX_LINE = 4096; // bytes of one line including the newline (Cyrillic text is two bytes a character)
 export const TICKS_ROTATE_BYTES = 1024 * 1024;
@@ -43,7 +44,7 @@ export function cleanText(s, n = 200) {
   return t.length > n ? `${t.slice(0, n - 1)}…` : t;
 }
 
-export const stateDir = (env = process.env) => path.join(env.XDG_STATE_HOME?.trim() ? env.XDG_STATE_HOME.trim() : path.join(os.homedir(), '.local', 'state'), 'road-map-journal');
+export const stateDir = sharedStateDir; // seam (P5.28): the one definition lives in state.mjs (roadctl.mjs uses it too)
 export function ledgerPaths(env = process.env) {
   const dir = stateDir(env);
   const f = (n) => path.join(dir, n);
@@ -147,36 +148,15 @@ export function rotateIfLarge(file, maxBytes) {
 
 // ---------------------------------------------------------------- the lock (real time: it is about real processes)
 
-const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
-
-/** Run fn while holding ledger.lock; { locked: false } when the lock could not be taken in time (the caller then skips or falls back, never fails). */
-export function withLedgerLock(env, fn, { timeoutMs = 2000, staleMs = 30000 } = {}) {
+/** Run fn while holding ledger.lock; { locked: false } when the lock could not be taken in time (the caller then skips or falls back, never fails). seam (P5.28): the lock itself is state.mjs `acquireLock`, with the same lifetimes. */
+export function withLedgerLock(env, fn, { timeoutMs = 2000, staleMs = LOCK_STALE_MS.ledger } = {}) {
   const { lock } = ledgerPaths(env);
-  const end = Date.now() + timeoutMs;
-  for (;;) {
-    try {
-      fs.mkdirSync(path.dirname(lock), { recursive: true });
-      fs.writeFileSync(lock, String(process.pid), { flag: 'wx' });
-      break;
-    } catch (e) {
-      if (e.code !== 'EEXIST') return { locked: false, error: e.code };
-      try {
-        if (Date.now() - fs.statSync(lock).mtimeMs > staleMs) fs.rmSync(lock, { force: true });
-      } catch {
-        /* vanished */
-      }
-      if (Date.now() > end) return { locked: false };
-      sleepSync(15);
-    }
-  }
+  const l = acquireLock(lock, { staleMs, waitMs: timeoutMs, strict: true, content: String(process.pid) });
+  if (!l.ok) return l.reason === 'held' ? { locked: false } : { locked: false, error: l.reason };
   try {
     return { locked: true, value: fn() };
   } finally {
-    try {
-      fs.rmSync(lock, { force: true });
-    } catch {
-      /* ignore */
-    }
+    l.release();
   }
 }
 

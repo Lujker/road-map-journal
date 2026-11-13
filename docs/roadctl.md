@@ -68,6 +68,8 @@ roadctl instructions-uninstall --claude --codex [--apply]
       [--claude-home DIR] [--codex-home DIR] [--hermes-home DIR] [--node PATH] [--helper PATH]
 ```
 
+Owner-only commands: `approve`, `auto`, `queue`, `done`, `pause`, `resume`. An agent runs them only on the owner's explicit words in the current conversation; `roadctl help <command>` says so, and `roadctl help unattended` prints what an agent may do without the owner. Help topics (`roadctl help <topic>`): `unattended`; modules may add more.
+
 Global flags: `--board <dir>` (default: search upwards for `board/config.json`, then the known boards, see [Finding the board](#finding-the-board)), `--project NAME` (a known board by project or `match` name), `--workspace DIR` (or `ROADCTL_WORKSPACE`), `--date YYYY-MM-DD`. Exit codes: 0 ok, 1 findings or refusal, 2 usage error, 3 limits unknown (only `limits --check`).
 
 ## Finding the board

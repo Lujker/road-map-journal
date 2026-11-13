@@ -144,6 +144,7 @@ export default {
   commands: {
     pause: {
       group: 'Owner only',
+      owner: true, // seam (P5.28)
       effect: 'write',
       summary: 'stop everything unattended on this machine (undo: resume)',
       purpose: 'The owner\'s stop switch for ONE machine, in force at once and without git: writes pause.json in the machine state directory (who, when, reason, optional end). While it exists roadctl tick starts nothing of any kind (TAKE, ACCEPT, START, STALE, RUN): it prints "tick AGENT: paused" and the reason, asks no limits gate, pulls nothing, records one folded line in the ledger (a skipped run with the reason paused) and exits 6, so a scheduler and a monitor start no model. A run that has already started is not stopped. The pause belongs to the state directory: WSL and native Windows have separate ones, another machine is paused over ssh (ssh HOST roadctl pause), and the switch shared through git is roadctl autonomy routines off. roadctl status, routine list, tick --json and doctor show an active pause. Without --until it lasts until roadctl resume; a pause that cannot be read counts as a pause. `roadctl pause status` prints the state without a board.',
@@ -156,6 +157,7 @@ export default {
     },
     resume: {
       group: 'Owner only',
+      owner: true, // seam (P5.28)
       hidden: true, // the overview has one line left (the help test caps it at 70); `roadctl help resume` and `roadctl pause` name it
       effect: 'write',
       summary: 'end the pause of this machine',
