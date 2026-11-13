@@ -62,6 +62,22 @@ Released as skill 0.3.0, see [CHANGELOG](CHANGELOG.md).
 - **P4.5 — Hermes as orchestrator and launcher:** how Hermes's subscriptions and API keys report limits and how it starts other agents. **Status: IDEA** (separate discussion).
 - **P4.6 — Research: a general launcher:** whether `roadctl` should grow into a scheduler with a TUI and scenarios that may run without any model, or reuse an existing tool. Candidates to review: Dagu (cron and DAG workflows in YAML, one binary, web UI), Backlog.md (Markdown task board with TUI, web UI and MCP), ORCH and 5dive (agent task queues and scheduled agents), Claude Squad and agent-deck (TUI for several agent sessions), ccusage (local usage reports). **Status: IDEA.**
 
+### P5 — Reliable orchestration and routines
+**Status: OPEN (planned 2026-11-13).** Scheduled runs and routines (P4.4, P4.9, P4.12) work, but a run leaves no record of its outcome, a lost result or a hung model is not noticed, the scheduler lock is released before the model starts, and "read only" is promised by the prompt rather than enforced. This track adds well-known practices of agent schedulers (dry by default with one gate before every outward action, a run ledger with outcomes, a whole-run lock with a timeout, a kill switch, a read-only `doctor`, rules first and the model only on a deviation, tests on fakes) to `roadctl` itself, fitted to a text board, a dependency-free Node tool, several agents and several machines. No external framework is required. Our own strengths stay: subscription limits and the owner's reserve, provider neutrality, a git board as the contract.
+
+- **P5.1 — Run ledger with outcomes and reconciliation:** every run records its start, end, outcome and reason; runs that never finished are found and marked. **Status: OPEN.**
+- **P5.2 — Run supervisor:** `roadctl supervise` holds a per-routine lock for the whole run, enforces a timeout, records `failed: no result` when a run ends without reporting, and renews a delegation lease. **Status: OPEN.**
+- **P5.3 — Permission boundaries:** an unattended mode in which owner-only commands refuse, a per-routine permission profile instead of prefix rules, lint for broad rules, one write gate with a dry mode. **Status: OPEN.**
+- **P5.4 — Outcome and retry policy:** transient failures retry a limited number of times, repeated failures hold the routine until the owner resumes it, a started run that may have written outside is never retried automatically. **Status: OPEN.**
+- **P5.5 — Local pause and resume:** stop everything unattended on one machine at once, without editing git. **Status: OPEN.**
+- **P5.6 — Routines with a watchdog:** a script collects facts and compares them with the last snapshot; the model is called only on a deviation and answers from a closed set (continues P4.10). **Status: OPEN.**
+- **P5.7 — Cheap runs:** only the tools a routine needs, turn and spending caps, spending recorded from the CLI output. **Status: OPEN.**
+- **P5.8 — Shadow mode for new routines:** a new routine first runs dry and shows what it would write; the owner promotes it. **Status: OPEN.**
+- **P5.9 — `doctor` and the installed version:** read-only environment checks and the version and checksum of the installed copy. **Status: OPEN.**
+- **P5.10 — Scheduler test harness:** fake executors for end-to-end scenarios, `tick --json` as the contract for its consumers, help and docs kept in step. **Status: OPEN.**
+- **P5.11 — Schedules:** time slots, routines that run after another one, a documented rule for missed slots. **Status: OPEN.**
+- **P5.12 — Contract for an external routine runner:** a documented interface through which any other scheduler (systemd, cron, a CI job, a third-party tool) may execute a board routine while the board keeps the schedule, permissions and result; `roadctl` stays self-sufficient. **Status: IDEA** (the owner decides).
+
 ## Queue
 
 P1.1 (the owner's own use, fix problems as they appear). P3.1 and P3.2 once the owner approves them; P3.4 in the owner's normal work. P0.1 broader coverage stays deferred.
