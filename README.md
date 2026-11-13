@@ -32,7 +32,7 @@ Ask your agent, for example:
 - «Что дальше по дорожной карте?»
 - «Продолжай разработку по согласованному пункту.»
 
-When starting a new plan, the skill discusses the desired way of working and asks about decisions it cannot infer. Drafting, reviewing or improving a plan, a track or the rules for unattended work is done as a grilling interview that surfaces risks and contradictions early: the skill recommends [`grill-me`](https://github.com/mattpocock/skills) (or `grill-with-docs` when the plan must match a codebase), offers to install it if it is missing (`npx skills@latest add mattpocock/skills --skill=grill-me`), and otherwise interviews in the same spirit itself. The optional skill is never installed without permission. An ordinary read-only question should not trigger an interview or create files.
+When starting a new plan, the skill discusses the desired way of working and asks about decisions it cannot infer. Drafting, reviewing or improving a plan, a track or the rules for unattended work is done as a grilling interview that surfaces risks and contradictions early: the skill uses `grilling` from [mattpocock/skills](https://github.com/mattpocock/skills) (the owner's commands `/grill-me`, or `/grill-with-docs` with `domain-modeling` when the plan must match a codebase), offers to install them if they are missing (`npx skills@latest add mattpocock/skills -g --skill grilling --skill grill-me`), and otherwise interviews in the same spirit itself. The optional skill is never installed without permission. An ordinary read-only question should not trigger an interview or create files.
 
 Synthetic examples in English and Russian, with expected behavior, are in [examples/](examples/README.md). They are proposed checks, not run results.
 
