@@ -8,8 +8,10 @@ import tempfile
 TIMEOUT_SECONDS = 150
 
 
-def tick(agent, kinds):
-    command = f"roadctl tick --as {agent} --kinds {kinds} --prompt"
+def tick(agent, kinds, output="--prompt"):
+    # output: "--prompt" for a monitor that hands the text to a model, "--json" for a script that decides by itself
+    # (the JSON is a contract, see docs/roadctl.md; scripts read it instead of parsing the text).
+    command = f"roadctl tick --as {agent} --kinds {kinds} {output}"
     try:
         return subprocess.run(["wsl.exe", "-e", "bash", "-lc", command], capture_output=True, timeout=TIMEOUT_SECONDS)
     except (OSError, subprocess.TimeoutExpired) as error:

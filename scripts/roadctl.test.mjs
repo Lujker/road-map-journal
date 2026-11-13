@@ -6,6 +6,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as rc from './roadctl.mjs';
+import { T0, wallClock } from './testkit/time.mjs';
+import { tickJsonProblems, TICK_EXIT_BY_DECISION } from './testkit/tick-schema.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const SELF = path.join(here, 'roadctl.mjs');
@@ -821,7 +823,6 @@ test('the instruction block keeps the general commit rule, adds the board except
 
 // ---------------------------------------------------------------- delegation: delegate, tasks, claim, report, accept, return
 
-const T0 = '2026-11-10T10:00:00Z';
 const NOREG = path.join(os.tmpdir(), 'rc-no-registry', 'registry.json'); // a path that does not exist: no registry
 const dcli = (root, args, env = {}) => cli(root, args, '', { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0, ...env });
 const ME = 'claude-code@home-wsl';
@@ -1993,7 +1994,7 @@ test('tick lock: a second tick of the same agent prints busy (exit 5); a stale l
   assert.deepEqual([busy.status, busy.stdout, busy.stderr], [5, `${head(ME, 'busy')}\n`, '']);
   assert.equal(fs.existsSync(lock), true, 'the running tick keeps its lock');
   assert.equal(t.run(CODEX).status, 4, 'other agents do not wait for it');
-  const minutesAgo = (m) => new Date(Date.now() - m * 60000);
+  const minutesAgo = (m) => new Date(wallClock() - m * 60000); // a lock ages by real time (process liveness and mtime), not by ROADCTL_NOW
   fs.utimesSync(lock, minutesAgo(9), minutesAgo(9));
   assert.equal(t.run(ME).status, 5, 'nine minutes: still busy');
   fs.utimesSync(lock, minutesAgo(11), minutesAgo(11));
@@ -3423,9 +3424,9 @@ test('scheduler monitors retain output and launch external routines once under r
   fake('ssh', 'shift; exec sh -c "$*"');
   fake('claude', 'printf "%s\\n" "$*" >> "$FAKE_CALLS"; sleep 2');
   // The remote host builds the prompt with its own roadctl; idle there means Claude is not started.
-  fake('roadctl', 'printf "roadctl %s\\n" "$*" >> "$FAKE_CALLS"; if [ -f "$FAKE_REMOTE_IDLE" ]; then echo "tick claude-code@work-notebook: idle"; exit 4; fi; cat "$FAKE_EXTERNAL"');
+  fake('roadctl', 'printf "roadctl %s\\n" "$*" >> "$FAKE_CALLS"; if [ -f "$FAKE_REMOTE_IDLE" ]; then echo "tick claude-code@work-notebook: idle"; exit 4; fi; printf "Work items:\\nRUN my-app/atom-status Title\\n"');
   const external = path.join(dir, 'external');
-  fs.writeFileSync(external, 'Work items:\nRUN my-app/atom-status Title\nCommands:\nRUN    a recurring routine the owner approved\n  my-app/atom-status: file /board/routines/a.md; model haiku; env laptop; previous run: never\n');
+  fs.writeFileSync(external, JSON.stringify({ agent: 'claude-code@work-notebook', decision: 'work', limits: { provider: 'claude', state: 'allowed' }, items: [{ kind: 'RUN', project: 'my-app', id: 'atom-status', title: 'Title', routine: { agent: 'claude-code@work-notebook', model: 'haiku', env: 'laptop', every: '2h', file: 'routines/atom-status.md', last_run: null } }], sync: [] })); // what roadctl tick --json prints (the example reads JSON, not text)
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, HOME: dir, PYTHONDONTWRITEBYTECODE: '1', ROAD_MONITOR_STATE_DIR: path.join(dir, 'state'), FAKE_EXTERNAL: external, FAKE_IDLE: path.join(dir, 'idle'), FAKE_REMOTE_IDLE: path.join(dir, 'remote-idle'), FAKE_CALLS: path.join(dir, 'calls') };
   const script = (name) => spawnSync('python3', [path.join(here, '..', 'examples', 'scheduler', name)], { env, encoding: 'utf8' });
   const a = script('hermes-monitor-tick.py');
@@ -3450,4 +3451,53 @@ test('scheduler monitors retain output and launch external routines once under r
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 300);
   assert.equal(fs.readFileSync(env.FAKE_CALLS, 'utf8').split('\n').filter((line) => line.startsWith('-p ')).length, 1, 'remote idle starts no Claude');
   assert.match(fs.readFileSync(path.join(dir, '.local', 'state', 'road-map-journal', 'external-routine.log'), 'utf8'), /remote tick: not started/);
+});
+
+// ---------------------------------------------------------------- P5.10: `tick --json` is a contract (scheduler examples read it instead of the text)
+
+test('tick --json contract: every decision and every item kind fits the schema of scripts/testkit/tick-schema.mjs, and the schema rejects a broken shape', LSKIP, () => {
+  const seen = { decisions: new Set(), kinds: new Set() };
+  const json = (t, args = [], extra = {}) => {
+    const r = t.run(ME, ['--json', ...args], extra);
+    const j = JSON.parse(r.stdout);
+    assert.deepEqual(tickJsonProblems(j), [], r.stdout);
+    assert.equal(r.status, TICK_EXIT_BY_DECISION[j.decision], `${j.decision}: ${r.stderr}`);
+    seen.decisions.add(j.decision);
+    for (const i of j.items) seen.kinds.add(i.kind);
+    return j;
+  };
+  const t = tenv();
+  assert.equal(json(t).decision, 'idle');
+  assert.equal(t.bcli(['autonomy', 'on']).status, 0);
+  assert.equal(t.bcli(['queue', 'add', 'W-5']).status, 0);
+  t.card('W-5', (x) => x.replace('depends_on: W-2', `depends_on: W-1\n${AUTO_APPROVED}`));
+  assert.equal(t.bcli(['delegate', 'W-3', '--to', 'worker', '--by', ME, '--criteria', 'a2', '--accept', 'reviewer']).status, 0);
+  routineOn(t);
+  const work = json(t);
+  assert.deepEqual(work.items.map((i) => i.kind), ['RUN', 'TAKE', 'START'], 'sorted by card id, then kind');
+  assert.equal(t.bcli(['claim', 'W-3', '--as', CODEX, '--lease', '30m']).status, 0);
+  assert.equal(t.bcli(['report', 'W-3', '--as', CODEX, 'done a2']).status, 0);
+  assert.ok(json(t).items.some((i) => i.kind === 'ACCEPT'));
+  const t2 = tenv();
+  assert.equal(t2.bcli(['delegate', 'W-3', '--to', CODEX, '--by', ME]).status, 0);
+  assert.equal(t2.bcli(['claim', 'W-3', '--as', CODEX, '--lease', '30m']).status, 0);
+  assert.ok(json(t2, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' }).items.some((i) => i.kind === 'STALE'));
+  const reserve = tenv();
+  assert.equal(reserve.bcli(['delegate', 'W-3', '--to', 'worker', '--by', ME]).status, 0);
+  assert.equal(json(reserve, [], { FAKE_U5: '0.9' }).limits.state, 'reserve');
+  const unknown = tenv();
+  assert.equal(unknown.bcli(['delegate', 'W-3', '--to', 'worker', '--by', ME]).status, 0);
+  assert.equal(json(unknown, [], { FAKE_MODE: 'noevent' }).limits.state, 'unknown');
+  assert.deepEqual([...seen.decisions].sort(), ['blocked-reserve', 'blocked-unknown', 'idle', 'work']);
+  assert.deepEqual([...seen.kinds].sort(), ['ACCEPT', 'RUN', 'STALE', 'START', 'TAKE']);
+  // the schema is not a rubber stamp
+  const good = JSON.parse(t.run(ME, ['--json']).stdout);
+  const bad = (fn, re) => { const j = structuredClone(good); fn(j); assert.match(tickJsonProblems(j).join('\n'), re); };
+  bad((j) => { j.extra = 1; }, /unknown key extra/);
+  bad((j) => { delete j.sync; }, /missing sync/);
+  bad((j) => { j.decision = 'later'; }, /tick.decision/);
+  bad((j) => { j.items[0].kind = 'PLAN'; }, /items\[0\].kind/);
+  bad((j) => { j.items[0].routine = 'x'; }, /items\[0\].routine/);
+  bad((j) => { j.limits.state = 'maybe'; }, /limits.state/);
+  bad((j) => { j.decision = 'idle'; }, /idle with items/);
 });

@@ -44,8 +44,25 @@ Contract details:
 node --test scripts/update-installed.test.mjs
 node --test scripts/roadctl.test.mjs
 node --test scripts/roadctl/*.test.mjs
+ROADCTL_PRIVATE_MARKERS=/path/to/list.txt node --test scripts/roadctl/privacy.test.mjs   # optional, local
 python3 -m unittest discover -s evals/tests -v
 python3 scripts/check_links.py
 ```
+
+## Test kit (`scripts/testkit/`)
+
+Shared helpers for tests. It is not installed (the installer copies only `scripts/roadctl/`), and none of its files is a `*.test.mjs`; its own tests are `scripts/roadctl/testkit.test.mjs`. A new helper or fake goes here as a new file, not into `roadctl.test.mjs`.
+
+| File | What it gives |
+| --- | --- |
+| `fakes.mjs`, `fake-exec.mjs` | `installFakes(dir)` writes small executables `claude`, `codex`, `ssh`, `hermes` and `wsl.exe` into `dir` (put it first on `PATH`). Each call appends one JSON line to `$FAKE_LOG`: argv, working directory, pid, mode, the environment (`FAKE_*`, `ROADCTL_*`, `XDG_*` and the keys of `FAKE_ENV_KEYS`) and stdin; `readCalls(log, name)` reads them, `isProbe(call)` tells a limits probe from a start of work. The mode is `FAKE_<NAME>_MODE` or `FAKE_MODE`: `ok` (default; `claude -p ... stream-json` and `codex app-server` answer the limits probe, `FAKE_U5`, `FAKE_U7`, `FAKE_5H`, `FAKE_7D` set the numbers; `FAKE_AFTER` is a shell command standing for what the agent did, for example `routine done`), `hang`, `crash` (`FAKE_EXIT`, `FAKE_SIGNAL`), `silent`, `huge` (`FAKE_HUGE_BYTES`) and, for `ssh` and `wsl.exe`, `run` (run the remote command locally). The modes are the switch for the end-to-end scenarios of later cards. POSIX only: use `FAKES_SKIP` |
+| `time.mjs` | `T0`, `clock(iso)` (the `ROADCTL_NOW` environment), `shift(minutes, iso)`, `ms(iso)`; and the real-time helpers `sleepSync`, `waitFor`, `wallClock` |
+| `tick-schema.mjs` | `tickJsonProblems(json)`: the contract of `roadctl tick --json` (strict: an unknown key is a problem). A change of that JSON changes this file and `docs/roadctl.md` in the same commit |
+| `helpdocs.mjs` | `helpDocsProblems(table, { overview, docs })`: every visible command in `roadctl help` and in `docs/roadctl.md`, every flag in `docs/roadctl.md`; a test feeds it an invented table to prove that it fails |
+| `privacy.mjs` | the private-marker scan (below) |
+
+**Time.** roadctl takes "now" from `ROADCTL_NOW` (an ISO-8601 UTC time) when it is set. A test passes the time from `time.mjs` and never reads the clock of the machine; a test in `scripts/` that calls the ambient clock fails `testkit.test.mjs`. Existing fixed ISO literals in old tests are deterministic and stay as they are. **Process liveness is the exception and uses real time**: the tick lock is aged by the file's modification time and a stale lock is judged by the real clock, a hanging child has to be killed in real seconds, and a background job started by an example needs a moment to appear. Such a test uses `wallClock`, `sleepSync` or `waitFor` from `time.mjs`, so the use of real time is visible at the call.
+
+**Private markers.** The repository is public. To check that no private name, host, path or token has crept into a tracked file, keep a list of markers outside the repository (one per line, matched as text ignoring case, `#` comments) and run `ROADCTL_PRIVATE_MARKERS=/path/to/list.txt node --test scripts/roadctl/privacy.test.mjs`. Without the variable (CI, other clones) that test is skipped, not failed; a list inside the repository is refused. The scan covers the tracked files and their names, skips binary files, and reports `file:line (marker #N)` without printing the marker. Run it before committing fixtures made from real runs. The tests of the scanner use synthetic markers only; never put real ones in a test, a doc or a commit.
 
 `update-installed.mjs --roadctl --apply` installs `roadctl.mjs` and the `.mjs` files of `scripts/roadctl/` (not `*.test.mjs`) into `~/.local/share/road-map-journal/`, keeping a `.bak-<time>` of every changed file. A new file that must be installed with roadctl goes into `scripts/roadctl/`; the installer copies that folder as it is, so nothing else needs registering. Tests of the installed copy run it from a temporary directory (`update-installed.test.mjs`).

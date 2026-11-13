@@ -9,7 +9,10 @@
 # crontab:   0 */2 * * *  WORKDIR=$HOME/projects/agent-workspace $HOME/bin/tick-claude.sh >> $HOME/.local/state/tick-claude.log 2>&1
 # Variables: AGENT (default claude-code@home-wsl, must be in the registry with the role orchestrator), WORKDIR (where claude starts),
 #            MODEL (default opus), MAX_TURNS (default 30), ROADCTL (default ~/.local/bin/roadctl),
-#            CLAUDE_EXTRA_ARGS (split on spaces, no quoting; for example: --allowedTools Bash(roadctl:*) so the headless run may call roadctl).
+#            CLAUDE_TIMEOUT (default 30m: timeout(1) stops a claude run that hangs; exit 124 then), CLAUDE_EXTRA_ARGS (split on spaces, no quoting; for example:
+#            --settings $HOME/.config/tick-claude.settings.json, a file that allows only the roadctl subcommands the prompt names:
+#            {"permissions":{"allow":["Read","Bash(roadctl limits --check:*)","Bash(roadctl show:*)","Bash(roadctl claim:*)","Bash(roadctl report:*)","Bash(roadctl accept:*)","Bash(roadctl return:*)","Bash(roadctl delegate:*)","Bash(roadctl undelegate:*)","Bash(roadctl save:*)"]}}
+#            and never Bash(roadctl:*), which would also allow approve and done).
 set -u
 AGENT="${AGENT:-claude-code@home-wsl}"
 WORKDIR="${WORKDIR:?set WORKDIR to the directory claude should start in}"
@@ -29,4 +32,4 @@ esac
 
 cd "$WORKDIR" || exit 1
 read -r -a extra <<< "${CLAUDE_EXTRA_ARGS:-}"
-claude -p --model "${MODEL:-opus}" --max-turns "${MAX_TURNS:-30}" ${extra[@]+"${extra[@]}"} "$(cat "$prompt")"
+timeout --kill-after=30s "${CLAUDE_TIMEOUT:-30m}" claude -p --model "${MODEL:-opus}" --max-turns "${MAX_TURNS:-30}" ${extra[@]+"${extra[@]}"} "$(cat "$prompt")"
