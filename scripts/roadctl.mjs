@@ -30,7 +30,7 @@
 //   roadctl delegate <id> --to X [--host H] [--criteria a2,a3|all] --by ME [--accept by|reviewer|owner|NAME]   hand a card to another executor
 //   roadctl tasks [--for AGENT] [--all]   open, claimed, expired and reported delegations
 //   roadctl claim <id> --as AGENT [--lease 2h] [--workdir DIR]   take an open delegation (git decides a race); report/accept/return finish it
-//   roadctl tick --as AGENT [--all] [--no-pull] [--json] [--prompt] [--routine ID] [--kinds take,accept,start,stale,run]   model-free check for a scheduled orchestrator; exit 0 work, 4 idle, 1 reserve, 3 limits unknown, 5 busy
+//   roadctl tick --as AGENT [--all] [--no-pull] [--json] [--prompt] [--routine ID] [--kinds take,accept,start,stale,run]   model-free check for a scheduled orchestrator; exit 0 work, 4 idle, 1 reserve, 3 limits unknown, 5 busy, 6 paused
 //   roadctl tick --ledger [--as A] [-n 20]   the last runs of tick (read-only)
 //   roadctl routine list [--all] [--json] | show <id> | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"] | on|off <id> --by NAME | done <id> --as A --result ok|escalated|failed "summary"   recurring routines
 //   roadctl autonomy routines on|off --by NAME   the board switch for routines (owner only; independent of card autonomy)
@@ -50,7 +50,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '0.3.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.4.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -1194,7 +1194,8 @@ function overview(cmd, boards, flags, out, multi) {
   const prefix = (b) => (multi ? `${b.name}: ` : '');
   if (cmd === 'status') {
     const s = boards.map((b) => statusSummary(b.name, b.board, { sync: syncState(b.board, { fetch: Boolean(flags.fetch) }) }));
-    out(flags.json ? JSON.stringify(s, null, 2) : formatStatus(s));
+    const pz = machinePause(process.env); // seam (P5.5): a paused machine says so first (text) or in every board summary (json)
+    out(flags.json ? JSON.stringify(pz ? s.map((x) => ({ ...x, pause: pz.paused })) : s, null, 2) : `${pz ? `${pz.line}\n` : ''}${formatStatus(s)}`);
   } else if (cmd === 'list') {
     const rows = boards.map((b) => ({ b, rows: listCards(b.board, flags.status) }));
     if (flags.json) out(JSON.stringify(rows.flatMap(({ b, rows: r }) => r.map((x) => ({ project: b.name, ...x }))), null, 2));
@@ -2645,7 +2646,7 @@ export async function limitsCommand(flags, io, env = process.env) {
 // no percentages, sorted), so a monitor that compares the output with the last run (Hermes --monitor-script) starts the agent only
 // when something changed. It writes nothing to the boards; it pulls (unless --no-pull), keeps a lock and appends to a ledger.
 
-export const TICK_EXIT = { work: 0, idle: 4, 'blocked-reserve': 1, 'blocked-unknown': 3, busy: 5 };
+export const TICK_EXIT = { work: 0, idle: 4, 'blocked-reserve': 1, 'blocked-unknown': 3, busy: 5, paused: 6 }; // paused (P5.5): the owner's local switch, `roadctl pause`
 const TICK_KINDS = ['TAKE', 'ACCEPT', 'START', 'STALE', 'RUN'];
 const TICK_LIVE = new Set(['ready', 'doing', 'review']); // idea, blocked, parked, done and dropped cards are never offered
 const TICK_LOCK_STALE_MS = 10 * 60 * 1000;
@@ -2709,7 +2710,13 @@ async function tickLimits(agent, reg, env) {
 
 const limitsText = (l) => `limits: ${l.provider ?? '-'} ${l.state}${l.windows ? ` (${l.windows.join(',')})` : ''}`;
 
+/** seam (P5.5): the active local pause of this machine ({ paused: { since, by, reason, until }, line }) or null; the module that owns the switch answers, without it nothing is ever paused. */
+function machinePause(env, io) {
+  return MODULE_REG.callHook('pause-state', { env, api: moduleApi() }, io).find((h) => h.value?.paused)?.value ?? null;
+}
+
 export function tickText(t) {
+  if (t.decision === 'paused') return [`tick ${t.agent}: paused`, `pause: ${t.pause?.reason ?? 'no reason given'}${t.pause?.until ? ` (until ${t.pause.until})` : ''}`].join('\n'); // stable: no clock, so a monitor sees the same text until the owner changes the pause (seam, P5.5)
   if (t.decision === 'idle') return [`tick ${t.agent}: idle`, ...t.sync.filter((l) => l.startsWith('requires: '))].join('\n'); // one line: nothing that can change while nothing happens (no limits probe, no sync noise); only a refusal for a too-new board (P5.14) is added
 
   return [`tick ${t.agent}: ${t.decision}`, ...t.items.map(itemText), limitsText(t.limits), ...t.sync].join('\n');
@@ -2849,7 +2856,7 @@ function tickLedger(flags, args, out, env) {
   return 0;
 }
 
-/** `roadctl tick`: exit 0 work, 4 idle, 1 blocked by the reserve, 3 blocked by unknown limits, 5 busy, 2 usage. */
+/** `roadctl tick`: exit 0 work, 4 idle, 1 blocked by the reserve, 3 blocked by unknown limits, 5 busy, 6 paused, 2 usage. */
 export async function tickCommand(flags, args, io, env = process.env) {
   const out = (s) => io.out(`${s}\n`);
   if (flags.ledger) return tickLedger(flags, args, out, env);
@@ -2857,6 +2864,13 @@ export async function tickCommand(flags, args, io, env = process.env) {
   const USAGE = 'usage: roadctl tick --as AGENT [--all] [--no-pull] [--json] [--prompt] [--routine ID] [--kinds take,accept,start,stale,run]   |   roadctl tick --ledger [--as AGENT] [-n 20]';
   if (typeof agent !== 'string' || !AGENT_RE.test(agent)) throw new Error(USAGE);
   const filter = tickFilter(flags, USAGE);
+  const gate = machinePause(env, io); // seam (P5.5): a paused machine decides nothing: no lock, no pull, no limits gate, no module tick hook; one folded ledger line
+  if (gate) {
+    const t = { agent, decision: 'paused', limits: { provider: null, state: 'not-checked' }, items: [], sync: [], pause: gate.paused };
+    appendTickLedger(env, { time: isoAt(), agent, decision: 'paused', counts: countKinds([]), limits: null, ...(filter ? { filter } : {}) });
+    out(flags.json ? JSON.stringify(t, null, 2) : tickText(t));
+    return TICK_EXIT.paused;
+  }
   const lock = acquireTickLock(agent, env, filter?.routine);
   if (!lock.ok) {
     out(`tick ${agent}: busy`);
@@ -3389,13 +3403,16 @@ export function routineCommand(flags, args, io, env = process.env) {
       boards = [{ name: path.basename(b.project), board: b }];
     }
     const res = boards.map((b) => ({ ...b, rows: routineRows(b.board), on: autonomyOf(b.board).routines }));
-    if (flags.json) out(JSON.stringify(res.flatMap((b) => b.rows.map((x) => ({ project: b.name, board_switch: b.on, ...x }))), null, 2));
-    else
+    const pz = machinePause(env); // seam (P5.5): while paused no routine starts on this machine, whatever "due" says
+    if (flags.json) out(JSON.stringify(res.flatMap((b) => b.rows.map((x) => ({ project: b.name, board_switch: b.on, ...x, ...(pz ? { pause: pz.paused } : {}) }))), null, 2));
+    else {
+      if (pz) out(pz.line);
       for (const b of res) {
         const p = flags.all ? `${b.name}: ` : '';
         out(`${p}routines: board switch ${b.on ? 'ON' : 'OFF (nothing runs; the owner turns it on with roadctl autonomy routines on --by NAME)'} | ${b.rows.length} routine(s), ${b.rows.filter((x) => x.enabled).length} on`);
         for (const x of b.rows) out(formatRoutineRow(x, `${p}  `));
       }
+    }
     return 0;
   }
   if (sub === 'show') {
@@ -3491,11 +3508,11 @@ export const COMMANDS = {
   },
   tick: {
     group: 'Look', effect: 'git', summary: 'model-free check for a scheduled orchestrator',
-    purpose: 'The first step of a scheduled run, without a model: pulls the board repositories, finds what AGENT could TAKE (open or expired delegations it may claim), ACCEPT (reported results it may accept), START (approved ready cards with every depends_on done and no delegation; orchestrators only) or look at (STALE: claimed with an expired lease; orchestrators only) or RUN (a recurring routine that is due and whose own agent is AGENT; needs the board switch autonomy.routines, enabled, approved, agent, model and env), asks the limits gate (cache, never --fresh; only when there is something to do) and answers with a decision and an exit code. A scheduler starts a model only on exit 0. When idle the text is the single line "tick AGENT: idle" and no limits are probed. The text has no times and no percentages and is sorted, so a monitor that compares it with the last run (Hermes --monitor-script) starts the agent only when something changed. Outside a board it covers every board of the workspace. One tick per agent at a time (lock; second run prints busy, exit 5). Every run is appended to a ledger. --routine ID limits the tick to that one routine (its RUN item, or idle) and --kinds to some kinds, so a scheduler job can start a model for one routine only, when that routine is due; STALE lines of a claim whose working directory is on this machine and has uncommitted changes end with "(workdir dirty)".',
+    purpose: 'The first step of a scheduled run, without a model: pulls the board repositories, finds what AGENT could TAKE (open or expired delegations it may claim), ACCEPT (reported results it may accept), START (approved ready cards with every depends_on done and no delegation; orchestrators only) or look at (STALE: claimed with an expired lease; orchestrators only) or RUN (a recurring routine that is due and whose own agent is AGENT; needs the board switch autonomy.routines, enabled, approved, agent, model and env), asks the limits gate (cache, never --fresh; only when there is something to do) and answers with a decision and an exit code. A scheduler starts a model only on exit 0. When idle the text is the single line "tick AGENT: idle" and no limits are probed. The text has no times and no percentages and is sorted, so a monitor that compares it with the last run (Hermes --monitor-script) starts the agent only when something changed. Outside a board it covers every board of the workspace. One tick per agent at a time (lock; second run prints busy, exit 5). While the owner has paused this machine (roadctl pause) tick starts nothing of any kind: it prints \"tick AGENT: paused\" and the reason, probes no limits, pulls nothing and exits 6. Every run is appended to a ledger. --routine ID limits the tick to that one routine (its RUN item, or idle) and --kinds to some kinds, so a scheduler job can start a model for one routine only, when that routine is due; STALE lines of a claim whose working directory is on this machine and has uncommitted changes end with "(workdir dirty)".',
     usage: ['roadctl tick --as AGENT [--all] [--no-pull] [--json] [--prompt] [--routine ID] [--kinds take,accept,start,stale,run]', 'roadctl tick --ledger [--as AGENT] [-n 20] [--json]'],
     flags: [['--as AGENT', 'the agent the run is for (registry roles decide what applies)'], ALL('check'), ['--no-pull', 'do not pull first (default: git pull of each repository; a failure is a stable "sync:" line)'], ['--prompt', 'with work: print the instruction for the orchestrator model instead of the item list (a RUN item names the routine file, its model and environment; the routine text is not inserted)'], ['--routine ID', 'only the RUN item of this routine (idle when it is not due, not allowed or belongs to another agent); with --prompt the instruction for that routine only; has its own lock'], ['--kinds LIST', 'only these kinds, a comma list of take, accept, start, stale, run (default: all); the ledger records the filter'], ['--ledger', 'print the last runs and exit (read-only); -n N how many (default 20), --as filters'], J],
     examples: ['roadctl tick --as claude-code@home-wsl', 'roadctl tick --as hermes@home-host --routine server-watch --prompt', 'roadctl tick --as claude-code@home-wsl --kinds take,accept', 'roadctl tick --as claude-code@home-wsl --prompt > p.txt && claude -p "$(cat p.txt)"', 'roadctl tick --ledger -n 5'],
-    changes: 'No card. It pulls (unless --no-pull), writes the limits cache, a lock file and one line per run in $XDG_STATE_HOME/road-map-journal/ticks.jsonl (not printed). Starts no model.', exits: '0 work (a model may be started); 4 idle; 1 reserve reached; 3 limits unknown; 5 another tick of this agent is running; 2 usage error',
+    changes: 'No card. It pulls (unless --no-pull), writes the limits cache, a lock file and one line per run in $XDG_STATE_HOME/road-map-journal/ticks.jsonl (not printed). Starts no model.', exits: '0 work (a model may be started); 4 idle; 1 reserve reached; 3 limits unknown; 5 another tick of this agent is running; 6 paused (roadctl pause: nothing is started); 2 usage error',
   },
   autonomy: {
     group: 'Look', effect: 'read', summary: 'what may start unattended; on|off is owner only',
@@ -3831,6 +3848,7 @@ export function helpFor(name) {
 function parse(argv) {
   const o = { _: [], flags: {} };
   const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--run', '--workdir', '--hours', '--routine', '--kinds']);
+  withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {

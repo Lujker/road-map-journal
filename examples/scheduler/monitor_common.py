@@ -20,6 +20,8 @@ def tick(agent, kinds, output="--prompt"):
 
 
 def sticky(name, result):
+    # Only exit 0 (work) replaces the stored prompt; idle (4), reserve (1), unknown limits (3), busy (5) and paused (6, the owner ran roadctl pause)
+    # print the stored one again, so the monitored output does not change and no model is woken.
     root = Path(os.environ.get("ROAD_MONITOR_STATE_DIR", Path.home() / ".road-map-journal"))
     state = root / (name + ".state")
     if result is not None and result.returncode == 0 and result.stdout:

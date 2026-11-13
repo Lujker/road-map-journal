@@ -4,7 +4,8 @@
 #
 # Step 1 (no model): roadctl tick --as AGENT --prompt  -> exit 0 only when there is work and the limits allow.
 # Step 2 (model):    claude -p ... "<the prompt that tick printed>"  -> only on exit 0.
-# Exit codes of tick: 0 work, 4 idle, 1 reserve reached, 3 limits unknown, 5 another tick of this agent runs, 2 error.
+# Exit codes of tick: 0 work, 4 idle, 1 reserve reached, 3 limits unknown, 5 another tick of this agent runs, 6 the owner paused this machine
+# (roadctl pause; roadctl resume ends it), 2 error.
 #
 # crontab:   0 */2 * * *  WORKDIR=$HOME/projects/agent-workspace $HOME/bin/tick-claude.sh >> $HOME/.local/state/tick-claude.log 2>&1
 # Variables: AGENT (default claude-code@home-wsl, must be in the registry with the role orchestrator), WORKDIR (where claude starts),
@@ -26,7 +27,7 @@ code=$?
 case "$code" in
   0) ;;                                             # work and the limits allow: go on to step 2
   4) echo "tick: idle, nothing to do"; exit 0 ;;
-  1 | 3 | 5) head -n 1 "$prompt"; exit 0 ;;         # reserve, limits unknown or busy: do nothing, try again next time
+  1 | 3 | 5 | 6) head -n 1 "$prompt"; exit 0 ;;     # reserve, limits unknown, busy or paused: do nothing, try again next time (a paused tick prints "tick AGENT: paused")
   *) echo "tick: roadctl failed with exit code $code" >&2; exit "$code" ;;
 esac
 

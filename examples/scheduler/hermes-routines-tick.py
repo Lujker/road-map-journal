@@ -56,7 +56,7 @@ nohup bash -c 'flock -n 9 || exit 0; cd "$HOME" || exit 0; echo "== $(date -u +%
 def due_routines(agent):
     """(project, routine id, model) of every RUN item of `roadctl tick --json`; empty on idle, a closed gate or an error."""
     result = tick(agent, "run", "--json")
-    if result is None or result.returncode != 0:  # 0 is work; idle, reserve, unknown and busy start nothing
+    if result is None or result.returncode != 0:  # 0 is work; idle, reserve, unknown, busy and paused (6, roadctl pause) start nothing
         return []
     try:
         items = json.loads(result.stdout.decode("utf-8", "replace"))["items"]

@@ -442,7 +442,7 @@ test('P5.1 a8: runs.jsonl is never inside a git work tree (by default it is unde
 // ---------------------------------------------------------------- P5.14: the format change is raised and documented
 
 test('P5.1 format change (P5.14): VERSION is 0.3.0, a board that requires it is refused by 0.2.x and used by this copy, a board without requires is unchanged; tick --json knows `attempt`', FAKES_SKIP, () => {
-  assert.equal(rc.compareVersions(rc.VERSION, '0.3.0'), 0);
+  assert.ok(rc.compareVersions(rc.VERSION, '0.3.0') >= 0, 'the P5.1 format needs roadctl 0.3.0 or newer');
   assert.match(rc.boardRequires({ requires: '0.3.0' }, '0.2.0'), /requires roadctl 0\.3\.0 or newer; this is 0\.2\.0/);
   assert.equal(rc.boardRequires({ requires: '0.3.0' }, rc.VERSION), null);
   assert.equal(rc.boardRequires({}, '0.2.0'), null, 'a board without requires is never refused');

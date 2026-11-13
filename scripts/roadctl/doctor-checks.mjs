@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { INSTALLED_JSON, declaredVersion, fingerprint, readInstalledJson } from './fingerprint.mjs';
+import { pauseLine, readPause } from './pause.mjs';
 
 export const STATUSES = ['ok', 'warn', 'fail', 'skip'];
 export const CLOCK_TOLERANCE_MS = 5 * 60e3;
@@ -320,6 +321,9 @@ export function checkState(ctx) {
     const locks = fs.readdirSync(dir).filter((n) => /^tick-.*\.lock$/.test(n));
     out.push(res('state-dir', 'ok', `state directory ${shown} is writable${locks.length ? `; lock file(s): ${names(locks)}` : ''}`));
   }
+  const pz = readPause(dir, ctx.api.nowMs()); // P5.5: a forgotten pause is the usual reason for "nothing runs"; reported only when the file exists
+  if (pz?.state === 'paused') out.push(res('pause', 'warn', `this machine is paused: ${pauseLine(pz)}; roadctl tick starts nothing here (exit 6)`, 'roadctl resume (the pause is local to this state directory; another machine or the WSL/Windows twin is not affected)'));
+  else if (pz) out.push(res('pause', 'ok', `an expired pause file (until ${pz.until}) is in ${shown}; it is ignored, roadctl resume removes it`));
   const cache = ctx.api.limitsCachePath(ctx.env);
   try {
     const age = Math.round((ctx.api.nowMs() - fs.statSync(cache).mtimeMs) / 60e3);

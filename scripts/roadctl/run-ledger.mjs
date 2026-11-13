@@ -180,13 +180,14 @@ export default {
       return { run };
     },
 
-    /** The ticks.jsonl line: folded and rotated (inside tick only); a busy tick also leaves a skipped record. */
+    /** The ticks.jsonl line: folded and rotated (inside tick only); a busy or paused tick (it decided nothing: no lock) also leaves a skipped record with that reason. */
     'tick-ledger'({ env, entry, api }) {
-      const busy = entry.decision === 'busy';
-      const handled = recordTick(env, entry, { rotate: !busy });
+      const skip = ['busy', 'paused'].includes(entry.decision) ? entry.decision : null; // paused: P5.5, the owner's local switch
+      const handled = recordTick(env, entry, { rotate: !skip });
       const now = Date.parse(entry.time);
-      if (busy) recordSkip(env, { kind: entry.filter?.routine ? 'routine' : 'orchestrator', project: null, id: entry.filter?.routine ?? entry.agent, agent: entry.agent, reason: 'busy', now, version: api?.VERSION });
-      else if (Object.values(readState(env).skips).some((s) => s.agent === entry.agent && s.reason === 'busy')) clearSkips(env, (k, s) => s.agent === entry.agent && s.reason === 'busy');
+      const ours = (s) => s.agent === entry.agent && ['busy', 'paused'].includes(s.reason);
+      if (skip) recordSkip(env, { kind: entry.filter?.routine ? 'routine' : 'orchestrator', project: null, id: entry.filter?.routine ?? entry.agent, agent: entry.agent, reason: skip, now, version: api?.VERSION });
+      else if (Object.values(readState(env).skips).some(ours)) clearSkips(env, (k, s) => ours(s));
       return { handled };
     },
 

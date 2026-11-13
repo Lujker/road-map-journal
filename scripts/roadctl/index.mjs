@@ -5,7 +5,8 @@ import { buildRegistry } from './registry.mjs';
 import probe from './probe.mjs';
 import doctor from './doctor.mjs';
 import runLedger from './run-ledger.mjs';
+import pause from './pause.mjs';
 
-export const MODULES = [probe, doctor, runLedger];
+export const MODULES = [probe, doctor, runLedger, pause];
 
 export const buildModuleRegistry = (opts) => buildRegistry(MODULES, opts);
