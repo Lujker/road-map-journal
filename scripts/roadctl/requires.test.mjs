@@ -195,8 +195,8 @@ test('an unknown routine header key is only a warning for this copy: the routine
   const r = rig();
   r.routine('my-app');
   const file = path.join(r.boards['my-app'], 'routines', 'atom-status.md');
-  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^enabled: true$/m, 'enabled: true\nnotify: on-failure'));
-  assert.match(r.run(['lint', '--json', '--board', r.boards['my-app']]).stdout, /unknown key notify/);
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^enabled: true$/m, 'enabled: true\nfuture_key: on-failure'));
+  assert.match(r.run(['lint', '--json', '--board', r.boards['my-app']]).stdout, /unknown key future_key/);
   assert.deepEqual(JSON.parse(r.tick().stdout).items.map((i) => i.kind), ['RUN'], 'a copy that does not know the key runs the routine anyway');
   r.setRequires('my-app', '99.0.0');
   assert.deepEqual(JSON.parse(r.tick().stdout).items, [], 'with requires raised the same routine is not offered by a copy that is too old');

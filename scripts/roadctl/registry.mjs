@@ -24,8 +24,10 @@
 //   tick-before          { agent, env, filter, items, boardDirs, api } -> { run: { 'project/id': { attempt } } } extra fields of a RUN item's `routine`
 //   tick-ledger          { env, entry }  -> { handled: true } when the module wrote the ticks.jsonl line itself (otherwise roadctl appends it)
 //   routine-done-before  { board, id, as, result, text, flags, env, api } -> { text } replaces the summary, { refuse } refuses the run
-//   routine-done-after   { board, id, as, result, text, flags, env, api, done, prior }  (done is what routineDone returned)
-//   claim-after, report-after   { board, id, as, r, flags, env, api }
+//   routine-done-after   { board, id, as, result, text, flags, env, api, done, prior }  (done is what routineDone returned) -> { print: [lines] } printed after the usual line
+//   report-before        { board, id, as, text, flags, env, api } -> { text } replaces the report text, { refuse } refuses the report
+//   claim-after          { board, id, as, r, flags, env, api }
+//   report-after         { board, id, as, r, text, flags, env, api, prior } -> { print: [lines] }
 //   pause-state          { env, api } -> { paused: { since, by, reason, until }, line } while the machine is paused, else {} (`tick` stops before any lock, pull or limits gate and exits 6; `status` and `routine list` show the line)
 //
 // Node standard library only, no side effects at import.
@@ -35,7 +37,7 @@ const KEY_RE = /^[a-z][a-z0-9_]*$/;
 const EFFECTS = ['read', 'write', 'git'];
 const STRING_FIELDS = ['summary', 'purpose', 'changes', 'exits'];
 const ARRAY_FIELDS = ['usage', 'flags', 'examples'];
-export const HOOK_NAMES = ['tick-before', 'tick-ledger', 'routine-done-before', 'routine-done-after', 'claim-after', 'report-after', 'pause-state'];
+export const HOOK_NAMES = ['tick-before', 'tick-ledger', 'routine-done-before', 'routine-done-after', 'claim-after', 'report-before', 'report-after', 'pause-state'];
 
 function fail(mod, msg) {
   throw new Error(`roadctl module ${mod}: ${msg}`);

@@ -6,11 +6,13 @@
 // Everything here degrades quietly: a state directory that cannot be used never stops routine done, claim, report or tick.
 import {
   badAttempts, beginRun, clearSkips, DEFAULT_TIMEOUT_MS, finishRun, hostName, isOverdue, ledgerPaths, locateRun, noteRun, nowMs, readRuns, readState,
-  reconcileCrashed, recordSkip, recordTick, RUNS_ROTATE_BYTES, rotateIfLarge, runIdFor, cleanText, usable,
+  reconcileCrashed, recordSkip, recordTick, RUNS_ROTATE_BYTES, rotateIfLarge, runIdFor, cleanText, usable, isoAt,
 } from './run-store.mjs';
+import { collectFields, formatLogText, renderSummary } from './run-summary.mjs';
 
 const RUN_ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
-const RUN_USAGE = 'usage: roadctl run begin <routine|card> --as AGENT [--run ID]   |   roadctl run note [RUN_ID] "what was done" [--as AGENT]';
+const RUN_USAGE = 'usage: roadctl run begin <routine|card> --as AGENT [--run ID]   |   roadctl run note [RUN_ID] "what was done" [--as AGENT]   |   roadctl run done --as AGENT --result ok|escalated|failed --did "what was done" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]';
+const RUN_RESULTS = ['ok', 'escalated', 'failed'];
 const projectOf = (board) => String(board.project).split(/[\\/]/).filter(Boolean).pop();
 
 // ---------------------------------------------------------------- the line `routine done` leaves in the routine's Log
@@ -106,6 +108,52 @@ function runNote({ flags, args, out, env }) {
   return 0;
 }
 
+/**
+ * `roadctl run done` (P5.13): the end of a run of the duty orchestrator, which has no routine or card to write to. The summary goes to the local run
+ * ledger (kind orchestrator, id = the agent) and is printed in the form the owner reads; the digest of this machine delivers it. An open run of the
+ * agent (a supervisor began it, ROADCTL_RUN_ID or --run) is ended; without one a whole record is written. `--did` is always required.
+ */
+function runDone({ flags, args, out, env, api }) {
+  const as = typeof flags.as === 'string' ? flags.as : null;
+  const result = typeof flags.result === 'string' ? flags.result : null;
+  if (!as || !result) throw new Error(RUN_USAGE);
+  if (!RUN_RESULTS.includes(result)) throw new Error(`${RUN_USAGE}; --result must be one of ${RUN_RESULTS.join('|')}`);
+  if (flags.run !== undefined && !(typeof flags.run === 'string' && RUN_ID_RE.test(flags.run))) throw new Error(`${RUN_USAGE}; --run is an id of letters, digits and . _ : - (up to 64)`);
+  const sum = collectFields(flags, args[2], { strict: true });
+  if (sum.error) throw new Error(`${RUN_USAGE}; ${sum.error}`);
+  for (const w of sum.warnings) process.stderr.write(`roadctl run done: warning: ${w}\n`);
+  let language;
+  try {
+    const dir = api.findBoard(process.cwd(), typeof flags.board === 'string' ? flags.board : undefined, env);
+    language = dir ? api.loadBoard(dir).config?.language : undefined;
+  } catch {
+    /* the heading language is a nicety */
+  }
+  const now = nowMs(env);
+  const key = { kind: 'orchestrator', project: null, id: as };
+  const explicit = flags.run ?? (RUN_ID_RE.test(env.ROADCTL_RUN_ID ?? '') ? env.ROADCTL_RUN_ID : undefined);
+  const u = usable(env);
+  let status = 'unavailable';
+  let duration_s = null;
+  if (u.ok) {
+    const plan = attempt(() => locateRun(env, { ...key, runId: explicit, anchor: isoAt(now) }));
+    if (plan?.problem) {
+      process.stderr.write(`roadctl run done: refused: ${plan.problem}\n`);
+      return 1;
+    }
+    if (plan) {
+      const r = attempt(() => finishRun(env, { runId: plan.run_id, plan, ...key, agent: as, model: null, outcome: result, fields: { ...sum.fields, writes: ['orchestrator'] }, anchor: null, now, version: api.VERSION }));
+      status = r?.status ?? 'unavailable';
+      duration_s = r?.duration_s ?? null;
+    }
+  }
+  if (status === 'unavailable') process.stderr.write(`roadctl run done: warning: ${u.ok ? 'the run could not be written' : u.reason}; this run is not recorded in the local ledger\n`);
+  const lines = renderSummary({ kind: 'orchestrator', project: null, id: as, outcome: result, agent: null, duration_s, fields: sum.fields }, language);
+  if (flags.json) out(JSON.stringify({ status, fields: sum.fields, text: lines.join('\n') }, null, 2));
+  else for (const l of lines) out(l);
+  return 0;
+}
+
 const stamp = (r) => r.finished ?? r.started ?? '';
 
 function runsCommand({ flags, args, out, env }) {
@@ -139,16 +187,17 @@ export default {
   commands: {
     run: {
       group: 'Record', effect: 'write', hidden: true, summary: 'begin a run or leave a checkpoint in the local run ledger',
-      purpose: 'For paths without a supervisor. `begin` records the start of a run of a routine (or of a card) and prints its run id; a second `begin` of the same thing while the first is open answers "already begun" with exit code 5, so two schedulers on one machine do not both run it. `note` leaves a cheap local checkpoint on an open run; the last one stays in the record if the run is broken off. The run id can come from ROADCTL_RUN_ID instead of the command line, and `routine done` finds its run by itself. Nothing goes to git; a state directory that cannot be written is a warning, not a failure.',
-      usage: ['roadctl run begin <routine|card> --as AGENT [--run ID]', 'roadctl run note [RUN_ID] "what was done" [--as AGENT]'],
-      flags: [['--as AGENT', 'the agent that runs it (for a routine: the routine\'s own agent)'], ['--run ID', 'use this run id instead of the derived one (ROADCTL_RUN_ID does the same)'], ['--json', 'machine-readable output of begin']],
-      examples: ['roadctl run begin server-watch --as claude-code@home-wsl', 'roadctl run note "checked 7 of 9 servers"'],
+      purpose: 'For paths without a supervisor. `begin` records the start of a run of a routine (or of a card) and prints its run id; a second `begin` of the same thing while the first is open answers "already begun" with exit code 5, so two schedulers on one machine do not both run it. `note` leaves a cheap local checkpoint on an open run; the last one stays in the record if the run is broken off. `done` ends a run of the duty orchestrator (which has no routine or card to write to) with a run summary: it is kept in the local ledger and printed in the plain form the owner reads, up to six lines; `--did` is required. The run id can come from ROADCTL_RUN_ID instead of the command line, and `routine done` finds its run by itself. Nothing goes to git; a state directory that cannot be written is a warning, not a failure.',
+      usage: ['roadctl run begin <routine|card> --as AGENT [--run ID]', 'roadctl run note [RUN_ID] "what was done" [--as AGENT]', 'roadctl run done --as AGENT --result ok|escalated|failed --did "what was done" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]'],
+      flags: [['--as AGENT', 'the agent that runs it (for a routine: the routine\'s own agent)'], ['--result R', 'run done: ok, escalated or failed'], ['--did T', 'run done: what was done (1 to 3 times, 120 characters each; required)'], ['--decision T', 'run done: a decision taken (up to 3 times, 160)'], ['--problem P', 'run done: "transient|permanent|unknown: key: text" (up to 3 times; the key lets the owner see one problem once)'], ['--ask T', 'run done: what is needed from the owner (200)'], ['--not-checked T', 'run done: what was not checked (160)'], ['--run ID', 'use this run id instead of the derived one (ROADCTL_RUN_ID does the same)'], ['--json', 'machine-readable output of begin']],
+      examples: ['roadctl run begin server-watch --as claude-code@home-wsl', 'roadctl run note "checked 7 of 9 servers"', 'roadctl run done --as claude-code@home-wsl --result ok --did "3 cards taken, 1 accepted" --ask "decide P5.4 scope"'],
       changes: 'Appends to runs.jsonl in the machine state directory (not to the board, not to git).',
-      exits: '0 recorded (or not recorded because the ledger is unavailable, with a warning); 5 already begun; 1 refused (not the routine\'s agent); 2 usage error',
+      exits: '0 recorded (or not recorded because the ledger is unavailable, with a warning); 5 already begun; 1 refused (not the routine\'s agent, a run of another thing); 2 usage error',
       run(ctx) {
         const sub = ctx.args[1];
         if (sub === 'begin') return runBegin(ctx);
         if (sub === 'note') return runNote(ctx);
+        if (sub === 'done') return runDone(ctx);
         throw new Error(RUN_USAGE);
       },
     },
@@ -191,11 +240,15 @@ export default {
       return { handled };
     },
 
-    /** The Log line of a routine run gets run_id, duration and host; a `--run` that belongs to another routine is refused. */
+    /**
+     * The Log line of a routine run gets run_id, duration and host; a `--run` that belongs to another routine is refused. With summary fields
+     * (`--did` ...; P5.13) the line is the parseable form of run-summary.mjs and always has the trailer; a board with `"summary": "required"` refuses a run without `--did`.
+     */
     'routine-done-before'({ board, id, flags, env, text }) {
       const r = routineOf(board, id);
-      const base = cleanText(text, 1500);
-      if (!r || !base) return {}; // routineDone refuses these itself
+      const sum = collectFields(flags, text, { strict: board.config?.summary === 'required' });
+      if (sum.error && r) return { refuse: sum.error };
+      if (!r || sum.error || (!sum.structured && !cleanText(text, 1500))) return {}; // routineDone refuses these itself
       if (flags.run !== undefined && !(typeof flags.run === 'string' && RUN_ID_RE.test(flags.run))) return { refuse: '--run is an id of letters, digits and . _ : - (up to 64)' };
       const now = nowMs(env);
       const key = { kind: 'routine', project: projectOf(board), id };
@@ -205,16 +258,20 @@ export default {
       if (usable(env).ok) plan = attempt(() => locateRun(env, { ...key, runId: explicit, anchor })) ?? plan;
       else if (explicit) plan.run_id = explicit;
       if (plan.problem) return { refuse: plan.problem };
-      if (!plan.run && !explicit) return { plan, now, anchor, key }; // no begin and no id given: the Log line stays as it always was (old boards and tests); the ledger still gets the run
+      for (const w of sum.warnings) process.stderr.write(`roadctl routine done: warning: ${w}\n`);
+      if (!sum.structured && !plan.run && !explicit) return { plan, now, anchor, key }; // no begin, no id, no summary fields: the Log line stays as it always was (old boards and tests); the ledger still gets the run
       const duration_s = plan.run?.started ? Math.max(0, Math.round((now - Date.parse(plan.run.started)) / 1000)) : null;
       const trailer = formatRunTrailer({ run_id: plan.run_id, duration_s, host: hostName(env) });
-      return { text: `${cleanText(text, 1500 - trailer.length - 1)} ${trailer}`, plan, now, anchor, key };
+      const body = sum.structured ? formatLogText(sum.fields, 1500 - trailer.length - 1) : cleanText(text, 1500 - trailer.length - 1);
+      return { text: `${body} ${trailer}`, plan, now, anchor, key, fields: sum.fields, duration_s };
     },
 
-    /** After `routine done` recorded the run: the end record (the run found by the before hook, or a whole record when there was no begin). */
+    /** After `routine done` recorded the run: the end record (the run found by the before hook, or a whole record when there was no begin); the summary text for the owner when the fields were given. */
     'routine-done-after'({ board, id, as, result, text, done, env, prior, api }) {
       if (!prior?.plan || !['recorded', 'recorded-local'].includes(done?.status)) return;
-      attempt(() => finishRun(env, { runId: prior.plan.run_id, plan: prior.plan, ...prior.key, agent: as, model: routineOf(board, id)?.header.model ?? null, outcome: result, fields: { did: [cleanText(text, 120)], writes: [`routine:${id}`] }, anchor: prior.anchor, now: prior.now, version: api.VERSION }));
+      const fields = prior.fields ?? { did: [cleanText(text, 120)] };
+      attempt(() => finishRun(env, { runId: prior.plan.run_id, plan: prior.plan, ...prior.key, agent: as, model: routineOf(board, id)?.header.model ?? null, outcome: result, fields: { ...fields, writes: [`routine:${id}`] }, anchor: prior.anchor, now: prior.now, version: api.VERSION }));
+      if (prior.fields) return { print: renderSummary({ kind: 'routine', project: prior.key.project, id, outcome: result, agent: as, duration_s: prior.duration_s, fields: prior.fields, unpublished: done.status === 'recorded-local' }, board.config?.language) };
     },
 
     /** A claim starts a run of the task (a claim still open is marked crashed first: the lease ran out and the card was taken over). */
@@ -225,15 +282,31 @@ export default {
       attempt(() => beginRun(env, { kind: 'task', project: projectOf(board), id, agent: as, model: null, anchor: r.claim?.at ?? null, deadlineMs: Number.isFinite(until) && until > now ? until : now + DEFAULT_TIMEOUT_MS, now, version: api.VERSION, supersede: true }));
     },
 
-    /** A report ends the run of the task (the report text is the first summary line until P5.13 gives the agent proper fields). */
-    'report-after'({ board, id, as, r, text, env, api }) {
-      if (!['reported', 'reported-local'].includes(r?.status)) return;
+    /** A report with summary fields (P5.13): the REPORT line of the card is the parseable form, with the trailer; a board with `"summary": "required"` refuses a report without `--did`. */
+    'report-before'({ board, id, as, text, flags, env }) {
+      const sum = collectFields(flags, text, { strict: board.config?.summary === 'required' });
+      if (sum.error) return { refuse: sum.error };
+      if (!sum.structured) return {};
+      for (const w of sum.warnings) process.stderr.write(`roadctl report: warning: ${w}\n`);
       const key = { kind: 'task', project: projectOf(board), id };
       const now = nowMs(env);
+      let plan = { run_id: runIdFor(`task:${key.project}/${id}`, null, 1), run: null, problem: null };
+      if (usable(env).ok) plan = attempt(() => locateRun(env, { ...key, anchor: null })) ?? plan;
+      const duration_s = plan.run?.started ? Math.max(0, Math.round((now - Date.parse(plan.run.started)) / 1000)) : null;
+      const trailer = formatRunTrailer({ run_id: plan.run_id, duration_s, host: hostName(env) });
+      return { text: `${formatLogText(sum.fields, 1500 - 'REPORT: '.length - trailer.length - 1)} ${trailer}`, plan, now, key, fields: sum.fields, duration_s };
+    },
+
+    /** A report ends the run of the task (the report text is the first summary line when the agent gave no fields). */
+    'report-after'({ board, id, as, r, text, env, api, prior }) {
+      if (!['reported', 'reported-local'].includes(r?.status)) return;
+      const key = { kind: 'task', project: projectOf(board), id };
+      const now = prior?.now ?? nowMs(env);
       attempt(() => {
-        const plan = locateRun(env, { ...key, anchor: null });
-        finishRun(env, { runId: plan.run_id, plan, ...key, agent: as, model: null, outcome: 'ok', fields: { did: [cleanText(text, 120)], writes: [`card:${id}`] }, anchor: null, now, version: api.VERSION });
+        const plan = prior?.plan ?? locateRun(env, { ...key, anchor: null });
+        finishRun(env, { runId: plan.run_id, plan, ...key, agent: as, model: null, outcome: 'ok', fields: { ...(prior?.fields ?? { did: [cleanText(text, 120)] }), writes: [`card:${id}`] }, anchor: null, now, version: api.VERSION });
       });
+      if (prior?.fields) return { print: renderSummary({ kind: 'task', project: key.project, id, outcome: 'ok', agent: as, duration_s: prior.duration_s, fields: prior.fields, unpublished: r.status === 'reported-local' }, board.config?.language) };
     },
   },
 

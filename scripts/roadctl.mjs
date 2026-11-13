@@ -50,7 +50,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '0.4.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.5.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -2742,12 +2742,12 @@ export function tickPrompt(t) {
     '- At the end print one line per item: done, left, or why you stopped.',
     'Commands:',
   ];
-  if (has('TAKE')) L.push(`TAKE   roadctl claim <id> --as ${A}; do what the card's Delegation section allows; roadctl report <id> --as ${A} "changed, ran, left"`);
+  if (has('TAKE')) L.push(`TAKE   roadctl claim <id> --as ${A}; do what the card's Delegation section allows; roadctl report <id> --as ${A} "changed, ran, left" (or the fields the owner reads: --did "what was done" [--problem "transient|permanent|unknown: key: text"] [--ask "what you need from the owner"])`); // seam (P5.13)
   if (has('ACCEPT')) L.push(`ACCEPT roadctl show <id> --log 10; verify; roadctl accept <id> --as ${A} or roadctl return <id> --as ${A} "what to fix"; roadctl save`);
   if (has('START')) L.push(`START  the owner put it in the autonomous queue (auto); roadctl show <id>; do it within the approved scope, or roadctl delegate <id> --to worker --by ${A} [--criteria a2,a3] [--accept reviewer]; roadctl save`);
   if (has('STALE')) L.push(`STALE  roadctl show <id>; if you delegated it: roadctl undelegate <id> --by ${A} "lease expired"; roadctl save; otherwise tell the owner${t.items.some((i) => i.workdir_dirty) ? '; for an item marked (workdir dirty) the last holder left uncommitted changes in its working directory: do not hand the card on before they are reconciled, tell the owner' : ''}`);
   if (has('RUN')) {
-    L.push(`RUN    a recurring routine the owner approved for you; run it with ITS model and environment (below); if you are not that model, start a session or subagent with it (for example the agent's launch note in the registry) and give it this task; it follows the routine file: Steps, May write, Escalate, nothing else; write the board only as May write allows (roadctl log, roadctl delegate, a question for the owner); external writes only if its approved scope has external; hand over as Escalate says; finish with roadctl routine done <id> --as ${A} --result ok|escalated|failed "summary" (it publishes the routine file itself)`);
+    L.push(`RUN    a recurring routine the owner approved for you; run it with ITS model and environment (below); if you are not that model, start a session or subagent with it (for example the agent's launch note in the registry) and give it this task; it follows the routine file: Steps, May write, Escalate, nothing else; write the board only as May write allows (roadctl log, roadctl delegate, a question for the owner); external writes only if its approved scope has external; hand over as Escalate says; finish with roadctl routine done <id> --as ${A} --result ok|escalated|failed "summary" (it publishes the routine file itself); the owner reads a summary built from fields, so prefer: --did "what was done" (1 to 3 times) [--problem "transient|permanent|unknown: key: text"] [--ask "what you need from the owner"] [--decision "..."] [--not-checked "..."] instead of "summary"`); // seam (P5.13): the prompt names the summary fields
     for (const i of t.items.filter((x) => x.kind === 'RUN')) L.push(`  ${i.project}/${i.id}: file ${path.join(t.boardDirs?.[i.project] ?? '?', i.routine.file)}; model ${i.routine.model}; env ${i.routine.env}; previous run: ${i.routine.last_run ?? 'never'}`);
   }
   return L.join('\n');
@@ -2998,7 +2998,7 @@ export function boardsCommand(flags, args, io, env = process.env) {
 
 export const ROUTINE_RESULTS = ['ok', 'escalated', 'failed'];
 export const ROUTINE_SCOPES = ['read', 'board', 'external'];
-const ROUTINE_KEYS = new Set(['id', 'title', 'every', 'hours', 'enabled', 'agent', 'model', 'env', 'approved', 'last_run', 'last_result', 'timeout']); // timeout (0.3.0, P5.1): after this long an unfinished run counts as crashed
+const ROUTINE_KEYS = new Set(['id', 'title', 'every', 'hours', 'enabled', 'agent', 'model', 'env', 'approved', 'last_run', 'last_result', 'timeout', 'notify']); // notify (0.5.0, P5.13): problems|always|never; timeout (0.3.0, P5.1): after this long an unfinished run counts as crashed
 const ROUTINE_SECTIONS = ['Goal', 'Steps', 'May write', 'Escalate', 'Log'];
 const MODEL_RE = /^[A-Za-z0-9][\w.:[\]-]*$/;
 const ENV_RE = /^[A-Za-z0-9][\w.:@-]*$/;
@@ -3135,6 +3135,7 @@ function routineFindings(r) {
   if (h.agent && !AGENT_RE.test(h.agent)) add('error', 25, 'agent must be an agent name like claude-code@work-notebook');
   if (h.model && !MODEL_RE.test(h.model)) add('error', 25, `bad model ${sanitize(h.model, 30)}`);
   if (h.env && !ENV_RE.test(h.env)) add('error', 25, `bad env ${sanitize(h.env, 30)} (no spaces)`);
+  if ('notify' in h && !['problems', 'always', 'never'].includes(h.notify)) add('error', 25, 'notify must be problems, always or never'); // seam (P5.13)
   if ('timeout' in h && parseEvery(h.timeout).error) add('error', 25, 'timeout must be like 30m, 2h or 1d (5 minutes to 30 days)'); // P5.1
   if (h.last_run && !ISO_RE.test(h.last_run)) add('error', 25, 'last_run must be an ISO-8601 UTC time like 2026-11-11T09:30:00Z');
   if (h.last_result && !ROUTINE_RESULTS.includes(h.last_result)) add('error', 25, `last_result must be one of ${ROUTINE_RESULTS.join('|')}`);
@@ -3440,16 +3441,16 @@ export function routineCommand(flags, args, io, env = process.env) {
     return 0;
   }
   if (sub === 'done') {
-    if (!args[2] || !str('as') || !str('result') || !args[3]) throw new Error('usage: roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary"');
+    if (!args[2] || !str('as') || !str('result') || !(args[3] || flags.did)) throw new Error('usage: roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary"   |   roadctl routine done <id> --as AGENT --result ok|escalated|failed --did "what was done" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]'); // seam (P5.13): --did instead of the text
     const board = one();
     const hookCtx = { board, id: args[2], as: str('as'), result: str('result'), text: args[3], flags, env, api: moduleApi() };
     const before = MODULE_REG.callHook('routine-done-before', hookCtx, io); // seam (P5.1): run id, duration and host in the Log line; may refuse
     const refusal = before.find((h) => h.value?.refuse)?.value.refuse;
     const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, args[2], { as: str('as'), result: str('result'), text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? args[3] });
-    MODULE_REG.callHook('routine-done-after', { ...hookCtx, done: r }, io, before);
+    const after = MODULE_REG.callHook('routine-done-after', { ...hookCtx, done: r }, io, before);
     const ok = ['recorded', 'recorded-local'].includes(r.status);
     if (flags.json) out(JSON.stringify(r, null, 2));
-    else if (ok) out(`roadctl routine done: ${r.status} — ${r.message}`);
+    else if (ok) { out(`roadctl routine done: ${r.status} — ${r.message}`); for (const h of after) for (const l of h.value?.print ?? []) out(l); } // seam (P5.13): the summary for the owner
     else io.err(`roadctl routine done: ${r.status} — ${r.message}\n`);
     return ok ? 0 : 1;
   }
@@ -3849,10 +3850,13 @@ function parse(argv) {
   const o = { _: [], flags: {} };
   const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--run', '--workdir', '--hours', '--routine', '--kinds']);
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
+  const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
+  const moduleValue = new Set(['--ask', '--not-checked', '--since-state']); // seam (P5.13)
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
-      if (withValue.has(a) || (a === '--check' && argv[0] === 'limits')) o.flags[a.slice(2)] = argv[++i];
+      if (repeated.has(a)) (o.flags[a.slice(2)] ??= []).push(argv[++i]);
+      else if (moduleValue.has(a) || withValue.has(a) || (a === '--check' && argv[0] === 'limits')) o.flags[a.slice(2)] = argv[++i];
       else o.flags[a.slice(2)] = true;
     } else o._.push(a);
   }
@@ -4048,12 +4052,15 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
         return ok ? 0 : 1;
       }
       case 'report': {
-        if (!args[1] || !flags.as || !args[2]) throw new Error('usage: roadctl report <id> --as AGENT "text"');
-        const r = reportCard(board, args[1], { as: flags.as, text: args[2] });
-        MODULE_REG.callHook('report-after', { board, id: args[1], as: flags.as, r, text: args[2], flags, env: process.env, api: moduleApi() }, io); // seam (P5.1): a report ends the run
+        if (!args[1] || !flags.as || !(args[2] || flags.did)) throw new Error('usage: roadctl report <id> --as AGENT "text"   |   roadctl report <id> --as AGENT --did "what was done" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]'); // seam (P5.13): --did instead of the text
+        const reportCtx = { board, id: args[1], as: flags.as, text: args[2], flags, env: process.env, api: moduleApi() };
+        const before = MODULE_REG.callHook('report-before', reportCtx, io); // seam (P5.13): summary fields make the report text; may refuse
+        const refusal = before.find((h) => h.value?.refuse)?.value.refuse;
+        const r = refusal ? { status: 'refused', message: refusal } : reportCard(board, args[1], { as: flags.as, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? args[2] });
+        const after = MODULE_REG.callHook('report-after', { ...reportCtx, r }, io, before); // seam (P5.1): a report ends the run
         const ok = ['reported', 'reported-local'].includes(r.status);
         if (flags.json) out(JSON.stringify(r, null, 2));
-        else if (ok) out(`roadctl report: ${r.status} — ${r.message}`);
+        else if (ok) { out(`roadctl report: ${r.status} — ${r.message}`); for (const h of after) for (const l of h.value?.print ?? []) out(l); } // seam (P5.13)
         else io.err(`roadctl report: ${r.status} — ${r.message}\n`);
         return ok ? 0 : 1;
       }

@@ -30,10 +30,13 @@ roadctl pause [--reason TEXT] [--until SPAN|TIME] [--by NAME] | pause status [--
 roadctl resume                    end the pause of this machine (owner only)
 roadctl runs [--open] [--json] [--as AGENT] [-n 20]   the runs of routines and delegated tasks on this machine: outcome, attempt, duration, summary fields (read-only; see Run ledger)
 roadctl run begin <routine|card> --as AGENT [--run ID] | run note [RUN_ID] "text"   start a run (a second begin: exit 5) or leave a checkpoint
+roadctl run done --as AGENT --result ok|escalated|failed --did "text" [--decision T] [--problem "kind: key: text"] [--ask T] [--not-checked T]   the duty orchestrator ends its run with a summary (local; see Run summary and delivery)
+roadctl digest [--since-state NAME] [--dry-run] [--all] [--json] | digest --daily   model-free text for the owner: problems and questions once, or the daily overview (see Run summary and delivery)
 roadctl routine list [--all] [--json]          recurring routines with their run state and why one would not run; show <id> prints one
 roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]   a routine from a template, switched off (agent, model and env are required)
 roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME   the owner's switch; only when the owner told you to
 roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary"   the routine's agent records a run; commits and pushes only that file
+roadctl routine done <id> --as AGENT --result R --did "text" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]   the same with a run summary (fields: see Run summary and delivery)
 roadctl autonomy routines on|off --by NAME     the board switch for routines (own key autonomy.routines); only when the owner told you to
 roadctl pull                      fetch, then rebase the board's repository on its upstream (a conflict only in BOARD.md is regenerated)
 roadctl save ["message"]          lint, commit only the board's paths, rebase on the upstream, push; never forces
@@ -51,6 +54,7 @@ roadctl delegate <id> --to ROLE-OR-AGENT --by AGENT [--host H] [--criteria a2,a3
 roadctl tasks [--for AGENT] [--all] [--json]   open, claimed, expired and reported delegations (--for: what that agent may take)
 roadctl claim <id> --as AGENT [--lease 2h] [--workdir DIR]     take a delegation; commits and pushes only that card; git decides a race
 roadctl report <id> --as AGENT "text"          the claimant hands in a result; commits and pushes only that card
+roadctl report <id> --as AGENT --did "text" [--decision T] [--problem "kind: key: text"] [--ask T] [--not-checked T]   the same with a run summary
 roadctl undelegate <id> --by AGENT ["reason"] [--force]   the delegating agent withdraws a delegation
 roadctl accept <id> --as AGENT                 the acceptor takes it (card -> review if every criterion has evidence); then roadctl save
 roadctl return <id> --as AGENT "what to fix"   the acceptor sends it back; then roadctl save
@@ -303,11 +307,11 @@ Generic starting texts for both are in [`examples/routines/`](../examples/routin
 3. hands over as Escalate says: `roadctl delegate` to an orchestrator or a stronger worker (for a card with an approved record), or a question for the owner (a `QUESTION for the owner:` Log line); a card is set `blocked: decision: ...` only through the normal tools;
 4. records the run: `roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary"`.
 
-`routine done` works only for the routine's own agent. It sets `last_run` (now) and `last_result`, appends a Log line (`- date [AGENT] RUN ok: summary`, sanitized like `report`, up to 1500 characters, with ` [run=<id> dur=<s>s host=<host>]` at the end when the run is known; the last 50 Log lines of the file are kept), writes the run to the local [run ledger](#run-ledger), then commits **only that file** and pushes it, like `report`: pushed (`recorded`), or kept locally when offline, without a remote or without git (`recorded-local`; the next `save` pushes it); if the file changed on the server the run is applied again on the server's file. It refuses when the file has other uncommitted changes, when the agent is not the routine's, or when the result is not one of the three. After it the routine is not due until `every` has passed, so the next `tick` is idle.
+`routine done` works only for the routine's own agent (with `--did` and the other fields instead of, or besides, the text: [Run summary and delivery](#run-summary-and-delivery)). It sets `last_run` (now) and `last_result`, appends a Log line (`- date [AGENT] RUN ok: summary`, sanitized like `report`, up to 1500 characters, with ` [run=<id> dur=<s>s host=<host>]` at the end when the run is known; the last 50 Log lines of the file are kept), writes the run to the local [run ledger](#run-ledger), then commits **only that file** and pushes it, like `report`: pushed (`recorded`), or kept locally when offline, without a remote or without git (`recorded-local`; the next `save` pushes it); if the file changed on the server the run is applied again on the server's file. It refuses when the file has other uncommitted changes, when the agent is not the routine's, or when the result is not one of the three. After it the routine is not due until `every` has passed, so the next `tick` is idle.
 
 **Looking.** `roadctl routine list [--all] [--json]` prints, per routine: id, on/off, every, agent, model, env, last run and result, `due` or `not due`, and why it would not run now (`missing model`, `not approved`, `disabled`, `board switch off`, `outside hours`, `duplicate id`, `invalid: ...`); `--all` covers every board. While the machine is paused the output starts with the `PAUSED ...` line (`--json`: a `pause` object in every row), because nothing starts here whatever `due` says. `roadctl routine show <id>` adds the header and the Goal, Steps, May write and Escalate text, which is data for whoever runs the routine. `roadctl autonomy` lists the routines with their run state under the card queue, `brief` and `status` have one line (`ROUTINES switch on | 2 routine(s), 1 on, due now 1`) only when routines exist, and `BOARD.md` has a short `Routines` section with static facts only (no last run, so a run never makes it out of date).
 
-**Lint.** Rules 25 to 29 and 21: a malformed routine file (25; this includes an `hours` that does not parse, has an unknown time zone or ends before it starts, and a `timeout` that is not like `30m`, `2h`, `1d`), a routine without agent, model or env (26), `enabled` without `approved` (27), a duplicate routine id (28), an agent that is not in the registry when one exists (29, warning), an unknown scope token (24, warning, tokens `read`, `board`, `external`), a malformed `autonomy.routines` (21).
+**Lint.** Rules 25 to 29 and 21: a malformed routine file (25; this includes an `hours` that does not parse, has an unknown time zone or ends before it starts, a `timeout` that is not like `30m`, `2h`, `1d`, and a `notify` that is not `problems`, `always` or `never`), a routine without agent, model or env (26), `enabled` without `approved` (27), a duplicate routine id (28), an agent that is not in the registry when one exists (29, warning), an unknown scope token (24, warning, tokens `read`, `board`, `external`), a malformed `autonomy.routines` (21).
 
 What routines do not do: roadctl starts no model and calls no external system; whether the executor kept to May write is not checked by a tool, the approved scope limits what the executor was told, and a run is a claim to verify like a report.
 
@@ -350,7 +354,7 @@ Each check has an `id`, a `status`, a `detail` and a `hint`. `ok` passed; `warn`
 
 ## Run ledger
 
-Every run of a routine and of a delegated task leaves a record on the machine where it ran (and the duty orchestrator will: P5.13), not only the decision of `tick`. The record has a start, an end, an outcome, a reason, the attempt and the fields of a run summary; a run that began and never ended is found and marked. The code sets the duration, the host, the version of roadctl and the times; the model does not carry an identifier.
+Every run of a routine and of a delegated task, and the end of a run of the duty orchestrator (`run done`), leaves a record on the machine where it ran, not only the decision of `tick`. The record has a start, an end, an outcome, a reason, the attempt and the fields of a run summary; a run that began and never ended is found and marked. The code sets the duration, the host, the version of roadctl and the times; the model does not carry an identifier.
 
 ```text
 roadctl runs [--open] [--json] [--as AGENT] [-n 20]
@@ -379,7 +383,7 @@ roadctl run note [RUN_ID] "what was done" [--as AGENT]
 | `attempt` | 1, or one more than the runs of the same routine that ended `crashed`, `failed`, `timeout` or `aborted` since its `last_run` |
 | `roadctl` | the roadctl version that wrote the record |
 | `usage` | reserved, always `null` (the cost of a run is filled by a later card) |
-| `did`, `decisions` | lists of short texts; today `did` has the first 120 characters of the summary given to `routine done` or `report` |
+| `did`, `decisions` | lists of short texts (limits: [Run summary and delivery](#run-summary-and-delivery)); without `--did` `did` has the first 120 characters of the text given to `routine done` or `report` |
 | `problems` | list of `{kind: transient\|permanent\|unknown, key, text}` |
 | `needs_owner`, `not_checked`, `ref` | text or `null` (`ref`: a link to the details, for example a session id) |
 | `writes` | what the run wrote, set by code (`routine:<id>`, `card:<id>`) |
@@ -387,7 +391,7 @@ roadctl run note [RUN_ID] "what was done" [--as AGENT]
 | `count` | 1; for a folded streak of `skipped` the number of repeats |
 | `deadline` | when an open run without an end counts as `crashed` (set at `begin`); `null` for a run that was never open |
 
-The fields from `did` to `ref` are the summary of a run: the schema is complete now, the limits of their length and who fills them (`--did`, `--problem`, ...) are the card P5.13. The ledger checks types and the 4096-byte line only.
+The fields from `did` to `ref` are the summary of a run; the agent fills them with `--did`, `--problem`, ... (below, [Run summary and delivery](#run-summary-and-delivery)). The ledger checks types and the 4096-byte line.
 
 **Events and folding.** The file holds events (`begin`, `note`, `end`, `crash`, `skip`, `skips`); the run record is the fold of the events of one `run_id` (both generations of the file are read). The first real `end` wins; an `end` replaces a `crashed` mark (the agent did finish, only late); a `crash` never replaces an `end`.
 
@@ -406,6 +410,57 @@ The fields from `did` to `ref` are the summary of a run: the schema is complete 
 **The Log line.** When the run is known (a `begin`, `--run` or `ROADCTL_RUN_ID`), `routine done` ends the Log line of the routine with ` [run=<id> dur=<seconds>s host=<host>]` (`dur` is left out when there was no `begin`); the line stays within the 1500 characters. Another machine sees only git, so it reads the run back from this trailer. A run without a `begin` keeps the line exactly as before.
 
 **Format change (roadctl 0.3.0).** The routine header key `timeout` and the `attempt` field of a RUN item are new. An older copy only warns about the unknown key and ignores `attempt`, so a board that uses `timeout` sets `"requires": "0.3.0"` in `board/config.json` first (see [developing-roadctl.md](developing-roadctl.md)); a board that does not use it needs nothing. `last_result` keeps `ok`, `escalated` and `failed`.
+
+## Run summary and delivery
+
+The owner does not read logs: every unattended run (a routine, the duty orchestrator) and every delegated task ends with a short summary that the agent fills in, and a command with no model in it, `roadctl digest`, turns what happened into a few plain lines that a scheduler can forward to a chat. roadctl sends nothing over the network itself.
+
+**The fields** (flags of `routine done`, `report` and `run done`; the same names and limits everywhere):
+
+| Flag | Meaning | Limit |
+| --- | --- | --- |
+| `--did TEXT` | what was done; repeatable; **required** (see below) | 3 items, 120 characters each |
+| `--decision TEXT` | a decision the agent took; repeatable | 3 items, 160 |
+| `--problem "kind: key: text"` | a problem; `kind` is `transient`, `permanent` or `unknown`; `key` is a short stable name (`dns-timeout`, letters, digits, `.` `_` `-`, up to 40) that lets the owner see one problem once; repeatable | 3 items, text 160 |
+| `--ask TEXT` | what is needed from the owner | 200 |
+| `--not-checked TEXT` | what was not looked at | 160 |
+
+The duration, the host, the model, `usage`, `ref` and `writes` are set by code. Over a limit the text is cut (with `…`) and extra items are dropped, with a warning on stderr: the run is still recorded. A `--problem` without a key or kind is accepted with a derived key and a warning (the same problem is then not recognised in the next run). The language is not checked; the headings of the owner's text follow `language` of `board/config.json` (`ru`, otherwise English), the agent's words are shown as written. Values lose `|` (becomes `/`) and `;` (becomes `,`), which are the separators of the Log form.
+
+**Old form and `summary: required`.** Without any of these flags `routine done` and `report` work exactly as before (the text is the summary, the Log line is unchanged). With a flag but without `--did`, the positional text becomes the one `did` item. A board whose `config.json` says `"summary": "required"` refuses a `routine done` or `report` without `--did` (exit 1, nothing recorded); `run done` always needs `--did`. Without a text and without `--did` the command is a usage error (exit 2). The `--did` flag needs no positional text.
+
+**The Log form.** With fields, the Log line of a routine is `- DATE [AGENT] RUN ok: did: a; b | decision: c | problem: transient: key: text; permanent: key2: text | ask: question | not-checked: what [run=ID dur=Ns host=H]` (labels in this order, empty fields left out; the card's REPORT line is the same without `RUN ok:`). It always has the run trailer, is at most 1500 characters (when it would be longer the longest texts are shortened, decisions first and `did` last) and is the copy another machine reads after `pull`: `roadctl digest` parses it back into the same fields. The full record (with the same fields) is in the local run ledger.
+
+**What the command prints.** After the usual line, `routine done` and `report` with fields print the summary for the owner, at most six lines of plain text (no markdown, no raw output, nothing from a log): the header (`routine my-app/server-watch: ESCALATED (agent, 12s)`), `did`, `decided`, `problem`, `needs from you`, `not checked`. A Hermes agent that answers the owner with exactly what `routine done` printed gives the owner this text. A run that is only recorded locally (`recorded-local`, `reported-local`: offline, no remote) ends its last line with `[not published: waits for roadctl save]`. `run done` prints the same lines; its record lives only in the local ledger (the duty orchestrator has no routine or card to write to), so the digest of that machine delivers it. `run done` ends the open run of the agent when there is one (`ROADCTL_RUN_ID`, `--run`), else it writes a whole record (`kind: orchestrator`, `id` = the agent).
+
+```text
+roadctl routine done atom-status --as claude-code@work-notebook --result escalated \
+    --did "checked 9 servers" --problem "permanent: disk-full: /var is full on srv-3" \
+    --ask "free space or approve a bigger disk"
+roadctl run done --as claude-code@home-wsl --result ok --did "took W-3" --did "accepted W-2"
+```
+
+**`roadctl digest`** (hidden from the overview like `runs`; `roadctl help digest` works):
+
+```text
+roadctl digest [--since-state NAME] [--dry-run] [--all] [--json]    what is new: problems and questions, each once
+roadctl digest --daily [--all] [--json]                              the overview
+```
+
+An empty output means silence: a scheduler forwards whatever is printed and nothing else. The exit code is 0 when there is nothing to say; 2 is a usage error or no board.
+
+- *Sources.* The Log lines (`RUN ...`) of the routines and the `REPORT:` lines of the cards of the board (`--all`: every known board), so a run on another machine arrives after `roadctl pull` (run it first; digest does not touch the network), and the local run ledger for what never reaches a board: `crashed`, `timeout`, `aborted`, `skipped` and the orchestrator's `run done`. Lines without fields (the old form) are read as one `did`. A Log line of a run older than 30 days is never reported; the first digest of a state name reports only the last two days and marks the older ones seen without a word.
+- *What is news* (header `notify` of the routine; the default `problems`). A finished run is told when it brings a problem that is not open yet: the result `escalated` or `failed` (the outcome counts as a problem named after itself), a run that crashed or timed out, a `--problem` with a new key, or a question (`--ask`) not asked before. The same key in the next run is not told again; a problem that is absent from a later run of the same routine is one line `resolved: my-app/server-watch: dns-timeout`. `ok` with nothing new is silent. `notify: always`: every run (and the skipped streaks of that routine); `notify: never`: nothing at once (the daily overview still shows it). Tasks (`report`) and orchestrator runs follow `problems`. `skipped` (limits, busy, not due) is news only under `always` and is counted in `--daily`.
+- *At most six lines per run*, separated by a blank line, and about 3500 characters in all (the smallest common chat limit is 4096); what does not fit stays unmarked and comes in the next digest, after a line `N more`.
+- *The delivery state.* `digest.state.json` in the state directory (next to `runs.jsonl`; keys and times, never summary text): per `--since-state` name the events already told (with the time, kept 60 days) and the open problem keys. Use one name per channel. The mark moves after the text was printed; a second digest at the same time prints nothing and says so on stderr (a lock). `--dry-run` prints without marking. **A delivery that fails after roadctl printed the text loses that message**: Hermes (or whatever forwards the output) may fail after roadctl marked it told. This is accepted; the daily overview is the safety net, because it is a snapshot of the state, not a list of news.
+- *`--daily`* (the scheduler runs it once a day; the time is the scheduler's setting, roadctl has none; it changes no state): `roadctl daily overview DATE`, then one line per enabled routine: `my-app/server-watch: ok 2h ago - checked 9 servers`, `ESCALATED 5h ago - problem disk-full`, `never run`, `not running (reason)`, and **`OVERDUE, last run 3d ago (every 1d)`** for a routine that is allowed to run (enabled, board switch on, inside its `hours`) and whose `last_run` is older than twice its `every` (outside its `hours` it is not overdue). A line `PAUSED since ...: reason` follows while this machine is paused (`roadctl pause`; the routines are then late by the owner's own choice). Then the orchestrator runs of the last 24 hours, one line `this machine, last 24h: crashed 1, skipped busy 14`, the tasks reported in the last 24 hours and one line about the owner's commands (below). This is the only way to tell "all is well" from "the scheduler is dead". A board whose routines are all held back by the board switch is one line.
+- *A board that needs a newer roadctl* (`requires` in `config.json`, see [developing-roadctl.md](developing-roadctl.md)) gives one `requires: <project>: board requires roadctl X or newer; this is Y` line (the same as `tick` prints), once in the news and always in the daily overview; its runs are not read.
+- *The owner's commands.* The daily overview has a line `owner commands, last 24h: 2 (approve P5.1 by AGENT; ...)` read from `owner-commands.jsonl` in the state directory, one JSON object per line: `{"time": ISO, "command": "approve", "target": "P5.1", "by": "AGENT", "outcome": "ok|refused"}`. The writer is the audit of the permission card (P5.3); without the file there is no line.
+- *`--json`*: `{mode, state, events, resolved, text}` (daily: `routines`, `owner_commands`).
+
+**Delivering it without a model.** [`examples/scheduler/hermes-digest.py`](../examples/scheduler/hermes-digest.py) is a Hermes `no_agent` job: it runs `roadctl digest --all --since-state telegram` (every few minutes) or `--daily` (once a day; the owner chooses the time and sets it in the Hermes job), prints the text and nothing else (one short line when roadctl itself failed, never a raw output). Telegram is the main channel and VK the reserve: both are configured in Hermes (a job per channel with its own `STATE_NAME`, so that each is told on its own); roadctl does not know either. The text is plain, short and needs no markup.
+
+**Format change (roadctl 0.5.0).** New: the routine header key `notify`; the summary form of the Log line of a routine and of a REPORT line (new labels, always with the trailer); the `summary` key of `config.json`; `roadctl digest`, `roadctl run done`, the flags above. An older copy warns about the unknown key `notify` (and ignores it), reads the summary form as plain text and does not know `summary: required`; so a board that uses `notify` or `"summary": "required"` sets `"requires": "0.5.0"` in `board/config.json` first (and installs 0.5.0 on every machine that runs its routines). `last_result` keeps `ok`, `escalated` and `failed`; a board that uses none of it needs nothing.
 
 ## What was tested
 
