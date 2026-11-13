@@ -120,7 +120,7 @@ Errors block a git commit when a pre-commit check runs; warnings never block. A 
 | 22 | `autonomy.queue` lists an id that is not a card | error |
 | 23 | `autonomy.queue` lists a `done` or `dropped` card | warning |
 | 24 | `approved` has a scope token other than `analysis`, `implementation`, `external`, `auto` (for a routine: other than `read`, `board`, `external`) | warning |
-| 25 | A routine file is malformed: header does not parse, `id`, `title`, `every` or `enabled` missing, `every` not like `30m`, `2h`, `1d` (at least 5m), `hours` not like `mon-fri 09:00-19:00 [tz=Zone]` (bad days or times, end not after start, unknown zone), `enabled` not `true` or `false`, a bad agent, model or env value, `last_run` not an ISO-8601 UTC time, `last_result` not `ok`, `escalated` or `failed` | error |
+| 25 | A routine file is malformed: header does not parse, `id`, `title`, `every` or `enabled` missing, `every` not like `30m`, `2h`, `1d` (at least 5m), `hours` not like `mon-fri 09:00-19:00 [tz=Zone]` (bad days or times, end not after start, unknown zone), `timeout` not like `30m`, `2h`, `1d`, `enabled` not `true` or `false`, a bad agent, model or env value, `last_run` not an ISO-8601 UTC time, `last_result` not `ok`, `escalated` or `failed` | error |
 | 26 | A routine lacks `agent`, `model` or `env` | error |
 | 27 | A routine is `enabled: true` without an `approved` record, or `approved` has no `scope=` | error |
 | 28 | Two routines have the same `id` | error |
@@ -176,6 +176,7 @@ Mostly mechanical work that repeats and can be switched on and off: collect the 
 | `approved` | before it is enabled | The same record as on a card: `<by>, <date>, scope=<scopes>[, source=<ref>]`, with the scopes `read` (read external systems), `board` (write the board) and `external` (write external systems), joined with `+`. The default is `read+board`. |
 | `last_run` | no | ISO-8601 UTC time of the last recorded run (written by `roadctl routine done`). |
 | `last_result` | no | `ok`, `escalated` or `failed`. |
+| `timeout` | no | From roadctl 0.3.0 (set `requires` first): after this long (`30m`, `2h`, `1d`; `5m` to `30d`) an unfinished run counts as crashed; default `2h`. Read by `tick` for runs recorded with `roadctl run begin` ([Run ledger](roadctl.md#run-ledger)). |
 
 `agent`, `model` and `env` are required by the owner's decision (the person who creates the routine names them; nobody guesses): **a routine missing any of them never runs** (a tool offers nothing, lint reports an error, `roadctl routine on` refuses).
 

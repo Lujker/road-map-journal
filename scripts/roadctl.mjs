@@ -50,7 +50,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '0.2.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.3.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -2677,7 +2677,7 @@ export function tickItems(project, board, agent, reg = null) {
   return items;
 }
 
-const itemText = (i) => `${i.kind} ${i.project}/${i.id} ${i.title}${i.workdir_dirty ? ' (workdir dirty)' : ''}`;
+const itemText = (i) => `${i.kind} ${i.project}/${i.id} ${i.title}${i.workdir_dirty ? ' (workdir dirty)' : ''}${i.routine?.attempt > 1 ? ` (attempt ${i.routine.attempt})` : ''}`; // attempt (P5.1): only after a crashed or failed run of the same routine, so the text of a stuck routine changes once
 
 const sortTickItems = (items) => items.sort((a, b) => naturalCompare(a.project, b.project) || naturalCompare(a.id, b.id) || TICK_KINDS.indexOf(a.kind) - TICK_KINDS.indexOf(b.kind));
 
@@ -2809,6 +2809,11 @@ const countKinds = (items) => Object.fromEntries(TICK_KINDS.map((k) => [k.toLowe
 
 function appendTickLedger(env, entry) {
   try {
+    if (MODULE_REG.callHook('tick-ledger', { env, entry, api: moduleApi() }).some((h) => h.value?.handled)) return; // seam (P5.1): folding, rotation, skipped: busy
+  } catch {
+    /* a module must not stop a tick: fall back to the plain append */
+  }
+  try {
     const f = tickLedgerPath(env);
     fs.mkdirSync(path.dirname(f), { recursive: true });
     fs.appendFileSync(f, `${JSON.stringify(entry)}\n`);
@@ -2887,6 +2892,7 @@ export async function tickCommand(flags, args, io, env = process.env) {
     // P5.14: a board that requires a newer roadctl gives no item of any kind; the reason is a `requires:` line in `sync` (text and JSON)
     const refused = loaded.map((b) => [b, boardRequires(b.board.config)]).filter(([, why]) => why).map(([b, why]) => `requires: ${sanitize(b.name, 40)}: ${why}`);
     const items = sortTickItems(loaded.filter((b) => !boardRequires(b.board.config)).flatMap((b) => tickItems(b.name, b.board, agent, reg)).filter((i) => applyTickFilter(filter, i)));
+    for (const h of MODULE_REG.callHook('tick-before', { agent, env, filter, items, boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])), api: moduleApi() }, io)) for (const [k, extra] of Object.entries(h.value?.run ?? {})) Object.assign(items.find((i) => i.kind === 'RUN' && `${i.project}/${i.id}` === k)?.routine ?? {}, extra); // seam (P5.1): crashed runs by time threshold, `attempt` of a RUN item
     if (filter?.routine && !loaded.some((b) => (b.board.routines ?? []).some((r) => r.header.id === filter.routine))) io.err(`roadctl tick: warning: no routine ${sanitize(filter.routine, 60)} on the boards looked at\n`);
     let limits;
     if (items.length) limits = await tickLimits(agent, reg, env);
@@ -2902,7 +2908,7 @@ export async function tickCommand(flags, args, io, env = process.env) {
     const decision = !items.length ? 'idle' : limits.state === 'reserve' ? 'blocked-reserve' : limits.state === 'unknown' ? 'blocked-unknown' : 'work';
     const t = { agent, decision, limits, items, sync: [...pulled, ...unreadable, ...refused].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
     appendTickLedger(env, { time: isoAt(), agent, decision, counts: countKinds(items), limits: { provider: limits.provider, state: limits.state }, ...(filter ? { filter } : {}) });
-    await MODULE_REG.runTickHooks({ agent, decision, limits, items, sync: t.sync, boardDirs: t.boardDirs, env, api: moduleApi() }, io); // module tick hooks (seam): no-op without hooks
+    await MODULE_REG.runTickHooks({ agent, decision, limits, items, sync: t.sync, boardDirs: t.boardDirs, filter, routines: loaded.flatMap((b) => { try { return routineRows(b.board).map((r) => ({ project: b.name, ...r })); } catch { return []; } }), env, api: moduleApi() }, io); // module tick hooks (seam): no-op without hooks
     if (flags.json) out(JSON.stringify({ agent, decision, limits, items, sync: t.sync }, null, 2));
     else out(flags.prompt && decision === 'work' ? tickPrompt(t) : tickText(t));
     return TICK_EXIT[decision];
@@ -2978,7 +2984,7 @@ export function boardsCommand(flags, args, io, env = process.env) {
 
 export const ROUTINE_RESULTS = ['ok', 'escalated', 'failed'];
 export const ROUTINE_SCOPES = ['read', 'board', 'external'];
-const ROUTINE_KEYS = new Set(['id', 'title', 'every', 'hours', 'enabled', 'agent', 'model', 'env', 'approved', 'last_run', 'last_result']);
+const ROUTINE_KEYS = new Set(['id', 'title', 'every', 'hours', 'enabled', 'agent', 'model', 'env', 'approved', 'last_run', 'last_result', 'timeout']); // timeout (0.3.0, P5.1): after this long an unfinished run counts as crashed
 const ROUTINE_SECTIONS = ['Goal', 'Steps', 'May write', 'Escalate', 'Log'];
 const MODEL_RE = /^[A-Za-z0-9][\w.:[\]-]*$/;
 const ENV_RE = /^[A-Za-z0-9][\w.:@-]*$/;
@@ -3115,6 +3121,7 @@ function routineFindings(r) {
   if (h.agent && !AGENT_RE.test(h.agent)) add('error', 25, 'agent must be an agent name like claude-code@work-notebook');
   if (h.model && !MODEL_RE.test(h.model)) add('error', 25, `bad model ${sanitize(h.model, 30)}`);
   if (h.env && !ENV_RE.test(h.env)) add('error', 25, `bad env ${sanitize(h.env, 30)} (no spaces)`);
+  if ('timeout' in h && parseEvery(h.timeout).error) add('error', 25, 'timeout must be like 30m, 2h or 1d (5 minutes to 30 days)'); // P5.1
   if (h.last_run && !ISO_RE.test(h.last_run)) add('error', 25, 'last_run must be an ISO-8601 UTC time like 2026-11-11T09:30:00Z');
   if (h.last_result && !ROUTINE_RESULTS.includes(h.last_result)) add('error', 25, `last_result must be one of ${ROUTINE_RESULTS.join('|')}`);
   const scopes = scopesOf(h.approved);
@@ -3417,7 +3424,12 @@ export function routineCommand(flags, args, io, env = process.env) {
   }
   if (sub === 'done') {
     if (!args[2] || !str('as') || !str('result') || !args[3]) throw new Error('usage: roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary"');
-    const r = routineDone(one(), args[2], { as: str('as'), result: str('result'), text: args[3] });
+    const board = one();
+    const hookCtx = { board, id: args[2], as: str('as'), result: str('result'), text: args[3], flags, env, api: moduleApi() };
+    const before = MODULE_REG.callHook('routine-done-before', hookCtx, io); // seam (P5.1): run id, duration and host in the Log line; may refuse
+    const refusal = before.find((h) => h.value?.refuse)?.value.refuse;
+    const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, args[2], { as: str('as'), result: str('result'), text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? args[3] });
+    MODULE_REG.callHook('routine-done-after', { ...hookCtx, done: r }, io, before);
     const ok = ['recorded', 'recorded-local'].includes(r.status);
     if (flags.json) out(JSON.stringify(r, null, 2));
     else if (ok) out(`roadctl routine done: ${r.status} — ${r.message}`);
@@ -3748,7 +3760,7 @@ export const COMMANDS = {
 // New parts of roadctl live in scripts/roadctl/*.mjs and register commands (with help), card header keys and a tick hook.
 // COMMANDS above stays the built-in table; ALL_COMMANDS is built-in + modules and feeds help and the dispatch of module commands.
 // A copy of this file without the scripts/roadctl/ folder works as before, without module commands.
-let MODULE_REG = { modules: [], commands: {}, headerKeys: new Set(), tickHooks: [], runTickHooks: async () => {} };
+let MODULE_REG = { modules: [], commands: {}, headerKeys: new Set(), tickHooks: [], callHook: () => [], runTickHooks: async () => {} };
 try {
   MODULE_REG = (await import('./roadctl/index.mjs')).buildModuleRegistry({ builtin: COMMANDS, groups: HELP_GROUPS, knownKeys: KNOWN_KEYS });
 } catch (e) {
@@ -3818,7 +3830,7 @@ export function helpFor(name) {
 
 function parse(argv) {
   const o = { _: [], flags: {} };
-  const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--workdir', '--hours', '--routine', '--kinds']);
+  const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--run', '--workdir', '--hours', '--routine', '--kinds']);
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
@@ -4009,6 +4021,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
         if (!args[1] || !flags.as) throw new Error('usage: roadctl claim <id> --as AGENT [--lease 2h] [--workdir DIR]');
         if (Object.hasOwn(flags, 'workdir') && typeof flags.workdir !== 'string') throw new Error('usage: roadctl claim <id> --as AGENT [--lease 2h] [--workdir DIR]; --workdir needs a directory');
         const r = claimCard(board, args[1], { as: flags.as, lease: flags.lease === true ? undefined : flags.lease, workdir: flags.workdir });
+        MODULE_REG.callHook('claim-after', { board, id: args[1], as: flags.as, r, flags, env: process.env, api: moduleApi() }, io); // seam (P5.1): a claim starts a run
         for (const w of r.warnings ?? []) io.err(`roadctl claim: WARNING: ${w}\n`);
         const ok = ['claimed', 'claimed-local'].includes(r.status);
         if (flags.json) out(JSON.stringify(r, null, 2));
@@ -4019,6 +4032,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
       case 'report': {
         if (!args[1] || !flags.as || !args[2]) throw new Error('usage: roadctl report <id> --as AGENT "text"');
         const r = reportCard(board, args[1], { as: flags.as, text: args[2] });
+        MODULE_REG.callHook('report-after', { board, id: args[1], as: flags.as, r, text: args[2], flags, env: process.env, api: moduleApi() }, io); // seam (P5.1): a report ends the run
         const ok = ['reported', 'reported-local'].includes(r.status);
         if (flags.json) out(JSON.stringify(r, null, 2));
         else if (ok) out(`roadctl report: ${r.status} — ${r.message}`);

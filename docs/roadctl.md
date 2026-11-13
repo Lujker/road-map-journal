@@ -26,6 +26,8 @@ roadctl limits --check P|AGENT    exit 0 allowed, 1 reserve reached, 3 limits un
 roadctl limits --confirm P --by NAME [--for 2h]   the owner allows an UNKNOWN provider for a while; only when the owner told you to
 roadctl tick --as AGENT [--all] [--no-pull] [--json] [--prompt] [--routine ID] [--kinds take,accept,start,stale,run]   model-free first step of a scheduled orchestrator: what AGENT could take, accept, start or look after; exit 0 work, 4 idle, 1 reserve, 3 limits unknown, 5 busy
 roadctl tick --ledger [--as AGENT] [-n 20]     the last runs of tick (read-only)
+roadctl runs [--open] [--json] [--as AGENT] [-n 20]   the runs of routines and delegated tasks on this machine: outcome, attempt, duration, summary fields (read-only; see Run ledger)
+roadctl run begin <routine|card> --as AGENT [--run ID] | run note [RUN_ID] "text"   start a run (a second begin: exit 5) or leave a checkpoint
 roadctl routine list [--all] [--json]          recurring routines with their run state and why one would not run; show <id> prints one
 roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]   a routine from a template, switched off (agent, model and env are required)
 roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME   the owner's switch; only when the owner told you to
@@ -250,7 +252,7 @@ The routines monitor uses `--kinds run` for Hermes and for each configured exter
 
 **Lock.** One tick per agent at a time on a machine: `${XDG_STATE_HOME:-~/.local/state}/road-map-journal/tick-<agent>.lock` (characters other than letters, digits, `.`, `_`, `-` become `_`), removed at the end of the run and taken over when older than 10 minutes. A second tick prints `tick AGENT: busy` and exits 5. The lock is held only while tick itself runs, not while a model that a scheduler started from the prompt is working; use an interval longer than a run, or `flock` around the scheduler script, if two model runs must not overlap.
 
-**Ledger.** Every run appends one JSON line (time, agent, decision, counts of TAKE/ACCEPT/START/STALE, limits provider and state, and `filter` when `--routine` or `--kinds` was used) to `${XDG_STATE_HOME:-~/.local/state}/road-map-journal/ticks.jsonl`. It is not printed by the run, so stdout stays stable. `roadctl tick --ledger [--as AGENT] [-n 20] [--json]` prints the last entries and changes nothing. The file grows by about 200 bytes per run and is never trimmed by roadctl.
+**Ledger.** Every run appends one JSON line (time, agent, decision, counts of TAKE/ACCEPT/START/STALE, limits provider and state, and `filter` when `--routine` or `--kinds` was used) to `${XDG_STATE_HOME:-~/.local/state}/road-map-journal/ticks.jsonl`. It is not printed by the run, so stdout stays stable. `roadctl tick --ledger [--as AGENT] [-n 20] [--json]` prints the last entries and changes nothing. Repeats of a `blocked-reserve`, `blocked-unknown` or `busy` decision are folded (one line, a counter in `ticks.state.json`) and the file is rotated inside `tick` to one previous generation, `ticks.jsonl.1`, when it passes 1 MB; see [Run ledger](#run-ledger). A line is about 200 bytes.
 
 What tick does not do: it starts no model, writes no card, approves nothing, and cannot see the server state beyond what `pull` brought in (offline it uses the local state and says so).
 
@@ -279,18 +281,18 @@ roadctl routine new server-watch "Watch servers and support requests" \
 
 Generic starting texts for both are in [`examples/routines/`](../examples/routines/) (switched off, marked as examples). `routine new` writes a template with `enabled: false` and no approval; `routine on` refuses when agent, model or env is missing, requires `--source` when it has to record the approval (default scope `read+board`; `--scope read+board+external` allows external writes and is recorded as a new approval), sets `enabled: true` and adds a Log line; `routine off` sets it back.
 
-**The run.** `roadctl tick --as AGENT` prints `RUN project/id title` for each routine that is due and allowed, only for the routine's own `agent` (a different agent never sees it), after the usual limits gate (checked only when there are items; the output stays stable, no times). `--json` has an item `{kind: "RUN", project, id, title, routine: {agent, model, env, every, file, last_run}}`. `--prompt` adds for `RUN`: the routine file (full path), previous run (`last_run` or `never`), the required model and environment (`run it with ITS model and environment; if you are not that model, start a session or subagent with it, for example the agent's launch note in the registry`), the rule to follow the file's Steps, May write and Escalate and nothing else, external writes only if the approved scope has `external`, and to finish with `roadctl routine done`. The text of the routine is never put into the prompt. The executor then:
+**The run.** `roadctl tick --as AGENT` prints `RUN project/id title` for each routine that is due and allowed, only for the routine's own `agent` (a different agent never sees it), after the usual limits gate (checked only when there are items; the output stays stable, no times). `--json` has an item `{kind: "RUN", project, id, title, routine: {agent, model, env, every, file, last_run}}`, and `routine.attempt` (2 or more) after a run of that routine crashed or failed without a `routine done` (see [Run ledger](#run-ledger)); the text then ends the line with ` (attempt N)`. `--prompt` adds for `RUN`: the routine file (full path), previous run (`last_run` or `never`), the required model and environment (`run it with ITS model and environment; if you are not that model, start a session or subagent with it, for example the agent's launch note in the registry`), the rule to follow the file's Steps, May write and Escalate and nothing else, external writes only if the approved scope has `external`, and to finish with `roadctl routine done`. The text of the routine is never put into the prompt. The executor then:
 
 1. runs the routine with the named model in the named environment (a launcher or an orchestrator starts a session with that model when the one that received the prompt is not it);
 2. follows Steps and writes only what May write allows (default: Log lines, delegations, questions for the owner on the board; external systems read only);
 3. hands over as Escalate says: `roadctl delegate` to an orchestrator or a stronger worker (for a card with an approved record), or a question for the owner (a `QUESTION for the owner:` Log line); a card is set `blocked: decision: ...` only through the normal tools;
 4. records the run: `roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary"`.
 
-`routine done` works only for the routine's own agent. It sets `last_run` (now) and `last_result`, appends a Log line (`- date [AGENT] RUN ok: summary`, sanitized like `report`, up to 1500 characters; the last 50 Log lines of the file are kept), then commits **only that file** and pushes it, like `report`: pushed (`recorded`), or kept locally when offline, without a remote or without git (`recorded-local`; the next `save` pushes it); if the file changed on the server the run is applied again on the server's file. It refuses when the file has other uncommitted changes, when the agent is not the routine's, or when the result is not one of the three. After it the routine is not due until `every` has passed, so the next `tick` is idle.
+`routine done` works only for the routine's own agent. It sets `last_run` (now) and `last_result`, appends a Log line (`- date [AGENT] RUN ok: summary`, sanitized like `report`, up to 1500 characters, with ` [run=<id> dur=<s>s host=<host>]` at the end when the run is known; the last 50 Log lines of the file are kept), writes the run to the local [run ledger](#run-ledger), then commits **only that file** and pushes it, like `report`: pushed (`recorded`), or kept locally when offline, without a remote or without git (`recorded-local`; the next `save` pushes it); if the file changed on the server the run is applied again on the server's file. It refuses when the file has other uncommitted changes, when the agent is not the routine's, or when the result is not one of the three. After it the routine is not due until `every` has passed, so the next `tick` is idle.
 
 **Looking.** `roadctl routine list [--all] [--json]` prints, per routine: id, on/off, every, agent, model, env, last run and result, `due` or `not due`, and why it would not run now (`missing model`, `not approved`, `disabled`, `board switch off`, `outside hours`, `duplicate id`, `invalid: ...`); `--all` covers every board. `roadctl routine show <id>` adds the header and the Goal, Steps, May write and Escalate text, which is data for whoever runs the routine. `roadctl autonomy` lists the routines with their run state under the card queue, `brief` and `status` have one line (`ROUTINES switch on | 2 routine(s), 1 on, due now 1`) only when routines exist, and `BOARD.md` has a short `Routines` section with static facts only (no last run, so a run never makes it out of date).
 
-**Lint.** Rules 25 to 29 and 21: a malformed routine file (25; this includes an `hours` that does not parse, has an unknown time zone or ends before it starts), a routine without agent, model or env (26), `enabled` without `approved` (27), a duplicate routine id (28), an agent that is not in the registry when one exists (29, warning), an unknown scope token (24, warning, tokens `read`, `board`, `external`), a malformed `autonomy.routines` (21).
+**Lint.** Rules 25 to 29 and 21: a malformed routine file (25; this includes an `hours` that does not parse, has an unknown time zone or ends before it starts, and a `timeout` that is not like `30m`, `2h`, `1d`), a routine without agent, model or env (26), `enabled` without `approved` (27), a duplicate routine id (28), an agent that is not in the registry when one exists (29, warning), an unknown scope token (24, warning, tokens `read`, `board`, `external`), a malformed `autonomy.routines` (21).
 
 What routines do not do: roadctl starts no model and calls no external system; whether the executor kept to May write is not checked by a tool, the approved scope limits what the executor was told, and a run is a claim to verify like a report.
 
@@ -329,6 +331,65 @@ Each check has an `id`, a `status`, a `detail` and a `hint`. `ok` passed; `warn`
 **Exit codes:** 0 no failure (warnings may be present), 1 at least one failure, 2 usage error (`--agent` without a valid name, `--host` without `--online`).
 
 **`--json`** prints one object: `{"schema": 1, "roadctl": {"version", "sha"}, "platform", "node", "online", "agent", "ok", "summary": {"ok", "warn", "fail", "skip"}, "checks": [{"id", "subject", "status", "detail", "hint"}]}`. `subject` is the board or agent a check is about (`null` for the machine), `hint` is `null` when there is nothing to suggest, `ok` is true when `summary.fail` is 0. A change of this shape raises `schema` and `scripts/testkit/doctor-schema.mjs` in the same commit.
+
+## Run ledger
+
+Every run of a routine and of a delegated task leaves a record on the machine where it ran (and the duty orchestrator will: P5.13), not only the decision of `tick`. The record has a start, an end, an outcome, a reason, the attempt and the fields of a run summary; a run that began and never ended is found and marked. The code sets the duration, the host, the version of roadctl and the times; the model does not carry an identifier.
+
+```text
+roadctl runs [--open] [--json] [--as AGENT] [-n 20]
+roadctl run begin <routine|card> --as AGENT [--run ID]
+roadctl run note [RUN_ID] "what was done" [--as AGENT]
+```
+
+`roadctl runs` is the owner's view (read-only; `--open`: runs that began and did not end, with `OVERDUE` for one past its deadline; `--json`: an array of run records, below). `roadctl run begin` and `run note` are for paths without a supervisor. Both commands are hidden from the `roadctl help` overview (it has a line budget of 70) but `roadctl help runs` and `roadctl help run` work; a scheduler that supervises the process (P5.2) uses the same records.
+
+**Where the ledger lives, and what is in it.** In the machine state directory, `${XDG_STATE_HOME:-~/.local/state}/road-map-journal/`, next to `ticks.jsonl`: `runs.jsonl` (append-only, one JSON line per event, never longer than 4096 bytes; text is cut to fit), `runs.jsonl.1` (the one previous generation), `ticks.state.json`, `ledger.lock`. **`runs.jsonl` holds the text of run summaries and checkpoints** (what the agent said it did, why a run failed), so it is local to the machine and is never written inside a git work tree: when the state directory is inside one, roadctl does not write the ledger (`run begin` says so on stderr; `routine done`, `claim`, `report` and `tick` go on as if there were no ledger). A repository made of the whole home directory is not counted. Other machines do not see this file; they see the Log line of the routine (below). A reader skips a broken or half-written line, and nothing about the ledger can stop `routine done`, `claim`, `report` or `tick`: an unusable state directory (a path that cannot be created, a full disk, a held lock) only means no record.
+
+**The run record** (the element of `roadctl runs --json`; every field is always present, in this order; the checker is `scripts/testkit/run-schema.mjs`):
+
+| Field | Content |
+| --- | --- |
+| `run_id` | `r-` and 12 hex digits, derived (below), or the id a supervisor or `--run`/`ROADCTL_RUN_ID` gave; `s-...` for a skipped run |
+| `kind` | `routine`, `task` (a delegated card) or `orchestrator` |
+| `id`, `project` | the routine or card id, and the project (board) name; `project` is `null` for an orchestrator run |
+| `agent`, `model` | who ran it; `model` is the routine's `model`, otherwise `null` |
+| `host` | the host name of the machine (`ROADCTL_HOST` overrides it), set by code |
+| `source` | `agent` (the command of the agent), `supervisor` (a supervisor looks after the run: P5.2) or `tick` (written by `tick`: crashed, skipped) |
+| `started`, `finished` | ISO-8601 UTC, the clock of roadctl (`ROADCTL_NOW` in tests); `started` is `null` for a run that ended without a `begin` |
+| `duration_s` | seconds between them, set by code; `null` when unknown |
+| `outcome` | `started` (open), `ok`, `escalated`, `failed`, `timeout`, `aborted`, `crashed` or `skipped` |
+| `reason` | for `skipped`: `busy` (another tick of this agent holds the lock), `limits` (the gate was closed for work that was due) or `not-due` (the routine is allowed but not due yet); for `crashed`: why; otherwise `null` |
+| `attempt` | 1, or one more than the runs of the same routine that ended `crashed`, `failed`, `timeout` or `aborted` since its `last_run` |
+| `roadctl` | the roadctl version that wrote the record |
+| `usage` | reserved, always `null` (the cost of a run is filled by a later card) |
+| `did`, `decisions` | lists of short texts; today `did` has the first 120 characters of the summary given to `routine done` or `report` |
+| `problems` | list of `{kind: transient\|permanent\|unknown, key, text}` |
+| `needs_owner`, `not_checked`, `ref` | text or `null` (`ref`: a link to the details, for example a session id) |
+| `writes` | what the run wrote, set by code (`routine:<id>`, `card:<id>`) |
+| `note` | the last checkpoint of `run note`; it stays in the record when the run is broken off |
+| `count` | 1; for a folded streak of `skipped` the number of repeats |
+| `deadline` | when an open run without an end counts as `crashed` (set at `begin`); `null` for a run that was never open |
+
+The fields from `did` to `ref` are the summary of a run: the schema is complete now, the limits of their length and who fills them (`--did`, `--problem`, ...) are the card P5.13. The ledger checks types and the 4096-byte line only.
+
+**Events and folding.** The file holds events (`begin`, `note`, `end`, `crash`, `skip`, `skips`); the run record is the fold of the events of one `run_id` (both generations of the file are read). The first real `end` wins; an `end` replaces a `crashed` mark (the agent did finish, only late); a `crash` never replaces an `end`.
+
+**The run id and begin.** `roadctl run begin <routine|card> --as AGENT` starts a run and prints `run <id> begun`. It is idempotent: a second `begin` of the same thing while its run is open prints `run <id> already begun at <time> by <agent>` and exits **5**, so two schedulers on one machine do not both start it. The id is derived from the routine, its previous `last_run` and the attempt (the same inputs give the same id), so nothing in the text of `tick` has to carry it; a supervisor can put its own id in `ROADCTL_RUN_ID` (or `--run ID`), and then `begin`, `note` and `routine done` read it from the environment and the model never carries it. Through `wsl.exe` a variable does not pass without `WSLENV`, and through `ssh` only when it is set in the remote command. `routine done` finds the open run of its routine by itself; with `--run` or `ROADCTL_RUN_ID` naming a run of another routine it refuses; without a `begin` it still writes a whole record (`started` and `duration_s` are `null`) and works exactly as before.
+
+**Crashed.** An open run whose `deadline` has passed is marked `crashed` by the next `tick` (`reason: no end by the deadline <time>`, the last checkpoint kept in `note`). The only test is time: `timeout` of the routine (`timeout: 30m`, `2h`, `1d`; 5 minutes to 30 days; default 2 hours) from the start, or for a delegated task the end of the lease; the clock is `nowMs()` (`ROADCTL_NOW`). The process of a run is never looked at (the process that ran `begin` is gone long before the agent finishes), except that a run with `source: supervisor` is left to its supervisor. Two ticks do not both write it (a lock), and a `routine done` that arrives later replaces the mark. A new `claim` of a card whose earlier run is still open closes that run as `crashed` (superseded).
+
+**The text of `tick` and `attempt`.** After a `crashed` (or failed, timed out or aborted) run without a recorded `routine done`, the same routine is offered again with `attempt N` in its item: `RUN project/id title (attempt 2)` in the text and `routine.attempt` in `--json` (only from 2 on; the text of a stuck routine therefore changes once, which wakes a monitor that compares the output, and is stable again). Nothing else about a run enters the text: no id, no time, no counter. A finished run (`routine done` moves `last_run`) starts again at 1.
+
+**Skipped.** A tick that did not run something leaves one record of its reason: `limits` (the gate was closed while a routine was due), `busy` (the lock of this agent or of this routine job was held), `not-due` (an allowed routine of this agent that is not due). A streak of the same skip is one record whose `count` grows; a different reason, or the thing running again, ends the streak.
+
+**Tasks.** `claim` begins a run of the card (`kind: task`, the lease as the deadline) and `report` ends it with `ok` and the first characters of the report; no new protocol.
+
+**The ticks ledger.** `ticks.jsonl` keeps the format of its lines (`roadctl tick --ledger` is unchanged). A tick that repeats a `blocked-reserve`, a `blocked-unknown` or a `busy` of the same agent and filter does not add a line; `ticks.state.json` holds, per agent and filter, the last decision with its count and the first and last time (a streak of ten `blocked-reserve` ticks is one line and a count of ten); `idle` and `work` still add a line per tick. Inside `tick`, under its lock, a `ticks.jsonl` over 1 MB is renamed to `ticks.jsonl.1` (one previous generation, the older one is replaced) and `runs.jsonl` over 4 MB likewise.
+
+**The Log line.** When the run is known (a `begin`, `--run` or `ROADCTL_RUN_ID`), `routine done` ends the Log line of the routine with ` [run=<id> dur=<seconds>s host=<host>]` (`dur` is left out when there was no `begin`); the line stays within the 1500 characters. Another machine sees only git, so it reads the run back from this trailer. A run without a `begin` keeps the line exactly as before.
+
+**Format change (roadctl 0.3.0).** The routine header key `timeout` and the `attempt` field of a RUN item are new. An older copy only warns about the unknown key and ignores `attempt`, so a board that uses `timeout` sets `"requires": "0.3.0"` in `board/config.json` first (see [developing-roadctl.md](developing-roadctl.md)); a board that does not use it needs nothing. `last_result` keeps `ok`, `escalated` and `failed`.
 
 ## What was tested
 

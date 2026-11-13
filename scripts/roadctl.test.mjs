@@ -14,6 +14,7 @@ const SELF = path.join(here, 'roadctl.mjs');
 const EXAMPLE = path.join(here, '..', 'examples', 'board-example', 'board');
 process.env.ROADCTL_DATE = '2026-11-10';
 process.env.XDG_CONFIG_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-xdgconf-')); // an empty user config: the real ~/.config never decides a test (boards list, registry)
+process.env.XDG_STATE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-xdgstate-')); // likewise the machine state (ticks.jsonl, runs.jsonl): a test that claims or records a run never writes the real ledger
 
 function project({ git = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-'));
