@@ -43,7 +43,7 @@ function rig(names = ['my-app']) {
     fs.writeFileSync(file, `${JSON.stringify(c, null, 2)}\n`);
   };
   /** An approved routine of AGENT that is due now, and the board switch on. */
-  const routine = (name, id = 'atom-status') => {
+  const routine = (name, id = 'mr-status') => {
     const b = ['--board', boards[name]];
     ok(['routine', 'new', id, 'Collect MR status', '--agent', AGENT, '--model', 'haiku', '--env', 'laptop', '--every', '2h', ...b]);
     ok(['routine', 'on', id, '--by', 'Owner', '--source', 'chat 2026-11-12', ...b]);
@@ -120,9 +120,9 @@ test('a1: lint (rule 10), routine list and routine show, brief say the same; a r
   assert.equal(f.level, 'error');
   assert.match(f.msg, /^board requires roadctl 99\.0\.0 or newer; this is /);
   assert.match(r.run(['routine', 'list', ...b]).stdout, /would not run: board requires roadctl 99\.0\.0 or newer/);
-  assert.match(r.run(['routine', 'show', 'atom-status', ...b]).stdout, /state: would not run: board requires roadctl 99\.0\.0/);
+  assert.match(r.run(['routine', 'show', 'mr-status', ...b]).stdout, /state: would not run: board requires roadctl 99\.0\.0/);
   assert.match(r.run(['brief', ...b]).stdout, /^REQUIRES board requires roadctl 99\.0\.0 or newer; this is .*update roadctl/m);
-  const one = JSON.parse(r.tick(['--routine', 'atom-status']).stdout);
+  const one = JSON.parse(r.tick(['--routine', 'mr-status']).stdout);
   assert.deepEqual(one.items, []);
   assert.equal(one.sync.length, 1);
 });
@@ -146,10 +146,10 @@ test('a1: with several boards only the refused one drops out; the others are off
   const j = JSON.parse(r.tick().stdout);
   assert.deepEqual(tickJsonProblems(j), []);
   assert.notEqual(j.decision, 'idle', 'there is work (the limits gate of an unregistered agent may still say blocked-unknown; not what is tested here)');
-  assert.deepEqual(j.items.map((i) => `${i.kind} ${i.project}/${i.id}`), ['RUN alpha/atom-status']);
+  assert.deepEqual(j.items.map((i) => `${i.kind} ${i.project}/${i.id}`), ['RUN alpha/mr-status']);
   assert.deepEqual(j.sync, [`requires: beta: board requires roadctl 99.0.0 or newer; this is ${VERSION}`]);
   const text = r.run(['tick', '--as', AGENT, '--no-pull']).stdout;
-  assert.match(text, /^RUN alpha\/atom-status /m);
+  assert.match(text, /^RUN alpha\/mr-status /m);
   assert.match(text, /^requires: beta: /m);
 });
 
@@ -194,7 +194,7 @@ test('a2: a board without requires (or with one this copy satisfies) behaves as 
 test('an unknown routine header key is only a warning for this copy: the routine still runs, so a key-adding card must raise requires', () => {
   const r = rig();
   r.routine('my-app');
-  const file = path.join(r.boards['my-app'], 'routines', 'atom-status.md');
+  const file = path.join(r.boards['my-app'], 'routines', 'mr-status.md');
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^enabled: true$/m, 'enabled: true\nfuture_key: on-failure'));
   assert.match(r.run(['lint', '--json', '--board', r.boards['my-app']]).stdout, /unknown key future_key/);
   assert.deepEqual(JSON.parse(r.tick().stdout).items.map((i) => i.kind), ['RUN'], 'a copy that does not know the key runs the routine anyway');

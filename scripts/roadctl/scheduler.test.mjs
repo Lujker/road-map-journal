@@ -51,14 +51,14 @@ function rig({ env: extra = {} } = {}) {
     return r;
   };
   /** A routine of `agent` that may run: created, approved by the owner, board switch on. */
-  const routine = (agent, id = 'atom-status') => {
+  const routine = (agent, id = 'mr-status') => {
     ok(['routine', 'new', id, 'Collect MR status', '--agent', agent, '--model', 'haiku', '--env', 'laptop', '--every', '2h', '--board', board]);
     ok(['routine', 'on', id, '--by', 'Owner', '--source', 'chat 2026-11-12', '--board', board]);
     ok(['autonomy', 'routines', 'on', '--by', 'Owner', '--board', board]);
   };
-  const routineText = (id = 'atom-status') => fs.readFileSync(path.join(board, 'routines', `${id}.md`), 'utf8');
+  const routineText = (id = 'mr-status') => fs.readFileSync(path.join(board, 'routines', `${id}.md`), 'utf8');
   /** What the model would do when it finishes: record the run through the real roadctl (the fake claude runs this after its normal calls). */
-  const finish = (agent, id = 'atom-status') => `'${bin}/roadctl' routine done ${id} --as ${agent} --result ok checked --board '${board}'`;
+  const finish = (agent, id = 'mr-status') => `'${bin}/roadctl' routine done ${id} --as ${agent} --result ok checked --board '${board}'`;
   return { dir, ws, board, bin, log, env, roadctl, ok, routine, routineText, finish, calls: (n) => readCalls(log, n), work: (n) => readCalls(log, n).filter((c) => !c.event && !isProbe(c)) };
 }
 
@@ -79,7 +79,7 @@ test('tick-claude.sh: a due routine starts claude once with the tick prompt; the
   assert.deepEqual(run.argv.slice(0, 5), ['-p', '--model', 'haiku', '--max-turns', '30']);
   assert.equal(run.argv.length, 6, 'the prompt is the one last argument');
   assert.match(run.argv[5], new RegExp(`^You are ${ME}, the scheduled orchestrator`));
-  assert.match(run.argv[5], /^RUN my-app\/atom-status Collect MR status$/m);
+  assert.match(run.argv[5], /^RUN my-app\/mr-status Collect MR status$/m);
   assert.equal(fs.realpathSync(run.cwd), fs.realpathSync(path.join(r.dir, 'work')), 'claude starts in WORKDIR');
   assert.equal(run.env.ROADCTL_NOW, T0);
   assert.equal(run.stdin, '', 'nothing is fed to claude on stdin');
@@ -102,14 +102,14 @@ test('tick-claude.sh: a crashing claude is the script\'s exit code, an agent tha
   const silent = tickClaude(r, { FAKE_MODE: 'silent' });
   assert.equal(silent.status, 0);
   assert.doesNotMatch(r.routineText(), /last_run/, 'nothing was recorded, so the routine is still due');
-  assert.match(r.roadctl(['tick', '--as', ME]).stdout, /^RUN my-app\/atom-status/m);
+  assert.match(r.roadctl(['tick', '--as', ME]).stdout, /^RUN my-app\/mr-status/m);
   // the hang: stopped by timeout(1) with CLAUDE_TIMEOUT, status 124
   const hung = tickClaude(r, { FAKE_MODE: 'hang', CLAUDE_TIMEOUT: '1' });
   assert.equal(hung.status, 124, hung.stderr);
   const pid = r.work('claude').at(-1).pid;
   assert.equal(waitFor(() => !alive(pid)), true, 'the hanging claude is gone'); // real time: a process
   // no routine due: no claude at all
-  r.ok(['routine', 'off', 'atom-status', '--by', 'Owner', '--board', r.board]);
+  r.ok(['routine', 'off', 'mr-status', '--by', 'Owner', '--board', r.board]);
   const before = r.calls('claude').length;
   assert.match(tickClaude(r).stdout, /idle/);
   assert.equal(r.calls('claude').length, before);
@@ -140,7 +140,7 @@ test('hermes-routines-tick.py: the local tick is `roadctl tick --json`; a due ex
   assert.equal(at('--model'), 'haiku', 'the model comes from the JSON item');
   assert.equal(at('--max-turns'), '30');
   assert.equal(run.argv.at(-2), '--');
-  assert.match(run.argv.at(-1), /^RUN my-app\/atom-status Collect MR status$/m, 'the remote roadctl built the prompt');
+  assert.match(run.argv.at(-1), /^RUN my-app\/mr-status Collect MR status$/m, 'the remote roadctl built the prompt');
   assert.equal(fs.realpathSync(run.cwd), fs.realpathSync(r.dir), 'claude starts in $HOME of the remote host');
   // a5: the permission list is narrowed to the roadctl subcommands the routine prompt names
   const allow = JSON.parse(at('--settings')).permissions.allow;
@@ -148,7 +148,7 @@ test('hermes-routines-tick.py: the local tick is `roadctl tick --json`; a due ex
   assert.ok(allow.every((rule) => rule === 'Read' || /^Bash\(roadctl [a-z]+( [a-z-]+)?:\*\)$/.test(rule)), `every Bash rule names a subcommand: ${allow}`);
   for (const sub of ['routine done', 'limits --check', 'log', 'delegate', 'save', 'show']) assert.ok(allow.includes(`Bash(roadctl ${sub}:*)`), sub);
   for (const forbidden of ['approve', 'done', 'accept', 'return', 'claim', 'report', 'review', 'autonomy', 'routine on', 'hook']) assert.ok(!allow.some((rule) => rule.startsWith(`Bash(roadctl ${forbidden}`)), `${forbidden} is not allowed`);
-  assert.match(fs.readFileSync(path.join(r.dir, '.local', 'state', 'road-map-journal', 'external-routine.log'), 'utf8'), /^== \S+ my-app\/atom-status$/m);
+  assert.match(fs.readFileSync(path.join(r.dir, '.local', 'state', 'road-map-journal', 'external-routine.log'), 'utf8'), /^== \S+ my-app\/mr-status$/m);
 });
 
 test('hermes-routines-tick.py: claude -p runs under timeout (ROAD_CLAUDE_TIMEOUT, default 30m); a hanging run is killed', NEEDS, () => {
@@ -170,11 +170,12 @@ test('hermes-routines-tick.py: claude -p runs under timeout (ROAD_CLAUDE_TIMEOUT
 
 test('hermes-routines-tick.py reads JSON, not prompt text: no text parsing in the examples, a text answer or broken JSON launches nothing', NEEDS, () => {
   for (const name of fs.readdirSync(EXAMPLES)) {
+    if (!fs.statSync(path.join(EXAMPLES, name)).isFile()) continue; // a __pycache__ left by a local run is not an example
     const src = fs.readFileSync(path.join(EXAMPLES, name), 'utf8');
     assert.doesNotMatch(src, /ENTRY_RE|previous run|: file |; model |re\.compile\(|re\.search\(/, `${name} does not parse the text of a tick`);
   }
   const r = rig();
-  const text = 'tick claude-code@work-notebook: work\nRUN my-app/atom-status Collect MR status\nlimits: claude allowed\n  my-app/atom-status: file /b/routines/a.md; model haiku; env laptop; previous run: never\n';
+  const text = 'tick claude-code@work-notebook: work\nRUN my-app/mr-status Collect MR status\nlimits: claude allowed\n  my-app/mr-status: file /b/routines/a.md; model haiku; env laptop; previous run: never\n';
   const old = hermesRoutines(r, { FAKE_WSL_EXE_MODE: 'ok', FAKE_STDOUT: text });
   assert.equal(r.calls('ssh').length, 0, 'the old text format is not parsed any more');
   assert.match(old.stderr, /not what this script expects/);
@@ -188,5 +189,5 @@ test('hermes-routines-tick.py reads JSON, not prompt text: no text parsing in th
   r.routine(EXTERNAL);
   const j = JSON.parse(r.roadctl(['tick', '--as', EXTERNAL, '--kinds', 'run', '--json']).stdout);
   assert.deepEqual(tickJsonProblems(j), []);
-  assert.deepEqual(j.items.map((i) => [i.kind, i.project, i.id, i.routine.model]), [['RUN', 'my-app', 'atom-status', 'haiku']]);
+  assert.deepEqual(j.items.map((i) => [i.kind, i.project, i.id, i.routine.model]), [['RUN', 'my-app', 'mr-status', 'haiku']]);
 });

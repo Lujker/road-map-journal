@@ -49,14 +49,14 @@ function machine(dir, ws, board, host, bin = installFakes(path.join(dir, `bin-${
     return r;
   };
   const at = (minutes) => clock(shift(minutes));
-  const routineFile = (id = 'atom-status') => path.join(board, 'routines', `${id}.md`);
-  const routine = (id = 'atom-status', header = '', agent = ME) => {
+  const routineFile = (id = 'mr-status') => path.join(board, 'routines', `${id}.md`);
+  const routine = (id = 'mr-status', header = '', agent = ME) => {
     ok(['routine', 'new', id, 'Collect MR status', '--agent', agent, '--model', 'haiku', '--env', 'laptop', '--every', '2h']);
     if (header) fs.writeFileSync(routineFile(id), fs.readFileSync(routineFile(id), 'utf8').replace(/^every: .*$/m, (m) => `${m}\n${header}`));
     ok(['routine', 'on', id, '--by', 'Owner', '--source', 'chat 2026-11-12']);
     ok(['autonomy', 'routines', 'on', '--by', 'Owner']);
   };
-  const done = (args, over) => ok(['routine', 'done', 'atom-status', '--as', ME, ...args], over);
+  const done = (args, over) => ok(['routine', 'done', 'mr-status', '--as', ME, ...args], over);
   const digest = (args = [], over) => ok(['digest', ...args], over).stdout;
   const digestJson = (args = [], over) => JSON.parse(ok(['digest', '--json', ...args], over).stdout);
   return { dir, ws, board, bin, env, state, host, run, ok, at, routineFile, routine, done, digest, digestJson, paths: store.ledgerPaths(env) };
@@ -67,11 +67,11 @@ function machine(dir, ws, board, host, bin = installFakes(path.join(dir, `bin-${
 test('P5.13 a1: routine done without --did refuses on a board that requires a summary; with the fields it writes a Log line that digest reads back into the same fields', FAKES_SKIP, () => {
   const r = rig({ config: { summary: 'required' } });
   r.routine();
-  const no = r.run(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'checked 3 things']);
+  const no = r.run(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'checked 3 things']);
   assert.equal(no.status, 1);
   assert.match(no.stderr, /needs --did/);
-  assert.equal(r.run(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', '--ask', 'x']).status, 2, 'other fields without --did and without text are a usage error');
-  assert.equal(r.run(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', '--ask', 'x', 'text']).status, 1, 'with text but no --did: refused');
+  assert.equal(r.run(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', '--ask', 'x']).status, 2, 'other fields without --did and without text are a usage error');
+  assert.equal(r.run(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', '--ask', 'x', 'text']).status, 1, 'with text but no --did: refused');
   assert.doesNotMatch(fs.readFileSync(r.routineFile(), 'utf8'), /RUN ok/, 'nothing was recorded');
   r.done(['--result', 'escalated', '--did', 'checked 9 servers', '--did', 'restarted nothing', '--decision', 'left srv-3 alone', '--problem', 'permanent: disk-full: /var is full on srv-3', '--problem', 'transient: dns-timeout: one lookup failed', '--ask', 'free space or approve a bigger disk', '--not-checked', 'the backups']);
   const line = fs.readFileSync(r.routineFile(), 'utf8').split('\n').filter((l) => /^- \d{4}-.*RUN escalated/.test(l)).at(-1);
@@ -158,7 +158,7 @@ test('P5.13 a2: a routine that ended escalated on the laptop (second clone) is t
   assert.equal(JSON.parse(home.ok(['pull', '--json']).stdout).status, 'pulled');
   const first = home.digest([], home.at(32));
   assert.equal(lines(first).length, 4, first);
-  assert.match(first, /^routine my-app\/atom-status: ESCALATED \(claude-code@home-wsl\)$/m);
+  assert.match(first, /^routine my-app\/mr-status: ESCALATED \(claude-code@home-wsl\)$/m);
   assert.match(first, /^did: checked 9 servers$/m);
   assert.match(first, /^problem: permanent disk-full: \/var is full on srv-3$/m);
   assert.match(first, /^needs from you: free space or approve a bigger disk$/m);
@@ -181,12 +181,12 @@ test('P5.13 a2: a routine that ended escalated on the laptop (second clone) is t
 
 test('P5.13 a3: ok is silent under notify: problems, shown in --daily; notify: always tells every run; notify: never tells nothing at once', FAKES_SKIP, () => {
   const r = rig();
-  r.routine('atom-status');
+  r.routine('mr-status');
   r.done(['--result', 'ok', '--did', 'checked 3 things'], r.at(5));
   assert.equal(r.digest([], r.at(6)), '', 'an ok run of a routine on the default policy is not news');
   const daily = r.digest(['--daily'], r.at(7));
   assert.match(daily, /^roadctl daily overview 2026-11-10$/m);
-  assert.match(daily, /^my-app\/atom-status: ok 2m ago - checked 3 things$/m);
+  assert.match(daily, /^my-app\/mr-status: ok 2m ago - checked 3 things$/m);
   r.routine('chatty', 'notify: always');
   r.done(['--result', 'ok', '--did', 'looked'], r.at(8));
   ok2(r, 'chatty', ['--result', 'ok', '--did', 'looked at it'], r.at(9));
@@ -214,7 +214,7 @@ test('P5.13 a4: the same problem key in two runs is one message; a problem that 
   r.done(['--result', 'ok', '--did', 'checked again', ...P], r.at(130));
   assert.equal(r.digest([], r.at(131)), '', 'the same key: nothing new');
   r.done(['--result', 'ok', '--did', 'checked a third time'], r.at(260));
-  assert.deepEqual(lines(r.digest([], r.at(261))), ['resolved: my-app/atom-status: dns-timeout'], 'gone: one line');
+  assert.deepEqual(lines(r.digest([], r.at(261))), ['resolved: my-app/mr-status: dns-timeout'], 'gone: one line');
   assert.equal(r.digest([], r.at(262)), '');
   r.done(['--result', 'ok', '--did', 'checked', ...P], r.at(390));
   assert.match(r.digest([], r.at(391)), /dns-timeout/, 'it came back: told again');
@@ -228,7 +228,7 @@ test('P5.13 a4: the same problem key in two runs is one message; a problem that 
   r.done(['--result', 'ok', '--did', 'waiting', ...Q], r.at(780));
   const q = r.digest([], r.at(781));
   assert.match(q, /needs from you: approve the bigger disk\?/);
-  assert.match(q, /resolved: my-app\/atom-status: escalated/);
+  assert.match(q, /resolved: my-app\/mr-status: escalated/);
   r.done(['--result', 'ok', '--did', 'still waiting', ...Q], r.at(910));
   assert.equal(r.digest([], r.at(911)), '');
 });
@@ -253,24 +253,24 @@ test('P5.13: the first digest of a state name tells only the last two days; olde
 
 test('P5.13 a5: a routine that has not run for twice its every inside its hours is OVERDUE in --daily; outside its hours it is not', FAKES_SKIP, () => {
   const r = rig();
-  r.routine('atom-status', 'hours: daily 00:00-24:00 tz=UTC'); // every 2h
+  r.routine('mr-status', 'hours: daily 00:00-24:00 tz=UTC'); // every 2h
   r.done(['--result', 'ok', '--did', 'checked'], clock('2026-11-10T10:00:00Z'));
   assert.doesNotMatch(r.digest(['--daily'], clock('2026-11-10T13:00:00Z')), /OVERDUE/, '3h of 2h: late, not yet overdue');
-  assert.match(r.digest(['--daily'], clock('2026-11-10T14:30:00Z')), /^my-app\/atom-status: OVERDUE, last run 5h ago \(every 2h\)$/m);
+  assert.match(r.digest(['--daily'], clock('2026-11-10T14:30:00Z')), /^my-app\/mr-status: OVERDUE, last run 5h ago \(every 2h\)$/m);
   const outside = rig();
-  outside.routine('atom-status', 'hours: daily 08:00-12:00 tz=UTC');
+  outside.routine('mr-status', 'hours: daily 08:00-12:00 tz=UTC');
   outside.done(['--result', 'ok', '--did', 'checked'], clock('2026-11-10T10:00:00Z'));
   const d = outside.digest(['--daily'], clock('2026-11-11T03:00:00Z')); // 17h later, outside the window
   assert.doesNotMatch(d, /OVERDUE/);
-  assert.match(d, /^my-app\/atom-status: ok 17h ago/m);
+  assert.match(d, /^my-app\/mr-status: ok 17h ago/m);
   assert.match(outside.digest(['--daily'], clock('2026-11-11T09:00:00Z')), /OVERDUE/, 'inside the window again, still not run: overdue');
   // a switched-off routine has no line; a board switch that is off is one line
-  outside.ok(['routine', 'off', 'atom-status', '--by', 'Owner']);
-  assert.doesNotMatch(outside.digest(['--daily'], clock('2026-11-11T09:00:00Z')), /atom-status/);
+  outside.ok(['routine', 'off', 'mr-status', '--by', 'Owner']);
+  assert.doesNotMatch(outside.digest(['--daily'], clock('2026-11-11T09:00:00Z')), /mr-status/);
   // never run: its own words, not overdue
   const fresh = rig();
   fresh.routine();
-  assert.match(fresh.digest(['--daily']), /^my-app\/atom-status: never run$/m);
+  assert.match(fresh.digest(['--daily']), /^my-app\/mr-status: never run$/m);
 });
 
 // ---------------------------------------------------------------- a6: the local ledger
@@ -279,16 +279,16 @@ test('P5.13 a6: crashed and skipped: busy from the local ledger reach the digest
   const r = rig();
   r.routine();
   r.routine('chatty', 'notify: always');
-  r.ok(['run', 'begin', 'atom-status', '--as', ME]);
+  r.ok(['run', 'begin', 'mr-status', '--as', ME]);
   r.ok(['run', 'begin', 'chatty', '--as', ME]);
   for (let i = 0; i < 3; i++) store.recordSkip(r.env, { kind: 'routine', project: 'my-app', id: 'chatty', agent: ME, reason: 'busy', now: Date.parse(shift(60 + i)), version: rc.VERSION });
   const tick = spawnSync(process.execPath, [SELF, 'tick', '--as', ME, '--no-pull'], { cwd: r.ws, encoding: 'utf8', env: { ...r.env, ...r.at(200) } }); // past the deadline: both runs are marked crashed
   assert.ok([0, 4].includes(tick.status), tick.stderr);
   const now = r.digest([], r.at(201));
-  assert.match(now, /^routine my-app\/atom-status: CRASHED \(claude-code@home-wsl, 200m\)$/m);
+  assert.match(now, /^routine my-app\/mr-status: CRASHED \(claude-code@home-wsl, 200m\)$/m);
   assert.match(now, /^routine my-app\/chatty: CRASHED \(/m, 'crashed under always too');
   assert.match(now, /^routine my-app\/chatty: skipped busy x3$/m, 'a skip streak is news only under notify: always');
-  assert.doesNotMatch(now, /atom-status: skipped/);
+  assert.doesNotMatch(now, /mr-status: skipped/);
   const daily = r.digest(['--daily'], r.at(202));
   assert.match(daily, /^this machine, last 24h: crashed 2, skipped busy 3$/m);
   // another machine's ledger is not read: the laptop's digest has none of it
@@ -344,13 +344,13 @@ test('P5.13 a8: the daily overview has a line about the owner\'s commands of the
   fs.mkdirSync(path.dirname(r.paths.dir + '/x'), { recursive: true });
   const rows = [
     { time: shift(-30), command: 'approve', target: 'P5.1', by: 'claude-code@home-wsl', outcome: 'ok' },
-    { time: shift(-20), command: 'routine on', target: 'atom-status', by: 'hermes@home-host', outcome: 'refused' },
+    { time: shift(-20), command: 'routine on', target: 'mr-status', by: 'hermes@home-host', outcome: 'refused' },
     { time: shift(-60 * 30), command: 'done', target: 'P5.0', by: 'someone', outcome: 'ok' }, // a day and a half ago: not in the period
     { time: 'not a time', command: 'x' },
   ];
   fs.writeFileSync(path.join(r.paths.dir, 'owner-commands.jsonl'), `${rows.map((x) => JSON.stringify(x)).join('\n')}\nbroken line\n`);
   const d = r.digest(['--daily']);
-  assert.match(d, /^owner commands, last 24h: 2 \(approve P5\.1 by claude-code@home-wsl; routine on atom-status by hermes@home-host refused\)$/m);
+  assert.match(d, /^owner commands, last 24h: 2 \(approve P5\.1 by claude-code@home-wsl; routine on mr-status by hermes@home-host refused\)$/m);
 });
 
 test('P5.13 + P5.5: the daily overview names an active pause of this machine (one line), nothing for no pause or an expired one', FAKES_SKIP, () => {
@@ -381,14 +381,14 @@ test('P5.13 a9: the example no_agent job prints exactly the digest (silence when
   const news = job(r, [], r.at(6));
   assert.equal(news.status, 0, news.stderr);
   assert.ok(lines(news.stdout).length <= 6, news.stdout);
-  assert.match(news.stdout, /^routine my-app\/atom-status: ESCALATED/m);
+  assert.match(news.stdout, /^routine my-app\/mr-status: ESCALATED/m);
   assert.doesNotMatch(news.stdout, /[*_`#]|<|>/, 'plain text: no markdown, no tags');
   assert.equal(job(r, [], r.at(7)).stdout, '', 'told once');
   const wsl = readCalls(r.env.FAKE_LOG).map((c) => c.argv.at(-1));
   assert.ok(wsl.includes('roadctl digest --all --since-state telegram'), wsl.join('\n'));
   // the daily job asks for the overview
   const daily = job(r, ['--daily'], r.at(8));
-  assert.match(daily.stdout, /^my-app\/atom-status: ESCALATED 3m ago/m);
+  assert.match(daily.stdout, /^my-app\/mr-status: ESCALATED 3m ago/m);
   assert.ok(readCalls(r.env.FAKE_LOG).some((c) => c.argv.at(-1) === 'roadctl digest --all --daily'));
   // a failing roadctl: one short line, not its stderr or its output
   const crash = job(r, [], { FAKE_WSL_EXE_MODE: 'crash', FAKE_EXIT: '9' });
@@ -431,10 +431,10 @@ test('P5.13 a10: a run that is only recorded locally says so in the summary and 
 // ---------------------------------------------------------------- the rest: language, plain text, help, docs, format change
 
 test('P5.13: headings follow the language of the board (ru here), the text of the agent is shown as written; no emoji or markup', () => {
-  const ev = { kind: 'routine', project: 'my-app', id: 'atom-status', outcome: 'escalated', agent: ME, duration_s: 12, fields: { did: ['проверил 9 серверов'], decisions: [], problems: [{ kind: 'permanent', key: 'disk', text: 'диск полон' }], needs_owner: 'освободить место?', not_checked: null } };
+  const ev = { kind: 'routine', project: 'my-app', id: 'mr-status', outcome: 'escalated', agent: ME, duration_s: 12, fields: { did: ['проверил 9 серверов'], decisions: [], problems: [{ kind: 'permanent', key: 'disk', text: 'диск полон' }], needs_owner: 'освободить место?', not_checked: null } };
   const ru = renderSummary(ev, 'ru');
-  assert.deepEqual(ru, [`рутина my-app/atom-status: ЭСКАЛАЦИЯ (${ME}, 12с)`, 'сделано: проверил 9 серверов', 'проблема: permanent disk: диск полон', 'нужно от вас: освободить место?']);
-  assert.equal(renderSummary(ev, 'en')[0], `routine my-app/atom-status: ESCALATED (${ME}, 12s)`);
+  assert.deepEqual(ru, [`рутина my-app/mr-status: ЭСКАЛАЦИЯ (${ME}, 12с)`, 'сделано: проверил 9 серверов', 'проблема: permanent disk: диск полон', 'нужно от вас: освободить место?']);
+  assert.equal(renderSummary(ev, 'en')[0], `routine my-app/mr-status: ESCALATED (${ME}, 12s)`);
   assert.equal(renderSummary(ev, undefined)[3], 'needs from you: освободить место?');
   assert.ok(renderSummary({ ...ev, fields: { ...ev.fields, decisions: ['d'], not_checked: 'n' } }, 'en').length <= 6);
 });
@@ -443,7 +443,7 @@ test('P5.13: the digest of a board in Russian is in Russian, the daily overview 
   const r = rig({ config: { language: 'ru' } });
   r.routine();
   r.done(['--result', 'failed', '--did', 'проверил'], r.at(5));
-  assert.match(r.digest([], r.at(6)), /^рутина my-app\/atom-status: СБОЙ/m);
+  assert.match(r.digest([], r.at(6)), /^рутина my-app\/mr-status: СБОЙ/m);
   assert.match(r.digest(['--daily'], r.at(7)), /^суточная сводка roadctl 2026-11-10$/m);
 });
 

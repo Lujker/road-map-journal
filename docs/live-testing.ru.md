@@ -38,7 +38,7 @@ cd $SB/demo && node $R/scripts/roadctl.mjs where    # должен напеча�
 | A1 | В карточке отметить критерий `[x]` без строки Evidence | `roadctl lint` выходит с кодом 1; `roadctl review <id>` отказывает |
 | A2 | Поправить карточку руками, затем `roadctl sync --check` | Сообщает, что `BOARD.md` устарел; `roadctl sync` исправляет |
 | A3 | `roadctl done <id> --by X` без Evidence; `roadctl approve <id>` без `--by` | Отказ в обоих случаях |
-| A4 | `roadctl lint --all` в настоящем workspace | На 2026-11-10: 0 ошибок и 1 предупреждение (`atom-adas`: 6 карточек в doing). Это реальная находка, её надо разобрать |
+| A4 | `roadctl lint --all` в настоящем workspace | На 2026-11-10: 0 ошибок и 1 предупреждение (`demo-project`: 6 карточек в doing). Это реальная находка, её надо разобрать |
 | A5 | После реализации P3.1: `roadctl status --all`, `list --status review`, `next`, `brief --json` | Совпадает с тем, что видно в `BOARD.md`; без агента, без записи |
 
 ## B. Хуки в живых сессиях

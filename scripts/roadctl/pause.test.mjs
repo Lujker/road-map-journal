@@ -49,7 +49,7 @@ function rig({ env: extra = {} } = {}) {
     return r;
   };
   const tick = (args = [], over = {}, agent = ME) => run(['tick', '--as', agent, '--no-pull', ...args], over);
-  const routine = (agent = ME, id = 'atom-status') => {
+  const routine = (agent = ME, id = 'mr-status') => {
     ok(['routine', 'new', id, 'Collect MR status', '--agent', agent, '--model', 'haiku', '--env', 'laptop', '--every', '2h']);
     ok(['routine', 'on', id, '--by', OWNER, '--source', 'chat 2026-11-12']);
     ok(['autonomy', 'routines', 'on', '--by', OWNER]);
@@ -156,10 +156,10 @@ test('P5.5 a2: the pause stops every kind of offer, TAKE, ACCEPT, START, STALE a
   const unpaused = r.tick();
   assert.deepEqual(kindsOf(unpaused).sort(), ['ACCEPT', 'RUN', 'START', 'TAKE'], unpaused.stdout);
   for (const [k] of kinds) assert.equal(r.tick(['--kinds', k]).status, 0, `${k}: offered before the pause`);
-  assert.equal(r.tick(['--routine', 'atom-status']).status, 0);
+  assert.equal(r.tick(['--routine', 'mr-status']).status, 0);
   r.ok(['pause', '--reason', 'all stop']);
   for (const [k] of kinds) assert.equal(r.tick(['--kinds', k]).status, 6, `${k}: stopped by the pause`);
-  assert.equal(r.tick(['--routine', 'atom-status']).status, 6);
+  assert.equal(r.tick(['--routine', 'mr-status']).status, 6);
   const p = r.tick();
   assert.equal(p.status, 6);
   assert.deepEqual(kindsOf(p), [], 'no item line');
@@ -313,22 +313,22 @@ test('P5.5 ledger: paused ticks are one folded ticks.jsonl line and one skipped 
   const r = rig();
   r.ok(['pause', '--reason', 'away']);
   for (let i = 0; i < 4; i++) assert.equal(r.tick([], clock(shift(i))).status, 6);
-  assert.equal(r.tick(['--routine', 'atom-status'], clock(shift(5))).status, 6, 'a routine job has its own streak');
+  assert.equal(r.tick(['--routine', 'mr-status'], clock(shift(5))).status, 6, 'a routine job has its own streak');
   const ticks = rawLines(path.join(r.sd, 'ticks.jsonl'));
-  assert.deepEqual(ticks.map((t) => [t.decision, t.filter?.routine ?? null, t.limits]), [['paused', null, null], ['paused', 'atom-status', null]], 'four ticks, one line (the repeats only move a counter); the routine job has its own');
+  assert.deepEqual(ticks.map((t) => [t.decision, t.filter?.routine ?? null, t.limits]), [['paused', null, null], ['paused', 'mr-status', null]], 'four ticks, one line (the repeats only move a counter); the routine job has its own');
   assert.deepEqual(ticks[0].counts, { take: 0, accept: 0, start: 0, stale: 0 });
   const state = JSON.parse(fs.readFileSync(path.join(r.sd, 'ticks.state.json'), 'utf8'));
   assert.equal(Object.values(state.ticks).find((t) => t.decision === 'paused' && t.count === 4)?.count, 4);
   assert.equal(r.ok(['tick', '--ledger', '-n', '5']).stdout.split('\n').filter((l) => / paused /.test(l)).length, 2);
   const open = () => rawLines(path.join(r.sd, 'runs.jsonl'));
   const skips = open().filter((x) => x.event === 'skip');
-  assert.deepEqual(skips.map((x) => [x.kind, x.id, x.reason, x.outcome]), [['orchestrator', ME, 'paused', 'skipped'], ['routine', 'atom-status', 'paused', 'skipped']]);
+  assert.deepEqual(skips.map((x) => [x.kind, x.id, x.reason, x.outcome]), [['orchestrator', ME, 'paused', 'skipped'], ['routine', 'mr-status', 'paused', 'skipped']]);
   r.ok(['resume']);
   r.tick(['--no-pull'], clock(shift(30)));
   const closing = open().filter((x) => x.event === 'skips');
   assert.deepEqual(closing.map((x) => x.count), [4], 'the orchestrator streak is closed with its count of paused ticks');
   const runs = JSON.parse(r.ok(['runs', '--json']).stdout).filter((x) => x.outcome === 'skipped');
-  assert.deepEqual(runs.map((x) => [x.reason, x.id, x.count]).sort(), [['paused', 'atom-status', 1], ['paused', ME, 4]].sort());
+  assert.deepEqual(runs.map((x) => [x.reason, x.id, x.count]).sort(), [['paused', 'mr-status', 1], ['paused', ME, 4]].sort());
   for (const x of runs) assert.deepEqual(runRecordProblems(x), [], 'the folded record fits the run schema');
 });
 
@@ -391,7 +391,7 @@ test('P5.5 a5: the Hermes monitor scripts see exit 6 as "keep the last prompt": 
   r.routine(HERMES);
   const py = (code) => spawnSync('python3', ['-c', code], { cwd: EXAMPLES, encoding: 'utf8', env: { ...r.env, FAKE_WSL_EXE_MODE: 'run', FAKE_SSH_MODE: 'run' } });
   // a stored work prompt (as after an earlier tick with work), then a paused tick through the real tick() of monitor_common.py
-  const sticky = py('import monitor_common as m, subprocess; r = subprocess.CompletedProcess([], 0, stdout=b"RUN my-app/atom-status Collect MR status\\n", stderr=b""); m.sticky("road-orchestrator", r)');
+  const sticky = py('import monitor_common as m, subprocess; r = subprocess.CompletedProcess([], 0, stdout=b"RUN my-app/mr-status Collect MR status\\n", stderr=b""); m.sticky("road-orchestrator", r)');
   assert.equal(sticky.status, 0, sticky.stderr);
   const monitored = () => py('import monitor_common as m; m.sticky("road-orchestrator", m.tick("claude-code@home-wsl", "take,accept,start,stale"))');
   const before = monitored();
@@ -399,7 +399,7 @@ test('P5.5 a5: the Hermes monitor scripts see exit 6 as "keep the last prompt": 
   const paused = monitored();
   assert.equal(paused.status, 0, paused.stderr);
   assert.equal(paused.stdout, before.stdout, 'the output a monitor hashes is unchanged by the pause');
-  assert.match(paused.stdout, /^RUN my-app\/atom-status/);
+  assert.match(paused.stdout, /^RUN my-app\/mr-status/);
   assert.equal(paused.stderr, '', 'exit 6 is not an error (only exit 2 is reported)');
   // the real scripts end to end
   const orchestrator = spawnSync('python3', [path.join(EXAMPLES, 'hermes-monitor-tick.py')], { cwd: r.ws, encoding: 'utf8', env: { ...r.env, FAKE_WSL_EXE_MODE: 'run' } });

@@ -284,10 +284,10 @@ Routines are recurring, mostly mechanical project tasks that the owner can switc
 **Creating one.** The owner names the executor: ask which agent (`claude-code@work-notebook`), which model (`claude-haiku-5-5`) and which environment (`Work-notebook-wsl`), and how often.
 
 ```text
-roadctl routine new atom-status "Collect MR, issue and message state, update cards" \
+roadctl routine new mr-status "Collect MR, issue and message state, update cards" \
     --agent claude-code@work-notebook --model claude-haiku-5-5 --env Work-notebook-wsl --every 2h
-# edit board/routines/atom-status.md: Goal, Steps, May write, Escalate
-roadctl routine on atom-status --by Lujker --source "chat 2026-11-12"     # records the approval: scope read+board
+# edit board/routines/mr-status.md: Goal, Steps, May write, Escalate
+roadctl routine on mr-status --by Lujker --source "chat 2026-11-12"     # records the approval: scope read+board
 roadctl autonomy routines on --by Lujker                                   # the board switch
 roadctl save
 roadctl routine list
@@ -434,7 +434,7 @@ The duration, the host, the model, `usage`, `ref` and `writes` are set by code. 
 **What the command prints.** After the usual line, `routine done` and `report` with fields print the summary for the owner, at most six lines of plain text (no markdown, no raw output, nothing from a log): the header (`routine my-app/server-watch: ESCALATED (agent, 12s)`), `did`, `decided`, `problem`, `needs from you`, `not checked`. A Hermes agent that answers the owner with exactly what `routine done` printed gives the owner this text. A run that is only recorded locally (`recorded-local`, `reported-local`: offline, no remote) ends its last line with `[not published: waits for roadctl save]`. `run done` prints the same lines; its record lives only in the local ledger (the duty orchestrator has no routine or card to write to), so the digest of that machine delivers it. `run done` ends the open run of the agent when there is one (`ROADCTL_RUN_ID`, `--run`), else it writes a whole record (`kind: orchestrator`, `id` = the agent).
 
 ```text
-roadctl routine done atom-status --as claude-code@work-notebook --result escalated \
+roadctl routine done mr-status --as claude-code@work-notebook --result escalated \
     --did "checked 9 servers" --problem "permanent: disk-full: /var is full on srv-3" \
     --ask "free space or approve a bigger disk"
 roadctl run done --as claude-code@home-wsl --result ok --did "took W-3" --did "accepted W-2"

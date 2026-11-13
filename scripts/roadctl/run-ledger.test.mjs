@@ -45,9 +45,9 @@ function rig({ env: extra = {}, git = false } = {}) {
   };
   const at = (minutes) => clock(shift(minutes));
   const tick = (args = [], over = {}) => spawnSync(process.execPath, [SELF, 'tick', '--as', ME, '--no-pull', ...args], { cwd: ws, encoding: 'utf8', env: { ...env, ...over } });
-  const routineFile = (id = 'atom-status') => path.join(board, 'routines', `${id}.md`);
+  const routineFile = (id = 'mr-status') => path.join(board, 'routines', `${id}.md`);
   /** An approved routine of `agent` that is due, with the board switch on; `header` lines are added after `every:`. */
-  const routine = (agent = ME, id = 'atom-status', header = '') => {
+  const routine = (agent = ME, id = 'mr-status', header = '') => {
     ok(['routine', 'new', id, 'Collect MR status', '--agent', agent, '--model', 'haiku', '--env', 'laptop', '--every', '2h']);
     if (header) fs.writeFileSync(routineFile(id), fs.readFileSync(routineFile(id), 'utf8').replace(/^every: .*$/m, (m) => `${m}\n${header}`));
     ok(['routine', 'on', id, '--by', 'Owner', '--source', 'chat 2026-11-12']);
@@ -66,36 +66,36 @@ const rawLines = (file) => fs.readFileSync(file, 'utf8').split('\n').filter(Bool
 test('P5.1 a1: begin and routine done write two linked records with one run_id; ROADCTL_RUN_ID replaces --run', FAKES_SKIP, () => {
   const r = rig();
   r.routine();
-  const begin = r.ok(['run', 'begin', 'atom-status', '--as', ME]);
+  const begin = r.ok(['run', 'begin', 'mr-status', '--as', ME]);
   const id = runIdOf(begin);
   assert.match(id, /^r-[0-9a-f]{12}$/);
-  r.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'checked 3 things'], r.at(7));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'checked 3 things'], r.at(7));
   const lines = rawLines(r.paths.runs).filter((l) => l.run_id === id);
   assert.deepEqual(lines.map((l) => l.event), ['begin', 'end'], 'two records, one run_id');
   const [run] = r.runs();
-  assert.deepEqual([run.run_id, run.kind, run.project, run.id, run.agent, run.model, run.host, run.source, run.started, run.finished, run.duration_s, run.outcome, run.attempt, run.roadctl], [id, 'routine', 'my-app', 'atom-status', ME, 'haiku', HOST, 'agent', T0, shift(7), 420, 'ok', 1, rc.VERSION]);
+  assert.deepEqual([run.run_id, run.kind, run.project, run.id, run.agent, run.model, run.host, run.source, run.started, run.finished, run.duration_s, run.outcome, run.attempt, run.roadctl], [id, 'routine', 'my-app', 'mr-status', ME, 'haiku', HOST, 'agent', T0, shift(7), 420, 'ok', 1, rc.VERSION]);
   assert.deepEqual([run.did, run.usage], [['checked 3 things'], null]);
   // the environment carries the id: no --run on either command
-  const second = r.ok(['run', 'begin', 'atom-status', '--as', ME], { ...r.at(130), ROADCTL_RUN_ID: 'sup-42' });
+  const second = r.ok(['run', 'begin', 'mr-status', '--as', ME], { ...r.at(130), ROADCTL_RUN_ID: 'sup-42' });
   assert.equal(runIdOf(second), 'sup-42');
-  r.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'escalated', 'needs a person'], { ...r.at(135), ROADCTL_RUN_ID: 'sup-42' });
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'escalated', 'needs a person'], { ...r.at(135), ROADCTL_RUN_ID: 'sup-42' });
   const again = r.runs().find((x) => x.run_id === 'sup-42');
   assert.deepEqual([again.outcome, again.duration_s, again.started, again.finished], ['escalated', 300, shift(130), shift(135)]);
   assert.equal(r.runs().length, 2);
   // a --run that belongs to another routine is refused, and nothing is recorded
   r.routine(ME, 'other-job');
   const other = r.ok(['run', 'begin', 'other-job', '--as', ME], r.at(140));
-  const bad = r.run(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'x', '--run', runIdOf(other)], r.at(141));
+  const bad = r.run(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'x', '--run', runIdOf(other)], r.at(141));
   assert.equal(bad.status, 1);
-  assert.match(bad.stderr, /belongs to routine:my-app\/other-job, not routine:my-app\/atom-status/);
-  assert.match(r.run(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'x', '--run', 'bad id!']).stderr, /--run is an id of letters/);
+  assert.match(bad.stderr, /belongs to routine:my-app\/other-job, not routine:my-app\/mr-status/);
+  assert.match(r.run(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'x', '--run', 'bad id!']).stderr, /--run is an id of letters/);
 });
 
 test('P5.1 a7: the Log line of a run has run_id, duration and host and reads back into the same fields (round trip through git-visible text)', FAKES_SKIP, () => {
   const r = rig();
   r.routine();
-  const id = runIdOf(r.ok(['run', 'begin', 'atom-status', '--as', ME]));
-  r.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'checked [a2] <b>7</b> servers; a_b*c'], r.at(12));
+  const id = runIdOf(r.ok(['run', 'begin', 'mr-status', '--as', ME]));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'checked [a2] <b>7</b> servers; a_b*c'], r.at(12));
   const log = rc.parseRoutine(r.routineFile()).log.at(-1);
   assert.equal(log.author, ME);
   assert.ok(log.text.startsWith('RUN ok: checked [a2] b7/b servers; a_b*c [run='), log.text);
@@ -112,8 +112,8 @@ test('P5.1 a7: the Log line of a run has run_id, duration and host and reads bac
   assert.equal(parseRunTrailer('RUN ok: plain summary'), null);
   assert.equal(parseRunTrailer('RUN ok: x [run=fake dur=1s host=evil] y [run=real dur=2s host=good]').run_id, 'real', 'the last one is the code\'s');
   // a long summary is cut so that the whole line stays within the 1500 characters the Log keeps, trailer included
-  r.ok(['run', 'begin', 'atom-status', '--as', ME], r.at(300));
-  r.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'word '.repeat(600)], r.at(301));
+  r.ok(['run', 'begin', 'mr-status', '--as', ME], r.at(300));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'word '.repeat(600)], r.at(301));
   const long = logLines(r.routineFile()).at(-1);
   assert.ok(long.length <= '- 2026-11-10 [claude-code@home-wsl] RUN ok: '.length + 1500, `${long.length}`);
   assert.ok(parseRunTrailer(long.replace(/^- \S+ \[[^\]]+\] /, '')), 'the trailer survives the cut');
@@ -122,23 +122,23 @@ test('P5.1 a7: the Log line of a run has run_id, duration and host and reads bac
 test('P5.1 a9: a second begin of the same thing answers "already begun" with exit 5 and changes nothing; after the run ends a new begin works', FAKES_SKIP, () => {
   const r = rig();
   r.routine();
-  const first = r.ok(['run', 'begin', 'atom-status', '--as', ME]);
+  const first = r.ok(['run', 'begin', 'mr-status', '--as', ME]);
   const before = fs.readFileSync(r.paths.runs, 'utf8');
-  const second = r.run(['run', 'begin', 'atom-status', '--as', ME], r.at(2));
+  const second = r.run(['run', 'begin', 'mr-status', '--as', ME], r.at(2));
   assert.equal(second.status, 5);
   assert.match(second.stdout, new RegExp(`run ${runIdOf(first)} already begun at ${T0} by ${ME}`));
   assert.equal(fs.readFileSync(r.paths.runs, 'utf8'), before, 'nothing written');
-  const json = JSON.parse(r.run(['run', 'begin', 'atom-status', '--as', ME, '--json'], r.at(3)).stdout);
+  const json = JSON.parse(r.run(['run', 'begin', 'mr-status', '--as', ME, '--json'], r.at(3)).stdout);
   assert.deepEqual([json.status, json.run.run_id], ['already', runIdOf(first)]);
-  assert.equal(r.run(['run', 'begin', 'atom-status', '--as', ME, '--json'], r.at(3)).status, 5);
+  assert.equal(r.run(['run', 'begin', 'mr-status', '--as', ME, '--json'], r.at(3)).status, 5);
   // only the routine's own agent may begin its run
-  const stranger = r.run(['run', 'begin', 'atom-status', '--as', WORKER]);
+  const stranger = r.run(['run', 'begin', 'mr-status', '--as', WORKER]);
   assert.equal(stranger.status, 1);
   assert.match(stranger.stderr, /only the routine's agent/);
   assert.equal(r.run(['run', 'begin', 'nothing-like-it', '--as', ME]).status, 2);
-  assert.equal(r.run(['run', 'begin', 'atom-status']).status, 2, '--as is required');
-  r.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'done'], r.at(10));
-  const next = r.ok(['run', 'begin', 'atom-status', '--as', ME], r.at(130));
+  assert.equal(r.run(['run', 'begin', 'mr-status']).status, 2, '--as is required');
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], r.at(10));
+  const next = r.ok(['run', 'begin', 'mr-status', '--as', ME], r.at(130));
   assert.notEqual(runIdOf(next), runIdOf(first));
   assert.match(next.stdout, /attempt 1/);
 });
@@ -148,7 +148,7 @@ test('P5.1 a9: a second begin of the same thing answers "already begun" with exi
 test('P5.1 a4: routine done without begin works as before (same output, same Log line, same header) and still leaves a whole record', FAKES_SKIP, () => {
   const r = rig();
   r.routine();
-  const done = r.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'failed', 'no begin here'], r.at(5));
+  const done = r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'no begin here'], r.at(5));
   assert.equal(done.stdout, 'roadctl routine done: recorded-local — recorded on the local board only (not a git repository): not yet visible to others\n');
   assert.equal(done.stderr, '');
   assert.equal(logLines(r.routineFile()).at(-1), '- 2026-11-10 [claude-code@home-wsl] RUN failed: no begin here', 'the Log line is the old one');
@@ -157,13 +157,13 @@ test('P5.1 a4: routine done without begin works as before (same output, same Log
   assert.deepEqual([run.outcome, run.started, run.duration_s, run.finished, run.did, run.source, run.attempt], ['failed', null, null, shift(5), ['no begin here'], 'agent', 1]);
   assert.match(run.run_id, /^r-[0-9a-f]{12}$/, 'a derived id: the same routine, last_run and attempt give the same one');
   // an explicit id (a supervisor, or ROADCTL_RUN_ID) is in the Log line even without a begin
-  r.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'with an id'], { ...r.at(10), ROADCTL_RUN_ID: 'sup-1' });
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'with an id'], { ...r.at(10), ROADCTL_RUN_ID: 'sup-1' });
   assert.match(logLines(r.routineFile()).at(-1), /RUN ok: with an id \[run=sup-1 host=test-host\]$/, 'no duration: there was no begin');
   assert.equal(r.runs().find((x) => x.run_id === 'sup-1').duration_s, null);
   // refusals are unchanged and record nothing
   const n = rawLines(r.paths.runs).length;
-  assert.match(r.run(['routine', 'done', 'atom-status', '--as', WORKER, '--result', 'ok', 'x']).stderr, /only the routine's agent/);
-  assert.equal(r.run(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', '  ']).status, 1);
+  assert.match(r.run(['routine', 'done', 'mr-status', '--as', WORKER, '--result', 'ok', 'x']).stderr, /only the routine's agent/);
+  assert.equal(r.run(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', '  ']).status, 1);
   assert.equal(rawLines(r.paths.runs).length, n);
 });
 
@@ -171,8 +171,8 @@ test('P5.1 a4: routine done without begin works as before (same output, same Log
 
 test('P5.1 a2: a run without an end is crashed by the next tick after its deadline (the clock of roadctl, no pid), not before; a supervised run is left to its supervisor', FAKES_SKIP, () => {
   const r = rig();
-  r.routine(ME, 'atom-status', 'timeout: 30m');
-  const id = runIdOf(r.ok(['run', 'begin', 'atom-status', '--as', ME]));
+  r.routine(ME, 'mr-status', 'timeout: 30m');
+  const id = runIdOf(r.ok(['run', 'begin', 'mr-status', '--as', ME]));
   assert.equal(r.runs()[0].deadline, shift(30), 'the deadline comes from the timeout header');
   // two runs of other routines: one whose begin has the pid of a process that is alive right now, one under a supervisor
   const line = (o) => fs.appendFileSync(r.paths.runs, `${JSON.stringify({ event: 'begin', kind: 'routine', project: 'my-app', agent: ME, started: T0, outcome: 'started', attempt: 1, deadline: shift(30), ...o })}\n`);
@@ -282,14 +282,14 @@ test('P5.1 a11: skipped runs with their reason are recorded (limits, busy, not-d
   r.routine();
   // limits: the reserve is reached, the RUN item is skipped
   for (let i = 0; i < 4; i++) r.tick([], r.at(i));
-  assert.deepEqual(r.runs().filter((x) => x.outcome === 'skipped').map((x) => [x.reason, x.kind, x.id, x.count, x.source]), [['limits', 'routine', 'atom-status', 4, 'tick']]);
+  assert.deepEqual(r.runs().filter((x) => x.outcome === 'skipped').map((x) => [x.reason, x.kind, x.id, x.count, x.source]), [['limits', 'routine', 'mr-status', 4, 'tick']]);
   // busy: another tick of this agent holds the lock, seen by a general job and by a routine job
   fs.writeFileSync(rc.tickLockPath(ME, r.env), '{}');
-  fs.writeFileSync(rc.tickLockPath(ME, r.env, 'atom-status'), '{}');
+  fs.writeFileSync(rc.tickLockPath(ME, r.env, 'mr-status'), '{}');
   for (let i = 4; i < 7; i++) assert.equal(r.tick([], r.at(i)).status, 5);
-  assert.equal(r.tick(['--routine', 'atom-status'], r.at(7)).status, 5);
+  assert.equal(r.tick(['--routine', 'mr-status'], r.at(7)).status, 5);
   const busy = r.runs().filter((x) => x.outcome === 'skipped' && x.reason === 'busy');
-  assert.deepEqual(busy.map((x) => [x.kind, x.id, x.count]).sort(), [['orchestrator', ME, 3], ['routine', 'atom-status', 1]]);
+  assert.deepEqual(busy.map((x) => [x.kind, x.id, x.count]).sort(), [['orchestrator', ME, 3], ['routine', 'mr-status', 1]]);
   // the streak ends when a tick runs again: the next busy is a new record
   fs.rmSync(rc.tickLockPath(ME, r.env));
   r.tick([], r.at(8));
@@ -300,24 +300,24 @@ test('P5.1 a11: skipped runs with their reason are recorded (limits, busy, not-d
   // not-due: the routine ran, its tick later has nothing to do
   const n = rig();
   n.routine();
-  n.ok(['run', 'begin', 'atom-status', '--as', ME]);
-  n.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'fine'], n.at(3));
-  for (const m of [10, 20, 30]) assert.equal(n.tick(['--routine', 'atom-status'], n.at(m)).status, 4);
-  assert.deepEqual(n.runs().filter((x) => x.outcome === 'skipped').map((x) => [x.reason, x.id, x.count, x.started, x.finished]), [['not-due', 'atom-status', 3, shift(10), shift(30)]]);
+  n.ok(['run', 'begin', 'mr-status', '--as', ME]);
+  n.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'fine'], n.at(3));
+  for (const m of [10, 20, 30]) assert.equal(n.tick(['--routine', 'mr-status'], n.at(m)).status, 4);
+  assert.deepEqual(n.runs().filter((x) => x.outcome === 'skipped').map((x) => [x.reason, x.id, x.count, x.started, x.finished]), [['not-due', 'mr-status', 3, shift(10), shift(30)]]);
   // when the routine is due again the streak ends: not-due after the next run is a new record
-  assert.equal(n.tick(['--routine', 'atom-status'], n.at(125)).status, 0, 'due again: a RUN item, the not-due streak ends');
-  n.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'again'], n.at(130));
-  n.tick(['--routine', 'atom-status'], n.at(140));
+  assert.equal(n.tick(['--routine', 'mr-status'], n.at(125)).status, 0, 'due again: a RUN item, the not-due streak ends');
+  n.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'again'], n.at(130));
+  n.tick(['--routine', 'mr-status'], n.at(140));
   assert.equal(n.runs().filter((x) => x.outcome === 'skipped').length, 2);
   for (const rec of [...r.runs(), ...n.runs()]) assert.deepEqual(runRecordProblems(rec), [], JSON.stringify(rec));
 });
 
 test('P5.1 a11: the text of tick does not change between two ticks without an event, and changes after crashed (attempt 2), then is stable again', FAKES_SKIP, () => {
   const s = rig({ env: { FAKE_U5: '0.1' } });
-  s.routine(ME, 'atom-status', 'timeout: 30m');
+  s.routine(ME, 'mr-status', 'timeout: 30m');
   const first = s.tick([], s.at(0));
   assert.equal(first.status, 0, first.stderr);
-  s.ok(['run', 'begin', 'atom-status', '--as', ME]);
+  s.ok(['run', 'begin', 'mr-status', '--as', ME]);
   const a = s.tick([], s.at(5)).stdout;
   const b = s.tick([], s.at(20)).stdout;
   assert.equal(a, first.stdout, 'beginning a run is not an event of the text');
@@ -327,16 +327,16 @@ test('P5.1 a11: the text of tick does not change between two ticks without an ev
   assert.equal(prompt(6), prompt(21), 'the prompt is stable too');
   const c = s.tick([], s.at(31)).stdout;
   assert.notEqual(c, b, 'crashed changes the text');
-  assert.match(c, /^RUN my-app\/atom-status Collect MR status \(attempt 2\)$/m);
+  assert.match(c, /^RUN my-app\/mr-status Collect MR status \(attempt 2\)$/m);
   assert.equal(s.tick([], s.at(45)).stdout, c, 'and it is stable again');
-  assert.match(prompt(46), /^RUN my-app\/atom-status Collect MR status \(attempt 2\)$/m);
+  assert.match(prompt(46), /^RUN my-app\/mr-status Collect MR status \(attempt 2\)$/m);
   const json = JSON.parse(s.tick(['--json'], s.at(47)).stdout);
   assert.deepEqual(tickJsonProblems(json), []);
   assert.equal(json.items[0].routine.attempt, 2);
   // a second crash is attempt 3; a finished run starts over at 1 (no attempt in the item)
-  s.ok(['run', 'begin', 'atom-status', '--as', ME], s.at(50));
+  s.ok(['run', 'begin', 'mr-status', '--as', ME], s.at(50));
   assert.match(s.tick([], s.at(85)).stdout, /\(attempt 3\)$/m);
-  s.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'finally'], s.at(90));
+  s.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'finally'], s.at(90));
   const later = JSON.parse(s.tick(['--json'], s.at(90 + 121)).stdout);
   assert.deepEqual(tickJsonProblems(later), []);
   assert.equal(later.items[0].routine.attempt, undefined);
@@ -348,11 +348,11 @@ test('P5.1 a5: `runs --json` is an array of records that fit the schema describe
   const r = rig({ env: { FAKE_U5: '0.9' } });
   r.routine();
   r.tick([], r.at(0)); // skipped: limits
-  r.ok(['run', 'begin', 'atom-status', '--as', ME], r.at(1));
+  r.ok(['run', 'begin', 'mr-status', '--as', ME], r.at(1));
   r.ok(['run', 'note', 'looking', '--as', ME], r.at(2));
   assert.equal(r.runs(['--open']).length, 1);
-  r.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'escalated', 'a long summary that stays one line'], r.at(3));
-  r.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'failed', 'second, without begin'], r.at(4));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'escalated', 'a long summary that stays one line'], r.at(3));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'second, without begin'], r.at(4));
   const all = r.runs();
   assert.ok(all.length >= 3);
   for (const rec of all) {
@@ -362,8 +362,8 @@ test('P5.1 a5: `runs --json` is an array of records that fit the schema describe
     for (const f of ['did', 'decisions', 'problems', 'writes']) assert.ok(Array.isArray(rec[f]), f);
   }
   const text = r.ok(['runs'], r.at(5)).stdout;
-  assert.match(text, /escalated routine my-app\/atom-status claude-code@home-wsl run=r-[0-9a-f]+ dur=120s/);
-  assert.match(text, /skipped:limits routine my-app\/atom-status/);
+  assert.match(text, /escalated routine my-app\/mr-status claude-code@home-wsl run=r-[0-9a-f]+ dur=120s/);
+  assert.match(text, /skipped:limits routine my-app\/mr-status/);
   assert.equal(r.ok(['runs', '--as', WORKER]).stdout, 'no runs recorded\n');
   assert.equal(r.ok(['runs', '--open']).stdout, 'no open runs\n');
   assert.equal(r.ok(['runs', '-n', '1']).stdout.trimEnd().split('\n').length, 1);
@@ -396,7 +396,7 @@ test('P5.1 a6: a state directory that cannot be used does not break routine done
     assert.deepEqual([b.status, b.stdout, b.stderr], [g.status, g.stdout, g.stderr], args.join(' '));
     return b;
   };
-  same(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'works without a ledger']);
+  same(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'works without a ledger']);
   assert.match(logLines(bad.routineFile()).at(-1), /RUN ok: works without a ledger \[run=r-[0-9a-f]+ host=test-host\]$|RUN ok: works without a ledger$/);
   for (const x of [good, bad]) assert.equal(x.run(['delegate', 'W-3', '--to', WORKER, '--by', ME]).status, 0);
   same(['claim', 'W-3', '--as', WORKER]);
@@ -406,7 +406,7 @@ test('P5.1 a6: a state directory that cannot be used does not break routine done
   assert.equal(t.stdout, good.tick([]).stdout);
   assert.equal(bad.tick([], { ...broken, XDG_STATE_HOME: path.join(bad.dir, 'a-file', 'x', 'y') }).status, t.status);
   // the run commands say so and let the work go on
-  const begin = bad.run(['run', 'begin', 'atom-status', '--as', ME], broken);
+  const begin = bad.run(['run', 'begin', 'mr-status', '--as', ME], broken);
   assert.equal(begin.status, 0);
   assert.match(begin.stderr, /warning: .*cannot be created.*not recorded/);
   assert.equal(bad.run(['run', 'note', 'x', '--as', ME], broken).status, 0);
@@ -418,9 +418,9 @@ test('P5.1 a8: runs.jsonl is never inside a git work tree (by default it is unde
   const r = rig({ git: true }); // the workspace itself is a git repository
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-home-'));
   const env = { XDG_STATE_HOME: '', HOME: home }; // the default location
-  const def = r.ok(['routine', 'new', 'atom-status', 'T', '--agent', ME, '--model', 'haiku', '--env', 'e', '--every', '2h'], env);
+  const def = r.ok(['routine', 'new', 'mr-status', 'T', '--agent', ME, '--model', 'haiku', '--env', 'e', '--every', '2h'], env);
   assert.equal(def.status, 0);
-  r.ok(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'x'], env);
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'x'], env);
   const where = path.join(home, '.local', 'state', 'road-map-journal', 'runs.jsonl');
   assert.equal(fs.existsSync(where), true);
   assert.equal(store.gitWorkTreeOf(path.dirname(where), env), null, 'the ledger is not in a work tree');
@@ -428,10 +428,10 @@ test('P5.1 a8: runs.jsonl is never inside a git work tree (by default it is unde
   assert.ok(!where.startsWith(r.ws), 'not in the workspace');
   // a state directory configured inside a repository: nothing is written there, the work is done
   const inside = path.join(r.ws, 'state-in-repo');
-  const run = r.run(['routine', 'done', 'atom-status', '--as', ME, '--result', 'ok', 'y'], { XDG_STATE_HOME: inside });
+  const run = r.run(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'y'], { XDG_STATE_HOME: inside });
   assert.equal(run.status, 0, run.stderr);
   assert.equal(fs.existsSync(path.join(inside, 'road-map-journal', 'runs.jsonl')), false);
-  const note = r.run(['run', 'begin', 'atom-status', '--as', ME], { XDG_STATE_HOME: inside });
+  const note = r.run(['run', 'begin', 'mr-status', '--as', ME], { XDG_STATE_HOME: inside });
   assert.equal(note.status, 0);
   assert.match(note.stderr, /inside a git work tree/);
   // the docs say what the file holds and where it must not be
@@ -447,7 +447,7 @@ test('P5.1 format change (P5.14): VERSION is 0.3.0, a board that requires it is 
   assert.equal(rc.boardRequires({ requires: '0.3.0' }, rc.VERSION), null);
   assert.equal(rc.boardRequires({}, '0.2.0'), null, 'a board without requires is never refused');
   const r = rig();
-  r.routine(ME, 'atom-status', 'timeout: 45m');
+  r.routine(ME, 'mr-status', 'timeout: 45m');
   const cfg = path.join(r.board, 'config.json');
   const c = JSON.parse(fs.readFileSync(cfg, 'utf8'));
   assert.equal(JSON.parse(r.tick(['--json']).stdout).items[0].kind, 'RUN', 'without requires the board is used as before');
