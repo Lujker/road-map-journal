@@ -14,6 +14,8 @@ jobs:
         run: node --test scripts/update-installed.test.mjs
       - name: roadctl tests
         run: node --test scripts/roadctl.test.mjs
+      - name: roadctl module tests
+        run: node --test scripts/roadctl/*.test.mjs
       - name: Python tests
         run: python3 -m unittest discover -s evals/tests -v
       - name: Link check

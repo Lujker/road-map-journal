@@ -25,6 +25,8 @@ D=$(mktemp -d) && git clone --depth 1 https://github.com/Lujker/road-map-journal
 rm -rf "$D"
 ```
 
+`--roadctl` installs `roadctl.mjs` and the `roadctl/` folder of modules (without test files) under `~/.local/share/road-map-journal/`; every changed file is kept as `<file>.bak-<time>`, and a module that no longer exists upstream is moved aside the same way.
+
 Updating is a manual, per-host action by design: there is no background or scheduled updater, and the script does not wait for running agent sessions. Skill files are instructions, so replacing them under an open session is allowed, but a session may keep the old text until it reloads or restarts.
 
 It does not update copies the `skills` CLI does not manage, such as skills synced from a Claude account (reported only), and it does not reload an already running agent session. Use `--agent <id>` to choose agents; Hermes is not selected by default because the CLI would create a root Hermes link that can hide a categorised one. Model-free tests in isolated homes on WSL and Windows (Node 26) covered report-only, an outdated pristine install, and a locally edited install; hosts and customized installs beyond those are untested.

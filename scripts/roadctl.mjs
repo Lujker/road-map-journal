@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // roadctl: optional helper for a board-format project (see docs/board-spec.md).
-// Single file, Node standard library only. Files stay the source of truth: roadctl checks,
+// Core in this file; new parts live in scripts/roadctl/ (modules, see docs/developing-roadctl.md). Node standard library only. Files stay the source of truth: roadctl checks,
 // regenerates BOARD.md and makes small, mechanical edits. It never sets `approved` by itself
 // and never decides what is true; it only checks that references exist.
 //
@@ -38,6 +38,8 @@
 //   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | pre-commit | pre-commit-all
 //   roadctl hook-install --claude [--user]|--codex|--hermes|--git [--all] [--apply] ; hook-uninstall (same flags)
 //   roadctl instructions-install --claude --codex [--workspace DIR] [--apply] ; instructions-uninstall
+//
+// Modules in scripts/roadctl/ may add commands (listed by roadctl help <name>), card header keys and a tick hook.
 //
 // Global: --board <dir>, --project NAME, --date YYYY-MM-DD, --json (lint). Exit codes: 0 ok, 1 findings/refusal, 2 usage/error, 3 limits unknown (limits --check only).
 
@@ -2870,6 +2872,7 @@ export async function tickCommand(flags, args, io, env = process.env) {
     const decision = !items.length ? 'idle' : limits.state === 'reserve' ? 'blocked-reserve' : limits.state === 'unknown' ? 'blocked-unknown' : 'work';
     const t = { agent, decision, limits, items, sync: [...pulled, ...unreadable].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
     appendTickLedger(env, { time: isoAt(), agent, decision, counts: countKinds(items), limits: { provider: limits.provider, state: limits.state }, ...(filter ? { filter } : {}) });
+    await MODULE_REG.runTickHooks({ agent, decision, limits, items, sync: t.sync, boardDirs: t.boardDirs, env, api: moduleApi() }, io); // module tick hooks (seam): no-op without hooks
     if (flags.json) out(JSON.stringify({ agent, decision, limits, items, sync: t.sync }, null, 2));
     else out(flags.prompt && decision === 'work' ? tickPrompt(t) : tickText(t));
     return TICK_EXIT[decision];
@@ -3708,6 +3711,22 @@ export const COMMANDS = {
   },
 };
 
+// ---------------------------------------------------------------- modules (seam; see scripts/roadctl/registry.mjs)
+//
+// New parts of roadctl live in scripts/roadctl/*.mjs and register commands (with help), card header keys and a tick hook.
+// COMMANDS above stays the built-in table; ALL_COMMANDS is built-in + modules and feeds help and the dispatch of module commands.
+// A copy of this file without the scripts/roadctl/ folder works as before, without module commands.
+let MODULE_REG = { modules: [], commands: {}, headerKeys: new Set(), tickHooks: [], runTickHooks: async () => {} };
+try {
+  MODULE_REG = (await import('./roadctl/index.mjs')).buildModuleRegistry({ builtin: COMMANDS, groups: HELP_GROUPS, knownKeys: KNOWN_KEYS });
+} catch (e) {
+  if (e?.code !== 'ERR_MODULE_NOT_FOUND' || !/roadctl[\\/]index\.mjs/.test(String(e.message))) throw e;
+}
+for (const k of MODULE_REG.headerKeys) KNOWN_KEYS.add(k);
+export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
+/** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
+const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint });
+
 const wrap = (text, indent, width = 90) => {
   const lines = [];
   let cur = '';
@@ -3723,7 +3742,7 @@ export function helpOverview() {
   const L = ['roadctl: read and update a project board (cards in board/cards/*.md).', 'Effect marks: [read] only reads, [write] changes board files, [git] uses git/network.', ''];
   for (const g of HELP_GROUPS) {
     L.push(`${g}:`);
-    for (const [name, c] of Object.entries(COMMANDS)) if (c.group === g) L.push(`  ${name.padEnd(22)} [${c.effect}]${' '.repeat(5 - c.effect.length)} ${c.summary}`);
+    for (const [name, c] of Object.entries(ALL_COMMANDS)) if (c.group === g && !c.hidden) L.push(`  ${name.padEnd(22)} [${c.effect}]${' '.repeat(5 - c.effect.length)} ${c.summary}`);
   }
   L.push(
     '',
@@ -3754,7 +3773,7 @@ export function helpOverview() {
 
 /** Help for one command, or null when there is no such command. */
 export function helpFor(name) {
-  const c = Object.hasOwn(COMMANDS, name) ? COMMANDS[name] : null;
+  const c = Object.hasOwn(ALL_COMMANDS, name) ? ALL_COMMANDS[name] : null;
   if (!c) return null;
   const L = [`roadctl ${name} [${c.effect}]: ${c.summary}`, '', ...wrap(c.purpose, ''), '', 'Usage:', ...c.usage.map((u) => `  ${u}`), ''];
   if (c.flags.length) L.push('Flags:', ...c.flags.map(([f, d]) => (!d ? `  ${f}` : f.length <= 20 ? `  ${f.padEnd(21)}${wrap(d, ' '.repeat(23)).join('\n').slice(23)}` : `  ${f}\n${wrap(d, '      ').join('\n')}`)), '');
@@ -3783,7 +3802,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
   if (flags.date) process.env.ROADCTL_DATE = flags.date;
   const out = (s) => io.out(`${s}\n`);
   const wantsHelp = flags.help || args.includes('-h');
-  if (!cmd || cmd === 'help' || (wantsHelp && !Object.hasOwn(COMMANDS, cmd))) {
+  if (!cmd || cmd === 'help' || (wantsHelp && !Object.hasOwn(ALL_COMMANDS, cmd))) {
     // `roadctl`, `help`, `--help`, `-h` give the overview; `help <command>` the details; nothing here reads a board or writes a file
     const topic = cmd === 'help' ? args[1] : cmd && cmd !== '-h' ? cmd : undefined;
     if (topic === undefined || topic === '-h') return out(helpOverview()), 0;
@@ -3801,6 +3820,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
       if (flags.project === true) throw new Error('usage: --project NAME');
       flags.board = boardByProject(flags.project); // a known board by project name or "match" name
     }
+    if (Object.hasOwn(MODULE_REG.commands, cmd)) return await MODULE_REG.commands[cmd].run({ flags, args, io, out, env: process.env, api: moduleApi(), modules: MODULE_REG.modules }); // module command (seam)
     if (cmd === 'instructions-install' || cmd === 'instructions-uninstall') {
       out(installInstructions({ claude: Boolean(flags.claude), codex: Boolean(flags.codex), apply: Boolean(flags.apply), uninstall: cmd === 'instructions-uninstall', claudeHome: flags['claude-home'], codexHome: flags['codex-home'], workspace: flags.workspace, helper: flags.helper }));
       return 0;

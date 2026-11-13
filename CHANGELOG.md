@@ -4,6 +4,7 @@ Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. 
 
 ## Unreleased
 
+- Repository (not part of the installed skill): `roadctl` gets a module mechanism for new parts (`scripts/roadctl/`: registration of commands with help, extra card header keys and a tick hook; a hidden `roadctl module-probe` proves it); the existing code and tests are unchanged. `update-installed.mjs --roadctl` now installs the `roadctl/` folder with `roadctl.mjs`; developer rules in `docs/developing-roadctl.md`.
 - Repository: `examples/scheduler/hermes-routines-tick.py` no longer sends the local prompt to an external host: the remote host builds it with its own `roadctl tick --routine ID --project P --prompt` (its own paths and limits gate), so a workspace at another path (`~/Projects`) works. Plain `roadctl log` keeps `_ * [ ] #` like `report` (names like `adcu_soc_sw!2576` were mangled); its cap stays 400. 136 model-free tests; the remote launch path checked live against the work notebook. Routines and unattended work remain experimental: the owner paused the routines on 2026-11-11 until checks and subscription limits are thought through (P4.9, P4.10).
 
 - `references/board.md`: committing and pushing board files needs the owner's standing permission; with it, `roadctl pull` before the first write and `roadctl save` after a decision, a verified result or a handoff.

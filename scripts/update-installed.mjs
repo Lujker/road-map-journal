@@ -142,20 +142,56 @@ export function decide({ canonicalExists, lockEntry, installedHash, upstreamHash
   return { state: 'OUTDATED', action: 'update' };
 }
 
-/** Install or refresh the optional roadctl helper at a stable per-user path (hooks point there). */
+/** The .mjs files of the roadctl modules folder (scripts/roadctl/) next to the helper, without test files; null when there is no such folder. */
+function moduleFiles(srcFile) {
+  const dir = path.join(path.dirname(srcFile), 'roadctl');
+  if (!fs.existsSync(dir)) return null;
+  return fs.readdirSync(dir).filter((n) => n.endsWith('.mjs') && !n.endsWith('.test.mjs')).sort();
+}
+
+/**
+ * Install or refresh the optional roadctl helper at a stable per-user path (hooks point there): roadctl.mjs and, when the source has a
+ * roadctl/ folder of modules, its .mjs files in roadctl/ next to it (a mirror: a module that no longer exists upstream is moved aside).
+ * Every changed file is kept as <file>.bak-<time>. Returns { dest, action, files: [{ rel, action }] }; action is for the whole helper.
+ */
 export function syncRoadctl(home, srcFile, apply = true) {
-  const dest = path.join(home, '.local', 'share', 'road-map-journal', 'roadctl.mjs');
+  const destDir = path.join(home, '.local', 'share', 'road-map-journal');
+  const dest = path.join(destDir, 'roadctl.mjs');
   const norm = (t) => t.replace(/\r\n/g, '\n');
-  const src = norm(fs.readFileSync(srcFile, 'utf8'));
-  const cur = fs.existsSync(dest) ? norm(fs.readFileSync(dest, 'utf8')) : null;
-  if (cur === src) return { dest, action: 'unchanged' };
-  const action = cur === null ? 'install' : 'update';
-  if (apply) {
-    fs.mkdirSync(path.dirname(dest), { recursive: true });
-    if (cur !== null) fs.copyFileSync(dest, `${dest}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
-    fs.writeFileSync(dest, src);
+  const read = (f) => (fs.existsSync(f) ? norm(fs.readFileSync(f, 'utf8')) : null);
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+  const plan = [{ rel: 'roadctl.mjs', from: srcFile }];
+  const mods = moduleFiles(srcFile);
+  if (mods) for (const n of mods) plan.push({ rel: `roadctl/${n}`, from: path.join(path.dirname(srcFile), 'roadctl', n) });
+  const files = [];
+  for (const f of plan) {
+    const to = path.join(destDir, ...f.rel.split('/'));
+    const src = norm(fs.readFileSync(f.from, 'utf8'));
+    const cur = read(to);
+    if (cur === src) {
+      files.push({ rel: f.rel, action: 'unchanged' });
+      continue;
+    }
+    const action = cur === null ? 'install' : 'update';
+    if (apply) {
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      if (cur !== null) fs.copyFileSync(to, `${to}.bak-${stamp}`);
+      fs.writeFileSync(to, src);
+    }
+    files.push({ rel: f.rel, action });
   }
-  return { dest, action: apply ? action : `would ${action}` };
+  if (mods) {
+    const destMods = path.join(destDir, 'roadctl');
+    const have = fs.existsSync(destMods) ? fs.readdirSync(destMods).filter((n) => n.endsWith('.mjs')) : [];
+    for (const n of have.filter((x) => !mods.includes(x)).sort()) {
+      if (apply) fs.renameSync(path.join(destMods, n), path.join(destMods, `${n}.bak-${stamp}`));
+      files.push({ rel: `roadctl/${n}`, action: 'remove' });
+    }
+  }
+  const changed = files.some((f) => f.action !== 'unchanged');
+  if (!changed) return { dest, action: 'unchanged', files };
+  const action = files[0].action === 'install' ? 'install' : 'update';
+  return { dest, action: apply ? action : `would ${action}`, files };
 }
 
 function copyDir(src, dest) {
@@ -238,7 +274,7 @@ export async function main(argv) {
 
     if (o.roadctl) {
       const t = syncRoadctl(o.home, fileURLToPath(new URL('./roadctl.mjs', import.meta.url)), o.apply);
-      log(`roadctl helper: ${t.action} ${t.dest}`);
+      log(`roadctl helper: ${t.action} ${t.dest}${t.files.length > 1 ? ` (+ ${t.files.length - 1} module file(s) in roadctl/: ${t.files.slice(1).filter((f) => f.action !== 'unchanged').length} changed)` : ''}`);
     }
     const wantsRun = d.action === 'update' || d.action === 'install' || (d.action === 'review' && o.force);
     if (!wantsRun) {
