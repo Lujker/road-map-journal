@@ -74,21 +74,22 @@ Released as skill 0.3.0, see [CHANGELOG](CHANGELOG.md).
 - **P5.7 — Cheap runs, part A:** only the tools a routine needs, the prompt on stdin, turn and time caps. **Status: OPEN.**
 - **P5.8 — Shadow mode and write gate:** a new routine first runs dry and shows what it would write; the owner promotes it. **Status: PARKED** until the watchdog and the pilot are done.
 - **P5.9 — `doctor` and the installed version:** read-only environment checks (paths, state directories, environment passing, clock skew, version and checksum of the installed copy). **Status: OPEN.**
-- **P5.10 — Scheduler test foundation:** fake executors, a shared clock helper, a private-marker check, `tick --json` as the contract for its consumers, help and docs kept in step. **Status: OPEN.**
+- **P5.10 — Scheduler test foundation:** fake executors, a shared clock helper, a private-marker check, `tick --json` as the contract for its consumers, help and docs kept in step. **Status: IMPLEMENTED (2026-11-13), awaiting owner acceptance.**
 - **P5.11 — Schedules:** time slots and routines that run after another one. **Status: PARKED** (the skipped-slot rule moves to P5.21).
 - **P5.12 — Contract for an external routine runner:** **Status: MERGED INTO P5.10 and P5.21** (no separate runner field is needed; the contract becomes documentation plus a stub test).
 - **P5.13 — Run summary and delivery to the owner:** a structured summary for every unattended run and delegated task, a model-free `roadctl digest`, a notification policy (problems at once, a daily overview with overdue routines). **Status: OPEN.**
-- **P5.14 — Version compatibility:** a `requires` field so that an older installed copy does not run a routine it cannot fully understand. **Status: OPEN.**
+- **P5.14 — Version compatibility:** a `requires` field so that an older installed copy does not run a routine it cannot fully understand. **Status: IMPLEMENTED (2026-11-13), awaiting owner acceptance.**
 - **P5.15 — Approval bound to routine content:** a routine changed after approval stops running until it is approved again. **Status: OPEN.**
-- **P5.16 — Module layout for new parts:** new parts of `roadctl` live in separate modules and test files; old code stays untouched. **Status: OPEN.**
+- **P5.16 — Module layout for new parts:** new parts of `roadctl` live in separate modules and test files; old code stays untouched. **Status: IMPLEMENTED (2026-11-13), awaiting owner acceptance.**
 - **P5.17 — Limits in the duty loop:** no polling before a known reset, a rule for what to skip first when a limit nears the reserve. **Status: OPEN.**
 - **P5.18 — Routine resumption pilot:** a checklist for turning routines back on and closing the P4 leftovers, run by the owner. **Status: OPEN.**
 - **P5.19 — Permission boundaries, part B:** an `allow:` field and a printed permission profile (Claude only), after approval by content hash. **Status: OPEN.**
 - **P5.20 — Spending record and cap:** a defined unit and a daily cap. **Status: IDEA** (after the pilot).
 - **P5.21 — End-to-end scenarios and the external runner contract:** the end-to-end half of P5.10, two-clone scenarios, the documented contract for any other scheduler. **Status: OPEN.**
 - **P5.22 — Delegation lease renewal:** `claim --renew`. **Status: IDEA.**
+- **P5.23 — Work environment separate from the executor's machine:** a routine or delegated task names the environment it works in; the registry may describe how an executor on another machine reaches it (ssh, MCP) and a local launch policy (`remote-access` or `on-host`), so a launcher can run the model at home and reach the work machine instead of starting an agent there. Both ways stay supported; without the registry section nothing changes. **Status: OPEN.**
 
-Stages (approved one at a time, the first two first): 0 preparation (P5.16, P5.10, P5.14); 1 visibility (P5.1, P5.13, P5.5, P5.9); 2 no duplicates, hangs or excess rights (P5.2, P5.3, P5.15, P5.7, P5.6); 3 policy and savings (P5.4, P5.17, P5.19, P5.21); 4 the pilot (P5.18). Unattended writes to external systems stay out of scope until the pilot ends.
+Stages (approved one at a time, the first two first): 0 preparation (P5.16, P5.10, P5.14); 1 visibility (P5.1, P5.13, P5.5, P5.9); 2 no duplicates, hangs or excess rights (P5.2, P5.3, P5.15, P5.7, P5.6, P5.23); 3 policy and savings (P5.4, P5.17, P5.19, P5.21); 4 the pilot (P5.18). Unattended writes to external systems stay out of scope until the pilot ends.
 
 ## Queue
 
