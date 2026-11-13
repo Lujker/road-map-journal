@@ -25,7 +25,7 @@ D=$(mktemp -d) && git clone --depth 1 https://github.com/Lujker/road-map-journal
 rm -rf "$D"
 ```
 
-`--roadctl` installs `roadctl.mjs` and the `roadctl/` folder of modules (without test files) under `~/.local/share/road-map-journal/`; every changed file is kept as `<file>.bak-<time>`, and a module that no longer exists upstream is moved aside the same way.
+`--roadctl` installs `roadctl.mjs` and the `roadctl/` folder of modules (without test files) under `~/.local/share/road-map-journal/`; every changed file is kept as `<file>.bak-<time>`, and a module that no longer exists upstream is moved aside the same way. With `--apply` it also writes `installed.json` next to the installed copy (version, a checksum of all files, a checksum per file, time); `roadctl --version` prints the version and the short checksum, and `roadctl doctor` compares the installed copy with that record and with the copy that runs it (see [roadctl.md](roadctl.md#checking-the-environment-doctor)).
 
 Updating is a manual, per-host action by design: there is no background or scheduled updater, and the script does not wait for running agent sessions. Skill files are instructions, so replacing them under an open session is allowed, but a session may keep the old text until it reloads or restarts.
 

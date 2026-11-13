@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { writeInstalledJson } from './roadctl/fingerprint.mjs';
 
 export const SKILL = 'road-map-journal';
 export const DEFAULT_SOURCE = 'Lujker/road-map-journal';
@@ -189,9 +190,11 @@ export function syncRoadctl(home, srcFile, apply = true) {
     }
   }
   const changed = files.some((f) => f.action !== 'unchanged');
-  if (!changed) return { dest, action: 'unchanged', files };
+  // installed.json (P5.9): version, checksum and file list of what is now in destDir, for `roadctl doctor` and `roadctl --version`; written only when it differs
+  const record = apply ? writeInstalledJson(destDir, new Date().toISOString()) : null;
+  if (!changed) return { dest, action: 'unchanged', files, installedJson: record ?? 'not written' };
   const action = files[0].action === 'install' ? 'install' : 'update';
-  return { dest, action: apply ? action : `would ${action}`, files };
+  return { dest, action: apply ? action : `would ${action}`, files, installedJson: record ?? 'not written' };
 }
 
 function copyDir(src, dest) {
@@ -274,7 +277,7 @@ export async function main(argv) {
 
     if (o.roadctl) {
       const t = syncRoadctl(o.home, fileURLToPath(new URL('./roadctl.mjs', import.meta.url)), o.apply);
-      log(`roadctl helper: ${t.action} ${t.dest}${t.files.length > 1 ? ` (+ ${t.files.length - 1} module file(s) in roadctl/: ${t.files.slice(1).filter((f) => f.action !== 'unchanged').length} changed)` : ''}`);
+      log(`roadctl helper: ${t.action} ${t.dest}${t.files.length > 1 ? ` (+ ${t.files.length - 1} module file(s) in roadctl/: ${t.files.slice(1).filter((f) => f.action !== 'unchanged').length} changed)` : ''}${t.installedJson === 'write' ? '; installed.json written' : ''}`);
     }
     const wantsRun = d.action === 'update' || d.action === 'install' || (d.action === 'review' && o.force);
     if (!wantsRun) {

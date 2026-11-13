@@ -8,6 +8,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as rc from '../roadctl.mjs';
+import { MODULES } from './index.mjs';
 import { buildRegistry } from './registry.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -16,6 +17,7 @@ const EXAMPLE = path.join(scripts, '..', 'examples', 'board-example', 'board');
 const tmp = (p) => fs.mkdtempSync(path.join(os.tmpdir(), p));
 const run = (script, args, { cwd, env = {} } = {}) => spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', env: { ...process.env, ROADCTL_DATE: '2026-11-10', ...env } });
 const SELF = path.join(scripts, 'roadctl.mjs');
+const BASE = MODULES.map((m) => m.name); // the shipped modules (probe, doctor, ...): a new module does not change what these tests mean
 
 const help = (extra = {}) => ({ group: 'Look', effect: 'read', summary: 's', purpose: 'p', usage: ['u'], flags: [], examples: ['e'], changes: 'Nothing.', exits: '0', run: () => 0, ...extra });
 const opts = { builtin: { status: {} }, groups: ['Look', 'Setup'], knownKeys: new Set(['id']) };
@@ -69,11 +71,13 @@ test('runTickHooks gives each hook its own copy and survives a failing hook', as
 // ---------------------------------------------------------------- the shipped probe module (criterion a3)
 
 test('probe module: registers a hidden command and its help through the real CLI, old tables unchanged', () => {
-  assert.deepEqual(rc.ALL_COMMANDS['module-probe'] && Object.keys(rc.ALL_COMMANDS).filter((c) => !Object.hasOwn(rc.COMMANDS, c)), ['module-probe']);
+  const moduleCommands = MODULES.flatMap((m) => Object.keys(m.commands ?? {}));
+  assert.ok(moduleCommands.includes('module-probe'), 'the probe ships its command');
+  assert.deepEqual(Object.keys(rc.ALL_COMMANDS).filter((c) => !Object.hasOwn(rc.COMMANDS, c)), moduleCommands, 'non-built-in commands are exactly those of the shipped modules');
   assert.equal(Object.hasOwn(rc.COMMANDS, 'module-probe'), false, 'COMMANDS stays the built-in table');
   const r = run(SELF, ['module-probe']);
-  assert.deepEqual([r.status, r.stdout, r.stderr], [0, 'module-probe: ok; modules: probe\n', '']);
-  assert.deepEqual(JSON.parse(run(SELF, ['module-probe', '--json']).stdout), { modules: ['probe'] });
+  assert.deepEqual([r.status, r.stdout, r.stderr], [0, `module-probe: ok; modules: ${BASE.join(', ')}\n`, '']);
+  assert.deepEqual(JSON.parse(run(SELF, ['module-probe', '--json']).stdout), { modules: BASE });
   const h = run(SELF, ['help', 'module-probe']);
   assert.equal(h.status, 0);
   assert.match(h.stdout, /^roadctl module-probe \[read\]:/);
@@ -138,7 +142,7 @@ function install(extra = {}) {
     index = index.replace("import probe from './probe.mjs';", `import probe from './probe.mjs';\nimport ${id} from './${file}.mjs';`);
     names.push(id);
   }
-  fs.writeFileSync(path.join(dir, 'roadctl', 'index.mjs'), index.replace('[probe]', `[probe, ${names.join(', ')}]`));
+  fs.writeFileSync(path.join(dir, 'roadctl', 'index.mjs'), index.replace(/(export const MODULES = \[[^\]]*)\]/, `$1, ${names.join(', ')}]`));
   return path.join(dir, 'roadctl.mjs');
 }
 function project() {
@@ -153,13 +157,14 @@ test('a module command runs from an installed copy: dispatch, help, overview, ct
   const r = run(bin, ['fixture-cmd', 'x', '--flag'], { cwd: root });
   assert.equal(r.status, 0, r.stderr);
   const o = JSON.parse(r.stdout);
-  assert.deepEqual([o.args, o.flags, o.version, o.modules], [['fixture-cmd', 'x'], { flag: true }, rc.VERSION, ['probe', 'fixture']]);
+  assert.deepEqual([o.args, o.flags, o.version, o.modules], [['fixture-cmd', 'x'], { flag: true }, rc.VERSION, [...BASE, 'fixture']]);
   assert.equal(fs.realpathSync(o.board), fs.realpathSync(path.join(root, 'board')));
-  assert.deepEqual(o.helpers, ['VERSION', 'findBoard', 'hasBoardSources', 'knownBoards', 'lint', 'loadBoard', 'loadRegistry', 'sanitize', 'today']);
+  const FIRST_HELPERS = ['VERSION', 'findBoard', 'hasBoardSources', 'knownBoards', 'lint', 'loadBoard', 'loadRegistry', 'sanitize', 'today'];
+  assert.deepEqual(FIRST_HELPERS.filter((h) => o.helpers.includes(h)), FIRST_HELPERS, 'the first helpers stay; later modules add more');
   assert.equal(run(bin, ['fixture-cmd'], { cwd: root, env: { FIXTURE_EXIT: '1' } }).status, 1);
   assert.match(run(bin, ['help'], { cwd: root }).stdout, /^  fixture-cmd +\[read\] +fixture command$/m);
   assert.match(run(bin, ['fixture-cmd', '--help'], { cwd: root }).stdout, /^roadctl fixture-cmd \[read\]: fixture command/);
-  assert.equal(run(bin, ['module-probe'], { cwd: root }).stdout, 'module-probe: ok; modules: probe, fixture\n');
+  assert.equal(run(bin, ['module-probe'], { cwd: root }).stdout, `module-probe: ok; modules: ${[...BASE, 'fixture'].join(', ')}\n`);
   // the built-in commands are unaffected
   assert.equal(run(bin, ['version'], { cwd: root }).stdout, `${rc.VERSION}\n`);
   assert.equal(run(bin, ['lint'], { cwd: root }).status, run(SELF, ['lint'], { cwd: root }).status);

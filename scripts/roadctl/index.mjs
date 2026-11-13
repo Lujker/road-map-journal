@@ -3,7 +3,8 @@
 // roadctl.mjs itself is not edited for a new module that only needs the seams.
 import { buildRegistry } from './registry.mjs';
 import probe from './probe.mjs';
+import doctor from './doctor.mjs';
 
-export const MODULES = [probe];
+export const MODULES = [probe, doctor];
 
 export const buildModuleRegistry = (opts) => buildRegistry(MODULES, opts);

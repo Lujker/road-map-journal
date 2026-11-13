@@ -3757,7 +3757,8 @@ try {
 for (const k of MODULE_REG.headerKeys) KNOWN_KEYS.add(k);
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
-const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint });
+const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint,
+  boardRequires, compareVersions, nowMs, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath }); // P5.9 doctor: the second line
 
 const wrap = (text, indent, width = 90) => {
   const lines = [];
@@ -3833,6 +3834,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
   const cmd = args[0];
   if (flags.date) process.env.ROADCTL_DATE = flags.date;
   const out = (s) => io.out(`${s}\n`);
+  if (flags.version && !cmd) return out(await import('./roadctl/fingerprint.mjs').then((m) => m.versionLine(VERSION, import.meta.url), () => `roadctl ${VERSION}`)), 0; // P5.9: `roadctl --version` = version and sha of this copy
   const wantsHelp = flags.help || args.includes('-h');
   if (!cmd || cmd === 'help' || (wantsHelp && !Object.hasOwn(ALL_COMMANDS, cmd))) {
     // `roadctl`, `help`, `--help`, `-h` give the overview; `help <command>` the details; nothing here reads a board or writes a file

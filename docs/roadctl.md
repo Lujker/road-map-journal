@@ -12,6 +12,8 @@ roadctl lint --all                lint every known board (central workspace and 
 roadctl where [path]              print the board found for the current (or the given) directory; when none, list the known boards
 roadctl boards [list] [--json]    the known boards; boards add [dir] | boards remove <dir|name> keep the user list
 roadctl version                   print the roadctl version
+roadctl --version                 print the version and the checksum (sha) of this copy of roadctl
+roadctl doctor [--agent NAME] [--json] [--online [--host HOST]]   check the environment of this machine; read-only (see Checking the environment)
 roadctl sync [--check]            regenerate board/BOARD.md, or verify it is current
 roadctl brief                     short summary for an agent: header fields and a sanitized next criterion
 roadctl show <id> [--log N] [--commits N]
@@ -291,6 +293,42 @@ Generic starting texts for both are in [`examples/routines/`](../examples/routin
 **Lint.** Rules 25 to 29 and 21: a malformed routine file (25; this includes an `hours` that does not parse, has an unknown time zone or ends before it starts), a routine without agent, model or env (26), `enabled` without `approved` (27), a duplicate routine id (28), an agent that is not in the registry when one exists (29, warning), an unknown scope token (24, warning, tokens `read`, `board`, `external`), a malformed `autonomy.routines` (21).
 
 What routines do not do: roadctl starts no model and calls no external system; whether the executor kept to May write is not checked by a tool, the approved scope limits what the executor was told, and a run is a claim to verify like a report.
+
+## Checking the environment (doctor)
+
+Machines differ in small ways that only show on the first real run: an old installed copy, a path with another letter case, a command that is in `PATH` of a login shell but not of cron or `ssh host command`, a repository the user cannot write to, a state directory on the WSL side and another on the Windows side. `roadctl doctor [--agent NAME] [--json] [--online [--host HOST]]` finds them in one command. It is **read only**: it writes no file and no git state (it runs `git` with `GIT_OPTIONAL_LOCKS=0`), starts no model, does not poll the limits, and touches the network only with `--online`. A test compares a snapshot of the whole working tree before and after.
+
+Each check has an `id`, a `status`, a `detail` and a `hint`. `ok` passed; `warn` is a difference that may bite later (the run goes on, exit 0); `fail` is a defect that stops work; `skip` was not checked (the detail says why). The text output lists failures, warnings, passed and not-checked checks apart. Environment variables are only ever **named**, never printed, and a value held by a variable whose name looks like a secret (`TOKEN`, `SECRET`, `PASSWORD`, `KEY`, `AUTH`, ...) is replaced by `[redacted]` if it ever reaches the text. Paths under the home directory are shown as `~/...`.
+
+| Check `id` | What it looks at | When it is not `ok` |
+| --- | --- | --- |
+| `version` | version and short sha (12 hex characters) of the copy that runs, and whether it is a checkout or an install | never (information) |
+| `node`, `git` | Node 20 or newer (warn below 20, fail below 18); `git --version` | `git` missing: fail |
+| `installed-copy` | `~/.local/share/road-map-journal/roadctl.mjs`: its version, its sha, and the record `installed.json` that `update-installed.mjs --roadctl --apply` writes (version, sha, per-file sha) | no copy, no `installed.json`, files that differ from the record: warn. A version below 0.2.0 warns that it **cannot see `requires`** and would run a board that asks for a newer roadctl |
+| `installed-modules` | the `roadctl/` folder with `index.mjs` next to the installed file, and every file the record lists | folder or a recorded file missing: fail (built-in commands run, module commands and hooks do not); files this copy has but the install lacks: warn |
+| `installed-current` | the installed copy against the copy that runs doctor (version and sha) | differs: warn (the hint says which command installs this one) |
+| `launcher` | `~/.local/bin/roadctl` exists and its folder is in `PATH` | warn |
+| `env` | the names of `ROADCTL_*` variables that are set | `ROADCTL_NOW` or `ROADCTL_DATE` set (they replace the clock; meant for tests): warn |
+| `wsl-env`, `wsl-probe` | on WSL or Windows (or when `WSLENV` is set): every `ROADCTL_*` variable that is set is listed in `WSLENV`; if `wsl.exe` is in `PATH`, `wsl.exe -e sh -c 'echo "$VAR"'` is started once with a probe variable listed in `WSLENV` to see that the transport passes it | a set variable missing from `WSLENV`, or a probe that does not come back: warn |
+| `ssh-env` | with `--online --host HOST`: `ssh -o BatchMode=yes HOST 'echo "$VAR"'` with `SendEnv` shows whether the server accepts `ROADCTL_*`. ssh passes them only when sshd allows `AcceptEnv` or the remote command sets them itself | not probed without `--host`: skip; host unreachable or variable lost: warn |
+| `clock` | the clock roadctl uses (`ROADCTL_NOW`, else the machine clock) against the committer time of the newest already fetched commit of each board repository's upstream. A clock that is behind breaks `last_run + every` and lease times | more than 5 minutes behind: warn |
+| `paths` | the workspace (`ROADCTL_WORKSPACE`, the pointer file), `ROADCTL_REGISTRY`, every entry of the boards list and `--board` exist, with the letter case on disk | a path that is missing, or that exists only with other letter case (the message names both spellings): warn |
+| `state-dir`, `limits-cache` | the state directory (`ticks.jsonl`, the tick lock) exists and is writable, or can be created; the age of the limits cache | not writable: warn (tick would run **without its lock**) |
+| `state-dirs` | on WSL: a second, native Windows state directory (`<Windows home>/.local/state/road-map-journal`; found under `/mnt/c/Users/*`, or set `ROADCTL_WINDOWS_HOME`). Locks, the ledger and limit confirmations are not shared between the two | both exist: warn. A Hermes monitor state directory (`~/.road-map-journal`) is mentioned, not judged |
+| `registry` | the registry is readable and its providers are defined | broken JSON or unknown provider: fail (tick, limits and delegation stop with exit 2); no registry: skip |
+| `agent`, `executor`, `launch`, `limits-command` | with `--agent NAME`: it is in the registry, the command of its host (`claude`, `codex`, `hermes`) is found in `PATH` as a non-interactive shell finds it, the registry's `launch` command and a `command` provider are found | executor missing: **fail**, with the `PATH` hint; agent not in the registry, unknown host, a missing launch or limits command: warn. Without `--agent` the executors are only listed (skip) |
+| `boards` | the boards found: the workspace, the boards list and the one for the current directory | none: warn |
+| `board-load`, `board-requires`, `board-requires-installed` | per board: `config.json` reads; `requires` (see [Compatibility between copies](developing-roadctl.md)) against this copy and against the installed copy | a board that this copy or the installed copy is too old for: **fail** (`board requires a newer copy`); unreadable board: fail |
+| `board-git`, `board-sync`, `origin-reachable` | per board repository: its `.git` is writable by this user and has no stale `index.lock`; uncommitted changes, commits not pushed, commits behind origin as last fetched; with `--online`: `git ls-remote` answers | `.git` not writable: fail; the rest: warn |
+| `routines` | per board with routines: every enabled routine has agent, model, env, an approval and valid fields, appears once, and (with a registry) names a known agent | inconsistent: warn |
+
+`--agent NAME` also counts the routines of that agent. `--online` adds `origin-reachable` and, with `--host`, `ssh-env`; it never asks a model and never polls limits (use `roadctl limits` for that). `--host` takes an ssh destination and is only accepted together with `--online`, because it contacts that host.
+
+`roadctl --version` prints one line, `roadctl <version> sha:<12 hex>`, for the copy that runs; `roadctl version` still prints the version alone. The sha covers `roadctl.mjs` and the `.mjs` files of `roadctl/` (line endings normalised, test files excluded), so two machines with the same line have the same code. `update-installed.mjs --roadctl --apply` writes `installed.json` next to the installed copy (`schema`, `version`, `sha`, per-file `files`, `installed_at`) and leaves it untouched when nothing changed.
+
+**Exit codes:** 0 no failure (warnings may be present), 1 at least one failure, 2 usage error (`--agent` without a valid name, `--host` without `--online`).
+
+**`--json`** prints one object: `{"schema": 1, "roadctl": {"version", "sha"}, "platform", "node", "online", "agent", "ok", "summary": {"ok", "warn", "fail", "skip"}, "checks": [{"id", "subject", "status", "detail", "hint"}]}`. `subject` is the board or agent a check is about (`null` for the machine), `hint` is `null` when there is nothing to suggest, `ok` is true when `summary.fail` is 0. A change of this shape raises `schema` and `scripts/testkit/doctor-schema.mjs` in the same commit.
 
 ## What was tested
 

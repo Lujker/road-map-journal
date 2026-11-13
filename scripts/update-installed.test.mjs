@@ -6,6 +6,7 @@ import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { decide, folderHash, nodeOk, syncRoadctl } from './update-installed.mjs';
+import { MODULES } from './roadctl/index.mjs';
 
 test('nodeOk enforces the skills CLI minimum', () => {
   assert.equal(nodeOk('20.17.0'), false);
@@ -85,7 +86,7 @@ test('syncRoadctl installs roadctl.mjs and its roadctl/ modules without tests; t
     const help = runInstalled(t.dest, ['help'], project);
     assert.equal(help.status, 0, help.stderr);
     assert.match(help.stdout, /^roadctl: read and update a project board/);
-    assert.equal(runInstalled(t.dest, ['module-probe'], project).stdout, 'module-probe: ok; modules: probe\n');
+    assert.equal(runInstalled(t.dest, ['module-probe'], project).stdout, `module-probe: ok; modules: ${MODULES.map((m) => m.name).join(', ')}\n`);
     assert.match(runInstalled(t.dest, ['help', 'module-probe'], project).stdout, /^roadctl module-probe \[read\]:/);
     const where = runInstalled(t.dest, ['where'], project);
     assert.equal(where.status, 0, where.stderr);
