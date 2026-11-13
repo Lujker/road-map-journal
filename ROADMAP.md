@@ -63,20 +63,32 @@ Released as skill 0.3.0, see [CHANGELOG](CHANGELOG.md).
 - **P4.6 — Research: a general launcher:** whether `roadctl` should grow into a scheduler with a TUI and scenarios that may run without any model, or reuse an existing tool. Candidates to review: Dagu (cron and DAG workflows in YAML, one binary, web UI), Backlog.md (Markdown task board with TUI, web UI and MCP), ORCH and 5dive (agent task queues and scheduled agents), Claude Squad and agent-deck (TUI for several agent sessions), ccusage (local usage reports). **Status: IDEA.**
 
 ### P5 — Reliable orchestration and routines
-**Status: OPEN (planned 2026-11-13).** Scheduled runs and routines (P4.4, P4.9, P4.12) work, but a run leaves no record of its outcome, a lost result or a hung model is not noticed, the scheduler lock is released before the model starts, and "read only" is promised by the prompt rather than enforced. This track adds well-known practices of agent schedulers (dry by default with one gate before every outward action, a run ledger with outcomes, a whole-run lock with a timeout, a kill switch, a read-only `doctor`, rules first and the model only on a deviation, tests on fakes) to `roadctl` itself, fitted to a text board, a dependency-free Node tool, several agents and several machines. No external framework is required. Our own strengths stay: subscription limits and the owner's reserve, provider neutrality, a git board as the contract.
+**Status: OPEN (planned 2026-11-13).** Scheduled runs and routines (P4.4, P4.9, P4.12) work, but a run leaves no record of its outcome, a lost result or a hung model is not noticed, the scheduler lock is released before the model starts, and "read only" is promised by the prompt rather than enforced. This track adds well-known practices of agent schedulers (a run ledger with outcomes, a whole-run lock with a timeout, a kill switch, a read-only `doctor`, rules first and the model only on a deviation, tests on fakes) to `roadctl` itself, fitted to a text board, a dependency-free Node tool, several agents and several machines. No external framework is required. Our own strengths stay: subscription limits and the owner's reserve, provider neutrality, a git board as the contract.
 
-- **P5.1 — Run ledger with outcomes and reconciliation:** every run records its start, end, outcome and reason; runs that never finished are found and marked. **Status: OPEN.**
-- **P5.2 — Run supervisor:** `roadctl supervise` holds a per-routine lock for the whole run, enforces a timeout, records `failed: no result` when a run ends without reporting, and renews a delegation lease. **Status: OPEN.**
-- **P5.3 — Permission boundaries:** an unattended mode in which owner-only commands refuse, a per-routine permission profile instead of prefix rules, lint for broad rules, one write gate with a dry mode. **Status: OPEN.**
-- **P5.4 — Outcome and retry policy:** transient failures retry a limited number of times, repeated failures hold the routine until the owner resumes it, a started run that may have written outside is never retried automatically. **Status: OPEN.**
-- **P5.5 — Local pause and resume:** stop everything unattended on one machine at once, without editing git. **Status: OPEN.**
-- **P5.6 — Routines with a watchdog:** a script collects facts and compares them with the last snapshot; the model is called only on a deviation and answers from a closed set (continues P4.10). **Status: OPEN.**
-- **P5.7 — Cheap runs:** only the tools a routine needs, turn and spending caps, spending recorded from the CLI output. **Status: OPEN.**
-- **P5.8 — Shadow mode for new routines:** a new routine first runs dry and shows what it would write; the owner promotes it. **Status: OPEN.**
-- **P5.9 — `doctor` and the installed version:** read-only environment checks and the version and checksum of the installed copy. **Status: OPEN.**
-- **P5.10 — Scheduler test harness:** fake executors for end-to-end scenarios, `tick --json` as the contract for its consumers, help and docs kept in step. **Status: OPEN.**
-- **P5.11 — Schedules:** time slots, routines that run after another one, a documented rule for missed slots. **Status: OPEN.**
-- **P5.12 — Contract for an external routine runner:** a documented interface through which any other scheduler (systemd, cron, a CI job, a third-party tool) may execute a board routine while the board keeps the schedule, permissions and result; `roadctl` stays self-sufficient. **Status: IDEA** (the owner decides).
+- **P5.1 — Run ledger with outcomes and run summaries:** every run of a routine, the duty orchestrator or a delegated task records its start, end, outcome, reason and structured summary fields; runs that never finished are found and marked. **Status: OPEN.**
+- **P5.2 — Run supervisor:** `roadctl supervise` (POSIX) holds a per-routine lock for the whole run with a heartbeat, enforces a timeout, can detach from the caller, finds an orphaned run after a kill, and records `failed: no result` when a run ends without reporting. **Status: OPEN.**
+- **P5.3 — Permission boundaries, part A:** an unattended mode in which owner-only commands refuse, an always-on audit of owner commands shown in the summary, lint for broad permission rules. **Status: OPEN.**
+- **P5.4 — Outcome policy:** repeated failures hold the routine until the owner resumes it; a started run that may have written outside is never retried automatically; retries are deferred until the pilot shows a need. **Status: OPEN.**
+- **P5.5 — Local pause and resume:** stop everything unattended on one machine at once, without editing git (core: a state file, a dedicated `tick` exit code, `status`). **Status: OPEN.**
+- **P5.6 — Routines with a watchdog:** a script collects facts and `roadctl routine observe` compares them with the last snapshot by stable keys, without a model and without `roadctl` running anything from the board; continues P4.10. **Status: OPEN.**
+- **P5.7 — Cheap runs, part A:** only the tools a routine needs, the prompt on stdin, turn and time caps. **Status: OPEN.**
+- **P5.8 — Shadow mode and write gate:** a new routine first runs dry and shows what it would write; the owner promotes it. **Status: PARKED** until the watchdog and the pilot are done.
+- **P5.9 — `doctor` and the installed version:** read-only environment checks (paths, state directories, environment passing, clock skew, version and checksum of the installed copy). **Status: OPEN.**
+- **P5.10 — Scheduler test foundation:** fake executors, a shared clock helper, a private-marker check, `tick --json` as the contract for its consumers, help and docs kept in step. **Status: OPEN.**
+- **P5.11 — Schedules:** time slots and routines that run after another one. **Status: PARKED** (the skipped-slot rule moves to P5.21).
+- **P5.12 — Contract for an external routine runner:** **Status: MERGED INTO P5.10 and P5.21** (no separate runner field is needed; the contract becomes documentation plus a stub test).
+- **P5.13 — Run summary and delivery to the owner:** a structured summary for every unattended run and delegated task, a model-free `roadctl digest`, a notification policy (problems at once, a daily overview with overdue routines). **Status: OPEN.**
+- **P5.14 — Version compatibility:** a `requires` field so that an older installed copy does not run a routine it cannot fully understand. **Status: OPEN.**
+- **P5.15 — Approval bound to routine content:** a routine changed after approval stops running until it is approved again. **Status: OPEN.**
+- **P5.16 — Module layout for new parts:** new parts of `roadctl` live in separate modules and test files; old code stays untouched. **Status: OPEN.**
+- **P5.17 — Limits in the duty loop:** no polling before a known reset, a rule for what to skip first when a limit nears the reserve. **Status: OPEN.**
+- **P5.18 — Routine resumption pilot:** a checklist for turning routines back on and closing the P4 leftovers, run by the owner. **Status: OPEN.**
+- **P5.19 — Permission boundaries, part B:** an `allow:` field and a printed permission profile (Claude only), after approval by content hash. **Status: OPEN.**
+- **P5.20 — Spending record and cap:** a defined unit and a daily cap. **Status: IDEA** (after the pilot).
+- **P5.21 — End-to-end scenarios and the external runner contract:** the end-to-end half of P5.10, two-clone scenarios, the documented contract for any other scheduler. **Status: OPEN.**
+- **P5.22 — Delegation lease renewal:** `claim --renew`. **Status: IDEA.**
+
+Stages (approved one at a time, the first two first): 0 preparation (P5.16, P5.10, P5.14); 1 visibility (P5.1, P5.13, P5.5, P5.9); 2 no duplicates, hangs or excess rights (P5.2, P5.3, P5.15, P5.7, P5.6); 3 policy and savings (P5.4, P5.17, P5.19, P5.21); 4 the pilot (P5.18). Unattended writes to external systems stay out of scope until the pilot ends.
 
 ## Queue
 
