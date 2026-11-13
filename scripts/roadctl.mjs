@@ -50,7 +50,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-export const VERSION = '0.1.0';
+export const VERSION = '0.2.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -284,6 +284,29 @@ export function loadBoard(dir) {
   const files = fs.existsSync(cdir) ? fs.readdirSync(cdir).filter((f) => f.endsWith('.md')).sort() : [];
   const cards = files.map((f) => parseCard(path.join(cdir, f)));
   return { dir, config, cards, routines: loadRoutines(dir), project: path.dirname(dir) };
+}
+
+// ---- P5.14 requires: `config.json` may say `"requires": "<version>"`, the oldest roadctl that understands the board (a core guard, on purpose not a module:
+// a partial install must not lose it). Tolerant: `0.3`, `v0.3.0`, `0.3.0-rc1` count; anything else is unreadable and refuses (fail closed). No `requires`: no check.
+export function parseVersion(s) {
+  const m = String(s ?? '').trim().match(/^v?(\d+)(?:\.(\d+))?(?:\.(\d+))?(?:[-+].*)?$/i);
+  return m ? [Number(m[1]), Number(m[2] ?? 0), Number(m[3] ?? 0)] : null;
+}
+/** -1, 0, 1, or null when either side is not a version. */
+export function compareVersions(a, b) {
+  const x = parseVersion(a);
+  const y = parseVersion(b);
+  if (!x || !y) return null;
+  for (let i = 0; i < 3; i++) if (x[i] !== y[i]) return x[i] < y[i] ? -1 : 1;
+  return 0;
+}
+/** null when the board may be used by this copy, else a one-line reason (`version` is a parameter so a test can play an older copy). */
+export function boardRequires(config, version = VERSION) {
+  const req = config?.requires;
+  if (req === undefined || req === null) return null;
+  const c = typeof req === 'string' || typeof req === 'number' ? compareVersions(version, req) : null;
+  if (c === null) return `board requires an unreadable roadctl version (${sanitize(typeof req === 'object' ? JSON.stringify(req) : req, 30)}); this is ${version}`;
+  return c < 0 ? `board requires roadctl ${sanitize(req, 30)} or newer; this is ${version}` : null;
 }
 
 const statusOf = (board, card) => {
@@ -790,6 +813,8 @@ export function lint(board, opts = {}) {
   const f = [];
   const add = (level, rule, card, msg) => f.push({ level, rule, card, msg });
   if ((board.config.board_version ?? 0) > BOARD_VERSION) add('error', 10, '-', `board_version ${board.config.board_version} is newer than this tool (${BOARD_VERSION})`);
+  const needs = boardRequires(board.config); // P5.14
+  if (needs) add('error', 10, '-', needs);
   const ids = new Map();
   const doing = [];
   for (const c of board.cards) {
@@ -1001,6 +1026,8 @@ export function brief(board) {
   const warns = find.length - errs;
   const by = (s) => board.cards.filter((c) => statusOf(board, c) === s);
   const l = [`roadctl brief (${sanitize(board.config.title || path.basename(board.project), 60)}; board at ${path.relative(board.project, board.dir) || '.'})`];
+  const needs = boardRequires(board.config); // P5.14
+  if (needs) l.push(`REQUIRES ${needs}: update roadctl before any unattended work on this board (roadctl tick offers nothing here)`);
   for (const c of by('doing')) l.push(`DOING [${c.header.id}] ${sanitize(c.header.title, 80)} | approved: ${approvedText(c)} | as_of ${sanitize(c.header.as_of, 10)}${nextOpen(c) ? ` | next ${nextOpen(c)}` : ''}`);
   for (const c of by('review')) l.push(`REVIEW [${c.header.id}] ${sanitize(c.header.title, 80)} | awaiting owner acceptance, do not mark done`);
   for (const c of by('blocked')) l.push(`BLOCKED [${c.header.id}] ${sanitize(c.header.title, 60)} | ${sanitize(c.header.blocked, 80)}`);
@@ -2683,7 +2710,8 @@ async function tickLimits(agent, reg, env) {
 const limitsText = (l) => `limits: ${l.provider ?? '-'} ${l.state}${l.windows ? ` (${l.windows.join(',')})` : ''}`;
 
 export function tickText(t) {
-  if (t.decision === 'idle') return `tick ${t.agent}: idle`; // exactly one line: nothing that can change while nothing happens (no limits probe, no sync noise)
+  if (t.decision === 'idle') return [`tick ${t.agent}: idle`, ...t.sync.filter((l) => l.startsWith('requires: '))].join('\n'); // one line: nothing that can change while nothing happens (no limits probe, no sync noise); only a refusal for a too-new board (P5.14) is added
+
   return [`tick ${t.agent}: ${t.decision}`, ...t.items.map(itemText), limitsText(t.limits), ...t.sync].join('\n');
 }
 
@@ -2856,7 +2884,9 @@ export async function tickCommand(flags, args, io, env = process.env) {
     load();
     const pulled = flags['no-pull'] ? [] : tickPull(loaded);
     if (!flags['no-pull']) load(); // pull may have brought new cards
-    const items = sortTickItems(loaded.flatMap((b) => tickItems(b.name, b.board, agent, reg)).filter((i) => applyTickFilter(filter, i)));
+    // P5.14: a board that requires a newer roadctl gives no item of any kind; the reason is a `requires:` line in `sync` (text and JSON)
+    const refused = loaded.map((b) => [b, boardRequires(b.board.config)]).filter(([, why]) => why).map(([b, why]) => `requires: ${sanitize(b.name, 40)}: ${why}`);
+    const items = sortTickItems(loaded.filter((b) => !boardRequires(b.board.config)).flatMap((b) => tickItems(b.name, b.board, agent, reg)).filter((i) => applyTickFilter(filter, i)));
     if (filter?.routine && !loaded.some((b) => (b.board.routines ?? []).some((r) => r.header.id === filter.routine))) io.err(`roadctl tick: warning: no routine ${sanitize(filter.routine, 60)} on the boards looked at\n`);
     let limits;
     if (items.length) limits = await tickLimits(agent, reg, env);
@@ -2870,7 +2900,7 @@ export async function tickCommand(flags, args, io, env = process.env) {
       limits = { provider, state: 'not-checked' };
     }
     const decision = !items.length ? 'idle' : limits.state === 'reserve' ? 'blocked-reserve' : limits.state === 'unknown' ? 'blocked-unknown' : 'work';
-    const t = { agent, decision, limits, items, sync: [...pulled, ...unreadable].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
+    const t = { agent, decision, limits, items, sync: [...pulled, ...unreadable, ...refused].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
     appendTickLedger(env, { time: isoAt(), agent, decision, counts: countKinds(items), limits: { provider: limits.provider, state: limits.state }, ...(filter ? { filter } : {}) });
     await MODULE_REG.runTickHooks({ agent, decision, limits, items, sync: t.sync, boardDirs: t.boardDirs, env, api: moduleApi() }, io); // module tick hooks (seam): no-op without hooks
     if (flags.json) out(JSON.stringify({ agent, decision, limits, items, sync: t.sync }, null, 2));
@@ -3104,6 +3134,8 @@ export function routineRows(board, ms = nowMs()) {
     const h = r.header;
     const found = routineFindings(r);
     const reasons = [];
+    const needs = boardRequires(board.config); // P5.14
+    if (needs) reasons.push(needs);
     const miss = ['agent', 'model', 'env'].filter((k) => !h[k]);
     if (miss.length) reasons.push(`missing ${miss.join(', ')}`);
     const invalid = found.filter((x) => x.level === 'error' && x.rule === 25);

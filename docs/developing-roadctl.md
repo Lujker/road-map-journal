@@ -31,6 +31,25 @@ Contract details:
 - Keep the `roadctl help` overview about one screen (a test caps it at 70 lines): use `hidden: true` for internal commands, and mind the budget before adding visible ones.
 - A visible module command must appear in the overview (automatic) and in [roadctl.md](roadctl.md) (`roadctl <name>`); the test "help and docs" in `scripts/roadctl/registry.test.mjs` checks both for every module command.
 
+## Compatibility between copies: `VERSION` and `requires`
+
+roadctl is installed as separate copies on several machines, and boards are shared through git, so a copy can meet a board written by a newer one. A copy that does not know a new header key only prints `unknown key` (a warning), and a copy that does not know a new value of a known field may treat it as an error. Neither stops it from running a routine "as before", without seeing, say, a `HOLD` or an `allow` that a newer copy wrote. Two rules and one mechanism keep that from happening:
+
+1. **No new values in old fields.** A field that older copies already read keeps its set of values (`last_result` stays `ok|escalated|failed`; a new detail goes into a new key and the Log). An unknown value in a known field is an error for an old copy, and an error is not a refusal the owner can read.
+2. **Every card that adds a header key (card, routine or `config.json`), a command that old copies must not bypass, or a new meaning of an existing key raises `requires`** (below), in the same change.
+3. **`requires` in `board/config.json`** (`"requires": "0.3.0"`): the oldest roadctl that understands the board. A copy that is older refuses the whole board: `tick` offers no item of any kind from it (no `RUN`, `TAKE`, `ACCEPT`, `START`, `STALE`) and prints one `requires:` line, `lint` reports rule 10, `routine list`/`show` say `would not run`, `brief` has a `REQUIRES` line. A board without `requires` is never refused. The value is a string like `0.3.0` (`0.3`, `v0.3.0`, `0.3.0-rc1` are read as well); a value nobody can read refuses too (fail closed). The check lives in `scripts/roadctl.mjs` (`boardRequires`), not in a module, so that a partial install cannot lose it.
+
+**`VERSION` (in `scripts/roadctl.mjs`) is raised in the same change as any change of a format** (a new key or value, a new meaning, a changed `tick --json` field). Patch for fixes that touch no format, minor for a format change. `board_version` is a different number: it counts incompatible changes of the board layout itself and is not raised by a new optional key.
+
+**Order of raising.** (1) Merge the change with the new `VERSION` (for example `0.3.0`); (2) install that version on every machine that runs `tick` or routines (`roadctl version` on each); (3) in the same step or later, set `"requires": "<that version>"` in the `config.json` of each board that now uses the new key, and only then write the new key into cards or routines. A copy that already supports `requires` (0.2.0 or newer) but is older than the board asks stops at once and says why. A copy older than 0.2.0 does not know `requires` at all: it ignores the key in `config.json`, only warns about an unknown header key, and runs as before. Such a copy must be updated first (`scripts/update-installed.mjs --roadctl`; `roadctl version` shows what a machine has), and only after that may a new key appear on a board it serves. The very first rollout (0.2.0, the version that introduced `requires`) therefore protects nothing by itself; it protects every later change.
+
+**Checklist for a card that changes a format** (put it in the card's Acceptance):
+
+- [ ] no new values in a field that older copies read (new detail: a new key, or the Log);
+- [ ] `VERSION` raised, and `requires` documented for the boards that use the change (CHANGELOG says which version and what an older copy does);
+- [ ] a test that an older copy (the `version` parameter of `boardRequires`, or `requires` above the real `VERSION`) offers nothing for such a board, and one that a board without `requires` is unchanged;
+- [ ] if `tick --json` changes: `scripts/testkit/tick-schema.mjs` and `docs/roadctl.md` in the same change.
+
 ## Adding a module
 
 1. `scripts/roadctl/<name>.mjs` with the default export; `scripts/roadctl/<name>.test.mjs` with its tests (use the throwaway-install helper pattern of `registry.test.mjs` for end-to-end checks).
