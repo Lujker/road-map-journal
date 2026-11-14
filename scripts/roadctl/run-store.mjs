@@ -56,7 +56,9 @@ export function gitWorkTreeOf(dir, env = process.env) {
   const home = path.resolve(env.HOME || env.USERPROFILE || os.homedir());
   let p = path.resolve(dir);
   for (;;) {
-    if (fs.existsSync(path.join(p, '.git'))) return p === home ? null : p;
+    // A .git file (worktree) or a directory with HEAD; an empty .git (the Codex sandbox masks writable roots with one) is not a repository.
+    const g = path.join(p, '.git');
+    if (fs.existsSync(g) && (!fs.statSync(g).isDirectory() || fs.existsSync(path.join(g, 'HEAD')))) return p === home ? null : p;
     const up = path.dirname(p);
     if (up === p) return null;
     p = up;

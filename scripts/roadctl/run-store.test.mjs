@@ -219,6 +219,7 @@ test('the ledger lock: a lock of a dead process is taken over after it grew stal
 test('usable: a state directory inside a git work tree is refused (the ledger holds summaries), one that cannot be created is refused, a normal one is fine', () => {
   const dir = tmp();
   fs.mkdirSync(path.join(dir, 'repo', '.git'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'repo', '.git', 'HEAD'), 'ref: refs/heads/main\n');
   assert.equal(store.usable({ HOME: dir, XDG_STATE_HOME: path.join(dir, 'repo', 'state') }).ok, false);
   assert.match(store.usable({ HOME: dir, XDG_STATE_HOME: path.join(dir, 'repo', 'state') }).reason, /git work tree/);
   assert.equal(fs.existsSync(path.join(dir, 'repo', 'state')), false, 'nothing was created there');
@@ -230,4 +231,16 @@ test('usable: a state directory inside a git work tree is refused (the ledger ho
   assert.equal(store.usable({ HOME: dir, XDG_STATE_HOME: path.join(dir, 'state2') }).ok, true);
   // the default path (no XDG_STATE_HOME) is under the home directory
   assert.equal(store.ledgerPaths({ HOME: dir }).runs, path.join(os.homedir(), '.local', 'state', 'road-map-journal', 'runs.jsonl'));
+});
+
+test('gitWorkTreeOf: a .git file or a .git directory with HEAD is a work tree; an empty .git directory (the Codex sandbox mask) is not', () => {
+  const env = { HOME: tmp() };
+  const [empty, file, repo] = [tmp(), tmp(), tmp()];
+  fs.mkdirSync(path.join(empty, '.git'));
+  fs.writeFileSync(path.join(file, '.git'), 'gitdir: /elsewhere\n');
+  fs.mkdirSync(path.join(repo, '.git'));
+  fs.writeFileSync(path.join(repo, '.git', 'HEAD'), 'ref: refs/heads/main\n');
+  assert.equal(store.gitWorkTreeOf(path.join(empty, 'state'), env), null);
+  assert.equal(store.gitWorkTreeOf(path.join(file, 'state'), env), file);
+  assert.equal(store.gitWorkTreeOf(path.join(repo, 'state'), env), repo);
 });
