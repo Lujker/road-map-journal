@@ -64,7 +64,7 @@ export function readPause(dir, now) {
   if (!j || typeof j !== 'object' || Array.isArray(j)) return { state: 'paused', since: null, by: null, reason: 'the pause file is not understood; roadctl resume removes it', until: null, unreadable: true };
   const str = (v, n) => (typeof v === 'string' && cleanText(v, n) ? cleanText(v, n) : null);
   const until = typeof j.until === 'string' && Number.isFinite(Date.parse(j.until)) ? j.until : null;
-  const p = { state: 'paused', since: str(j.since, 40), by: str(j.by, 60), reason: str(j.reason, MAX_REASON), until };
+  const p = { state: 'paused', since: str(j.since, 40), by: str(j.by, 60), reason: str(j.reason, MAX_REASON), until, now: j.now === true }; // now (P5.2): `pause --now` also stops runs that a supervisor holds
   if (until && now >= Date.parse(until)) p.state = 'expired';
   return p;
 }
@@ -107,14 +107,14 @@ function pauseCommand({ flags, args, out, env, api }) {
   for (const k of ['reason', 'until', 'by']) if (Object.hasOwn(flags, k) && (typeof flags[k] !== 'string' || !flags[k].trim() || flags[k].startsWith('--'))) throw new Error(`--${k} needs a value`);
   const until = Object.hasOwn(flags, 'until') ? parseUntil(flags.until.trim(), now) : null;
   const before = readPause(dir, now);
-  const rec = { v: 1, since: isoAt(now), by: cleanText(flags.by ?? who(env), 60) || 'unknown', reason: Object.hasOwn(flags, 'reason') ? cleanText(flags.reason, MAX_REASON) || null : null, until: until === null ? null : isoAt(until), roadctl: api.VERSION };
+  const rec = { v: 1, ...(flags.now === true ? { now: true } : {}), since: isoAt(now), by: cleanText(flags.by ?? who(env), 60) || 'unknown', reason: Object.hasOwn(flags, 'reason') ? cleanText(flags.reason, MAX_REASON) || null : null, until: until === null ? null : isoAt(until), roadctl: api.VERSION };
   try {
     writePause(dir, rec);
   } catch (e) {
     throw new Error(`cannot write the pause file ${shown(pauseFile(dir), env)}: ${String(e.message ?? e).replace(/\s+/g, ' ').slice(0, 120)}; nothing is paused`);
   }
   out(`${before?.state === 'paused' ? 'updated: ' : ''}${pauseLine(rec)}`);
-  out(`This machine only (${shown(pauseFile(dir), env)}): roadctl tick now starts nothing and exits 6; no board or git change. A run that has already started is not stopped. Undo: roadctl resume`);
+  out(`This machine only (${shown(pauseFile(dir), env)}): roadctl tick now starts nothing and exits 6; no board or git change. ${rec.now ? 'Runs held by roadctl supervise on this machine are stopped within seconds (TERM, then KILL; outcome aborted).' : 'A run that has already started is not stopped.'} Undo: roadctl resume`);
   return 0;
 }
 
@@ -147,10 +147,10 @@ export default {
       owner: true, // seam (P5.28)
       effect: 'write',
       summary: 'stop everything unattended on this machine (undo: resume)',
-      purpose: 'The owner\'s stop switch for ONE machine, in force at once and without git: writes pause.json in the machine state directory (who, when, reason, optional end). While it exists roadctl tick starts nothing of any kind (TAKE, ACCEPT, START, STALE, RUN): it prints "tick AGENT: paused" and the reason, asks no limits gate, pulls nothing, records one folded line in the ledger (a skipped run with the reason paused) and exits 6, so a scheduler and a monitor start no model. A run that has already started is not stopped. The pause belongs to the state directory: WSL and native Windows have separate ones, another machine is paused over ssh (ssh HOST roadctl pause), and the switch shared through git is roadctl autonomy routines off. roadctl status, routine list, tick --json and doctor show an active pause. Without --until it lasts until roadctl resume; a pause that cannot be read counts as a pause. `roadctl pause status` prints the state without a board.',
-      usage: ['roadctl pause [--reason TEXT] [--until SPAN|TIME] [--by NAME]', 'roadctl pause status [--json]'],
-      flags: [['--reason TEXT', 'why (one line, up to 200 characters); shown by tick, status, routine list and doctor'], ['--until X', 'end the pause by itself: a span (30m, 2h, 1d, at most 90d) or a time with a zone (2026-11-14T09:00:00Z); an ended pause is ignored, resume removes the file'], ['--by NAME', 'who paused (default: the login name of the user)'], ['--json', 'with pause status: machine-readable output']],
-      examples: ['roadctl pause --reason "limits are low until Monday"', 'roadctl pause --until 4h --reason "debugging the scheduler"', 'roadctl pause status', 'ssh HOST roadctl pause --reason "away"'],
+      purpose: 'The owner\'s stop switch for ONE machine, in force at once and without git: writes pause.json in the machine state directory (who, when, reason, optional end). While it exists roadctl tick starts nothing of any kind (TAKE, ACCEPT, START, STALE, RUN): it prints "tick AGENT: paused" and the reason, asks no limits gate, pulls nothing, records one folded line in the ledger (a skipped run with the reason paused) and exits 6, so a scheduler and a monitor start no model. A run that has already started is not stopped, unless the pause is made with --now: then every run held by roadctl supervise on this machine is ended (outcome aborted). The pause belongs to the state directory: WSL and native Windows have separate ones, another machine is paused over ssh (ssh HOST roadctl pause), and the switch shared through git is roadctl autonomy routines off. roadctl status, routine list, tick --json and doctor show an active pause. Without --until it lasts until roadctl resume; a pause that cannot be read counts as a pause. `roadctl pause status` prints the state without a board.',
+      usage: ['roadctl pause [--reason TEXT] [--until SPAN|TIME] [--by NAME]', 'roadctl pause --now [--reason TEXT] [--until SPAN|TIME] [--by NAME]', 'roadctl pause status [--json]'],
+      flags: [['--now', 'also stop the runs that roadctl supervise holds on this machine (TERM to the command\'s process group, then KILL; outcome aborted); without it a started run goes on'], ['--reason TEXT', 'why (one line, up to 200 characters); shown by tick, status, routine list and doctor'], ['--until X', 'end the pause by itself: a span (30m, 2h, 1d, at most 90d) or a time with a zone (2026-11-14T09:00:00Z); an ended pause is ignored, resume removes the file'], ['--by NAME', 'who paused (default: the login name of the user)'], ['--json', 'with pause status: machine-readable output']],
+      examples: ['roadctl pause --reason "limits are low until Monday"', 'roadctl pause --now --reason "something is wrong"', 'roadctl pause --until 4h --reason "debugging the scheduler"', 'roadctl pause status', 'ssh HOST roadctl pause --reason "away"'],
       changes: 'Writes only $XDG_STATE_HOME/road-map-journal/pause.json (default ~/.local/state). No board, no git, no card. Starts no model.',
       exits: '0 paused (or status printed); 2 usage error or the file cannot be written',
       run: pauseCommand,

@@ -3015,7 +3015,7 @@ test('lint: routine rules 25 (format), 26 (agent, model, env), 27 (enabled witho
   const ok = (extra = '') => `---\nid: ok\ntitle: t\nevery: 2h\nenabled: true\nagent: ${ME}\nmodel: ${RMODEL}\nenv: ${RENV}\napproved: Lujker, 2026-11-11, scope=read+board, source=chat\n${extra}---\n\n## Goal\nx\n`;
   w('ok.md', ok());
   assert.equal(t.bcli(['sync']).status, 0);
-  assert.deepEqual(lintWith(t.env.ROADCTL_REGISTRY, rc.loadBoard(t.c.board)), [], 'a complete routine lints clean');
+  assert.deepEqual(lintWith(t.env.ROADCTL_REGISTRY, rc.loadBoard(t.c.board)).map((x) => `${x.level}:${x.rule}`), ['warning:32'], 'a complete routine lints clean, but an approval without a content hash is a warning (P5.15)');
   w('no-fields.md', `---\nid: no-fields\ntitle: t\nevery: 2h\nenabled: false\n---\n`);
   w('bad-every.md', ok().replace('id: ok', 'id: bad-every').replace('every: 2h', 'every: 3m'));
   w('no-approval.md', ok().replace('id: ok', 'id: no-approval').replace(/approved: .*\n/, ''));
@@ -3029,18 +3029,18 @@ test('lint: routine rules 25 (format), 26 (agent, model, env), 27 (enabled witho
   const f = lintWith(t.env.ROADCTL_REGISTRY, rc.loadBoard(t.c.board));
   const by = (card) => f.filter((x) => x.card === `routines/${card}`).map((x) => `${x.level}:${x.rule}`).sort();
   assert.deepEqual(by('no-fields.md'), ['error:26']);
-  assert.deepEqual(by('bad-every.md'), ['error:25']);
+  assert.deepEqual(by('bad-every.md'), ['error:25', 'warning:32']); // warning:32 (P5.15): approved without a content hash, on every enabled approved routine below
   assert.deepEqual(by('no-approval.md'), ['error:27']);
-  assert.deepEqual(by('zdup.md'), ['error:28']);
-  assert.deepEqual(by('ok.md'), []);
-  assert.deepEqual(by('scopes.md'), ['warning:11', 'warning:11', 'warning:24']);
+  assert.deepEqual(by('zdup.md'), ['error:28', 'warning:32']);
+  assert.deepEqual(by('ok.md'), ['warning:32']);
+  assert.deepEqual(by('scopes.md'), ['warning:11', 'warning:11', 'warning:24', 'warning:32']);
   assert.deepEqual(by('bad-values.md'), ['error:25', 'error:25', 'error:25']);
   assert.deepEqual(by('broken.md'), ['error:25', 'error:25', 'error:25', 'error:25', 'error:25', 'error:26'], 'no header, and every required key missing');
   assert.deepEqual(by('empty-id.md'), ['error:25']);
   assert.match(f.find((x) => x.rule === 26).msg, /missing agent, model, env: a routine without agent, model and environment never runs/);
   assert.match(f.find((x) => x.rule === 28).msg, /duplicate routine id ok \(also routines\/ok\.md\)/);
   // rule 29 needs a registry; without one there is no such check
-  assert.deepEqual(by('other-agent.md'), ['warning:29']);
+  assert.deepEqual(by('other-agent.md'), ['warning:29', 'warning:32']);
   assert.match(f.find((x) => x.rule === 29).msg, /agent codex@elsewhere is not in the registry/);
   const noReg = cli(t.c.ws, ['lint', '--json', '--board', t.c.board], '', { ...t.env, ROADCTL_REGISTRY: NOREG });
   assert.ok(!JSON.parse(noReg.stdout).some((x) => x.rule === 29));

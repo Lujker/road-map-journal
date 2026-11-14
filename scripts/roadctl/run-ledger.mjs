@@ -18,12 +18,12 @@ const projectOf = (board) => String(board.project).split(/[\\/]/).filter(Boolean
 // ---------------------------------------------------------------- the line `routine done` leaves in the routine's Log
 
 /** ` [run=ID dur=NNs host=H]`: the last part of the Log line of a run. The other machine sees only git, so this is how it reads the run back. */
-export const formatRunTrailer = ({ run_id, duration_s = null, host }) => `[run=${run_id}${Number.isInteger(duration_s) ? ` dur=${duration_s}s` : ''} host=${host}]`;
-const TRAILER_RE = / ?\[run=([A-Za-z0-9._:-]+)(?: dur=(\d+)s)? host=([A-Za-z0-9._-]+)\]$/;
+export const formatRunTrailer = ({ run_id, duration_s = null, host, src = null }) => `[run=${run_id}${Number.isInteger(duration_s) ? ` dur=${duration_s}s` : ''} host=${host}${src === 'supervisor' ? ' src=supervisor' : ''}]`; // src=supervisor (P5.2): the supervisor wrote this line, not the agent
+const TRAILER_RE = / ?\[run=([A-Za-z0-9._:-]+)(?: dur=(\d+)s)? host=([A-Za-z0-9._-]+)( src=supervisor)?\]$/;
 /** The inverse: { text (without the trailer), run_id, duration_s (null when the run had no begin), host }, or null when the text has no trailer. */
 export function parseRunTrailer(text) {
   const m = TRAILER_RE.exec(String(text ?? ''));
-  return m ? { text: String(text).slice(0, m.index), run_id: m[1], duration_s: m[2] === undefined ? null : Number(m[2]), host: m[3] } : null;
+  return m ? { text: String(text).slice(0, m.index), run_id: m[1], duration_s: m[2] === undefined ? null : Number(m[2]), host: m[3], ...(m[4] ? { src: 'supervisor' } : {}) } : null;
 }
 
 /** `timeout:` of a routine header (`30m`, `2h`, `1d`; 5 minutes to 30 days) in ms, or the default; invalid values fall back to the default (lint reports them). */
@@ -244,7 +244,7 @@ export default {
      * The Log line of a routine run gets run_id, duration and host; a `--run` that belongs to another routine is refused. With summary fields
      * (`--did` ...; P5.13) the line is the parseable form of run-summary.mjs and always has the trailer; a board with `"summary": "required"` refuses a run without `--did`.
      */
-    'routine-done-before'({ board, id, flags, env, text }) {
+    'routine-done-before'({ board, id, flags, env, text, source }) {
       const r = routineOf(board, id);
       const sum = collectFields(flags, text, { strict: board.config?.summary === 'required' });
       if (sum.error && r) return { refuse: sum.error };
@@ -261,14 +261,15 @@ export default {
       for (const w of sum.warnings) process.stderr.write(`roadctl routine done: warning: ${w}\n`);
       if (!sum.structured && !plan.run && !explicit) return { plan, now, anchor, key }; // no begin, no id, no summary fields: the Log line stays as it always was (old boards and tests); the ledger still gets the run
       const duration_s = plan.run?.started ? Math.max(0, Math.round((now - Date.parse(plan.run.started)) / 1000)) : null;
-      const trailer = formatRunTrailer({ run_id: plan.run_id, duration_s, host: hostName(env) });
+      const trailer = formatRunTrailer({ run_id: plan.run_id, duration_s, host: hostName(env), src: source === 'supervisor' ? 'supervisor' : null }); // P5.2: the supervisor records a run through this hook (an argument of the call, never the environment)
       const body = sum.structured ? formatLogText(sum.fields, 1500 - trailer.length - 1) : cleanText(text, 1500 - trailer.length - 1);
       return { text: `${body} ${trailer}`, plan, now, anchor, key, fields: sum.fields, duration_s };
     },
 
     /** After `routine done` recorded the run: the end record (the run found by the before hook, or a whole record when there was no begin); the summary text for the owner when the fields were given. */
-    'routine-done-after'({ board, id, as, result, text, done, env, prior, api }) {
+    'routine-done-after'({ board, id, as, result, text, done, env, prior, api, source }) {
       if (!prior?.plan || !['recorded', 'recorded-local'].includes(done?.status)) return;
+      if (source === 'supervisor') return; // P5.2: the supervisor writes the end of its own run (its outcome may be timeout or aborted, which routine done cannot say)
       const fields = prior.fields ?? { did: [cleanText(text, 120)] };
       attempt(() => finishRun(env, { runId: prior.plan.run_id, plan: prior.plan, ...prior.key, agent: as, model: routineOf(board, id)?.header.model ?? null, outcome: result, fields: { ...fields, writes: [`routine:${id}`] }, anchor: prior.anchor, now: prior.now, version: api.VERSION }));
       if (prior.fields) return { print: renderSummary({ kind: 'routine', project: prior.key.project, id, outcome: result, agent: as, duration_s: prior.duration_s, fields: prior.fields, unpublished: done.status === 'recorded-local' }, board.config?.language) };

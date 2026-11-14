@@ -165,3 +165,48 @@ test('P5.28: a lone roadctl.mjs (no roadctl/ folder) still holds the tick lock: 
   assert.equal(path.dirname(lock), stateDir(env));
   sleepSync(1);
 });
+
+test('P5.2 B: a lock appears with its whole content (linked into place) and leaves no temporary file; a held lock is not replaced; a stale one is taken over complete', () => {
+  const dir = tmp('rcs-atomic-');
+  try {
+    const file = path.join(dir, 'a.lock');
+    const body = JSON.stringify({ pid: process.pid, token: 'x'.repeat(200) });
+    const a = acquireLock(file, { staleMs: 60000, content: body });
+    assert.equal(a.held, true);
+    assert.equal(fs.readFileSync(file, 'utf8'), body, 'complete content at once');
+    assert.deepEqual(fs.readdirSync(dir), ['a.lock'], 'no temporary file is left');
+    const b = acquireLock(file, { staleMs: 60000, content: 'other', strict: true });
+    assert.deepEqual([b.ok, b.reason], [false, 'held']);
+    assert.equal(fs.readFileSync(file, 'utf8'), body, 'the held lock is untouched');
+    assert.deepEqual(fs.readdirSync(dir), ['a.lock'], 'a refused create leaves no temporary file either');
+    age(file, 120000);
+    const c = acquireLock(file, { staleMs: 60000, content: 'third' });
+    assert.equal(c.held, true);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'third');
+    assert.deepEqual(fs.readdirSync(dir), ['a.lock']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('P5.2 r3-4/r4-1: when the link cannot be made (not EEXIST) a strict caller gets no lock and no file; a non-strict caller (tick) still gets a real lock by the exclusive create', () => {
+  const dir = tmp('rcs-nolink-');
+  try {
+    const file = path.join(dir, 'b.lock');
+    const noLink = () => { throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' }); };
+    const strict = acquireLock(file, { staleMs: 60000, content: 'x', strict: true, link: noLink });
+    assert.deepEqual([strict.ok, strict.reason], [false, 'EPERM']);
+    assert.deepEqual(fs.readdirSync(dir), [], 'nothing was created, not even a temporary file');
+    const first = acquireLock(file, { staleMs: 60000, content: 'x', link: noLink });
+    assert.equal(first.held, true, 'the non-strict form holds a real lock');
+    assert.equal(fs.readFileSync(file, 'utf8'), 'x');
+    const second = acquireLock(file, { staleMs: 60000, content: 'y', link: noLink });
+    assert.deepEqual([second.ok, second.reason], [false, 'held'], 'and a second non-strict taker is told it is held');
+    assert.deepEqual(fs.readdirSync(dir), ['b.lock'], 'no temporary file is left');
+    first.release();
+    // under the takeover of a stale lock the strict form is not replaced by a non-atomic create either
+    fs.writeFileSync(file, 'old');
+    age(file, 120000);
+    const stale = acquireLock(file, { staleMs: 60000, content: 'new', strict: true, link: noLink });
+    assert.deepEqual([stale.ok, stale.reason], [false, 'EPERM']);
+    assert.ok(!fs.readdirSync(dir).some((n) => n.endsWith('.tmp') || n.endsWith('.takeover')), 'no temporary file or guard is left');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

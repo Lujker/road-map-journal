@@ -455,6 +455,7 @@ test('P5.1 format change (P5.14): VERSION is 0.3.0, a board that requires it is 
   const refused = JSON.parse(r.tick(['--json']).stdout);
   assert.deepEqual([refused.decision, refused.items.length], ['idle', 0], 'a copy that is too old offers nothing from a board that asks for more');
   fs.writeFileSync(cfg, JSON.stringify({ ...c, requires: rc.VERSION }));
+  r.ok(['routine', 'on', 'mr-status', '--by', 'Owner']); // P5.15: 0.6.0 checks the approval hash, so the routine approved earlier is approved again (records the hash)
   assert.equal(JSON.parse(r.tick(['--json']).stdout).items[0].kind, 'RUN', 'this copy meets the requirement');
   assert.deepEqual(tickJsonProblems({ agent: ME, decision: 'work', limits: { provider: 'claude', state: 'allowed' }, sync: [], items: [{ kind: 'RUN', project: 'p', id: 'x', title: 't', routine: { agent: ME, model: 'm', env: 'e', every: '2h', file: 'f', last_run: null, attempt: 2 } }] }), []);
   assert.ok(tickJsonProblems({ agent: ME, decision: 'work', limits: { provider: 'claude', state: 'allowed' }, sync: [], items: [{ kind: 'RUN', project: 'p', id: 'x', title: 't', routine: { agent: ME, model: 'm', env: 'e', every: '2h', file: 'f', last_run: null, attempt: 1 } }] }).length > 0, 'attempt 1 is never printed');

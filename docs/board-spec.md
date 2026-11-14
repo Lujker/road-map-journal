@@ -176,6 +176,7 @@ Mostly mechanical work that repeats and can be switched on and off: collect the 
 | `model` | **yes** | The model it must run with (`claude-haiku-5-5`). |
 | `env` | **yes** | The environment or machine it runs in (`Work-notebook-wsl`), one word without spaces. |
 | `approved` | before it is enabled | The same record as on a card: `<by>, <date>, scope=<scopes>[, source=<ref>]`, with the scopes `read` (read external systems), `board` (write the board) and `external` (write external systems), joined with `+`. The default is `read+board`. |
+| `approved_hash` | written by `routine on` | From roadctl 0.6.0, on a board that says `"requires": "0.6.0"`: a hash of the routine's content at the time the owner ran `routine on` (`sha256-v1:` and 64 hex digits). A routine whose content no longer matches does not run until `routine on` again; agents do not write or delete it. What it covers: [roadctl.md](roadctl.md#approval-bound-to-the-content). |
 | `last_run` | no | ISO-8601 UTC time of the last recorded run (written by `roadctl routine done`). |
 | `last_result` | no | `ok`, `escalated` or `failed`. |
 | `timeout` | no | From roadctl 0.3.0 (set `requires` first): after this long (`30m`, `2h`, `1d`; `5m` to `30d`) an unfinished run counts as crashed; default `2h`. Read by `tick` for runs recorded with `roadctl run begin` ([Run ledger](roadctl.md#run-ledger)). |

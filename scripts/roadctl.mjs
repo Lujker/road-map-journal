@@ -61,7 +61,7 @@ try {
 }
 const xdgDir = STATE?.xdgDir ?? ((env, name, fallback) => (env[name]?.trim() ? env[name].trim() : path.join(os.homedir(), ...fallback))); // seam (P5.28): lone-copy fallback
 
-export const VERSION = '0.5.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.6.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -317,8 +317,12 @@ export function boardRequires(config, version = VERSION) {
   if (req === undefined || req === null) return null;
   const c = typeof req === 'string' || typeof req === 'number' ? compareVersions(version, req) : null;
   if (c === null) return `board requires an unreadable roadctl version (${sanitize(typeof req === 'object' ? JSON.stringify(req) : req, 30)}); this is ${version}`;
-  return c < 0 ? `board requires roadctl ${sanitize(req, 30)} or newer; this is ${version}` : null;
+  if (c < 0) return `board requires roadctl ${sanitize(req, 30)} or newer; this is ${version}`;
+  // a copy that carries the version number but lost the modules folder must not run what only a module checks (P5.15: the approval hash)
+  for (const [v, name] of REQUIRES_MODULE) if (compareVersions(req, v) >= 0 && !MODULE_REG.modules.includes(name)) return `board requires the module ${name} (roadctl ${v}, scripts/roadctl/), which this copy does not have; install the whole roadctl folder`;
+  return null;
 }
+const REQUIRES_MODULE = [['0.6.0', 'approval-hash']]; // [version, module]: a board that requires that version or newer needs the module loaded, else the board is refused
 
 const statusOf = (board, card) => {
   const s = card.header.status ?? '';
@@ -904,6 +908,7 @@ export function lint(board, opts = {}) {
   for (const r of board.routines ?? []) {
     const n = `routines/${r.name}`;
     for (const x of routineFindings(r)) add(x.level, x.rule, n, x.msg);
+    for (const h of MODULE_REG.callHook('routine-lint', { board, routine: { file: n, header: { ...r.header } }, env: process.env, api: moduleApi() })) for (const x of Array.isArray(h.value?.findings) ? h.value.findings : []) if (['warning', 'error'].includes(x?.level) && typeof x.text === 'string') add(x.level, 32, n, `${sanitize(x.text, 200)} (module ${h.module})`); // seam (P5.15): findings that do not stop the routine
     for (const x of modReasons.get(n) ?? []) if (x.lint !== 'none') add(x.lint, 30, n, `would not run: ${x.text} (module ${x.module})`); // seam (P5.28): the same reason tick, routine list and digest show
     const id = r.header.id;
     if (id) {
@@ -2720,7 +2725,7 @@ const moduleItemText = (i) => { // seam (P5.28): a module kind may give its own 
     return `${i.kind} ${i.project}/${i.id} ${i.title}`;
   }
 };
-const itemText = (i) => MODULE_REG.tickKinds[i.kind]?.text ? moduleItemText(i) : `${i.kind} ${i.project}/${i.id} ${i.title}${i.workdir_dirty ? ' (workdir dirty)' : ''}${i.routine?.attempt > 1 ? ` (attempt ${i.routine.attempt})` : ''}`; // attempt (P5.1): only after a crashed or failed run of the same routine, so the text of a stuck routine changes once
+const itemText = (i) => MODULE_REG.tickKinds[i.kind]?.text ? moduleItemText(i) : `${i.kind} ${i.project}/${i.id} ${i.title}${i.workdir_dirty ? ' (workdir dirty)' : ''}${i.routine?.attempt > 1 ? ` (attempt ${i.routine.attempt})` : ''}${i.routine?.recover ? ` (recover: ${sanitize(i.routine.recover, 80)})` : ''}`; // recover (P5.2): a supervised run of this routine died and nobody has recorded it yet, so the text changes once and a monitor starts the supervisor, which recovers it; attempt (P5.1): only after a crashed or failed run of the same routine, so the text of a stuck routine changes once
 
 const sortTickItems = (items) => items.sort((a, b) => naturalCompare(a.project, b.project) || naturalCompare(a.id, b.id) || TICK_KINDS.indexOf(a.kind) - TICK_KINDS.indexOf(b.kind));
 
@@ -3203,7 +3208,7 @@ function moduleRoutineReasons(board, r, ms, env, facts, reasons) {
   const out = [];
   for (const h of MODULE_REG.callHook('routine-reasons', { board, routine: { file: `routines/${r.name}`, header: { ...r.header } }, facts, reasons: [...reasons], now: ms, env, api: moduleApi() })) {
     const lint = ['warning', 'error', 'none'].includes(h.value?.lint) ? h.value.lint : 'warning';
-    for (const text of Array.isArray(h.value?.reasons) ? h.value.reasons : []) if (typeof text === 'string' && text.trim()) out.push({ text: sanitize(text, 100), lint, module: h.module });
+    for (const text of Array.isArray(h.value?.reasons) ? h.value.reasons : []) if (typeof text === 'string' && text.trim()) out.push({ text: sanitize(text, 100), lint, module: h.module, ...(h.value?.immediate === true ? { immediate: true } : {}) });
   }
   return out;
 }
@@ -3357,6 +3362,14 @@ export function setRoutineEnabled(board, id, on, { by, scope, source, date = tod
       note = ` (approval recorded: scope=${sc})`;
     }
     t = setHeader(t, 'enabled', 'true');
+    for (const h of MODULE_REG.callHook('routine-on', { board, id, text: t, env: process.env, api: moduleApi() })) { // seam (P5.15): the approval hash
+      for (const [k, v] of Object.entries(h.value?.header ?? {})) {
+        // a module writes only the routine keys it declared itself (routineKeys); anything else is a broken contract and nothing is approved
+        if (!MODULE_REG.moduleRoutineKeys?.[h.module]?.has(k)) throw new Error(`roadctl module ${h.module}: hook routine-on returned the header key ${sanitize(k, 30)}, which the module did not declare in routineKeys; nothing was changed`);
+        if (typeof v !== 'string' || /[\r\n]/.test(v)) throw new Error(`roadctl module ${h.module}: hook routine-on returned a bad value for ${k} (one line of text); nothing was changed`);
+        t = setHeader(t, k, v);
+      }
+    }
     t = insertRoutineLog(t, `- ${date} [${who}] ON${note}`);
   } else {
     t = setHeader(t, 'enabled', 'false');
@@ -3446,6 +3459,20 @@ export const setRoutinesSwitch = (board, on) => writeAutonomy(board, { routines:
 
 const ROUTINE_USAGE = 'usage: roadctl routine list [--all] [--json] | show <id> [--json] | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00"] | on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME | done <id> --as AGENT --result ok|escalated|failed "summary"';
 
+/**
+ * The whole of `routine done` including the module hooks (routine-done-before may refuse or replace the text, routine-done-after sees the result).
+ * Used by `roadctl routine done` and, through the module api, by the supervisor (P5.2), so a result the supervisor records passes the same hooks
+ * (the run ledger, and later the approval check of P5.15) and is refused the same way. Returns { r (the routineDone result), after (the hook values) }.
+ */
+export function routineDoneWithHooks(board, id, { as, result, text, flags = {}, env = process.env, io = { err: (s) => process.stderr.write(s) }, source }) {
+  const hookCtx = { board, id, as, result, text, flags, env, api: moduleApi(), ...(source === 'supervisor' ? { source } : {}) }; // source: an argument of the call, not read from the environment, so no process can claim to be the supervisor
+  const before = MODULE_REG.callHook('routine-done-before', hookCtx, io); // seam (P5.1): run id, duration and host in the Log line; may refuse
+  const refusal = before.find((h) => h.value?.refuse)?.value.refuse;
+  const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, id, { as, result, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? text });
+  const after = MODULE_REG.callHook('routine-done-after', { ...hookCtx, done: r }, io, before);
+  return { r, after };
+}
+
 /** `roadctl routine ...`. Needs its own board lookup because `list --all` covers every board. */
 export function routineCommand(flags, args, io, env = process.env) {
   const out = (s) => io.out(`${s}\n`);
@@ -3505,11 +3532,7 @@ export function routineCommand(flags, args, io, env = process.env) {
   if (sub === 'done') {
     if (!args[2] || !str('as') || !str('result') || !(args[3] || flags.did)) throw new Error('usage: roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary"   |   roadctl routine done <id> --as AGENT --result ok|escalated|failed --did "what was done" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]'); // seam (P5.13): --did instead of the text
     const board = one();
-    const hookCtx = { board, id: args[2], as: str('as'), result: str('result'), text: args[3], flags, env, api: moduleApi() };
-    const before = MODULE_REG.callHook('routine-done-before', hookCtx, io); // seam (P5.1): run id, duration and host in the Log line; may refuse
-    const refusal = before.find((h) => h.value?.refuse)?.value.refuse;
-    const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, args[2], { as: str('as'), result: str('result'), text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? args[3] });
-    const after = MODULE_REG.callHook('routine-done-after', { ...hookCtx, done: r }, io, before);
+    const { r, after } = routineDoneWithHooks(board, args[2], { as: str('as'), result: str('result'), text: args[3], flags, env, io });
     const ok = ['recorded', 'recorded-local'].includes(r.status);
     if (flags.json) out(JSON.stringify(r, null, 2));
     else if (ok) { out(`roadctl routine done: ${r.status} — ${r.message}`); for (const h of after) for (const l of h.value?.print ?? []) out(l); } // seam (P5.13): the summary for the owner
@@ -3571,7 +3594,7 @@ export const COMMANDS = {
   },
   tick: {
     group: 'Look', effect: 'git', summary: 'model-free check for a scheduled orchestrator',
-    purpose: 'The first step of a scheduled run, without a model: pulls the board repositories, finds what AGENT could TAKE (open or expired delegations it may claim), ACCEPT (reported results it may accept), START (approved ready cards with every depends_on done and no delegation; orchestrators only) or look at (STALE: claimed with an expired lease; orchestrators only) or RUN (a recurring routine that is due and whose own agent is AGENT; needs the board switch autonomy.routines, enabled, approved, agent, model and env), asks the limits gate (cache, never --fresh; only when there is something to do) and answers with a decision and an exit code. A scheduler starts a model only on exit 0. When idle the text is the single line "tick AGENT: idle" and no limits are probed. The text has no times and no percentages and is sorted, so a monitor that compares it with the last run (Hermes --monitor-script) starts the agent only when something changed. Outside a board it covers every board of the workspace. One tick per agent at a time (lock; second run prints busy, exit 5). While the owner has paused this machine (roadctl pause) tick starts nothing of any kind: it prints \"tick AGENT: paused\" and the reason, probes no limits, pulls nothing and exits 6. Every run is appended to a ledger. --routine ID limits the tick to that one routine (its RUN item, or idle) and --kinds to some kinds, so a scheduler job can start a model for one routine only, when that routine is due; STALE lines of a claim whose working directory is on this machine and has uncommitted changes end with "(workdir dirty)".',
+    purpose: 'The first step of a scheduled run, without a model: pulls the board repositories, finds what AGENT could TAKE (open or expired delegations it may claim), ACCEPT (reported results it may accept), START (approved ready cards with every depends_on done and no delegation; orchestrators only) or look at (STALE: claimed with an expired lease; orchestrators only) or RUN (a recurring routine that is due and whose own agent is AGENT; needs the board switch autonomy.routines, enabled, approved, agent, model and env), asks the limits gate (cache, never --fresh; only when there is something to do) and answers with a decision and an exit code. A scheduler starts a model only on exit 0. When idle the text is the single line "tick AGENT: idle" and no limits are probed. The text has no times and no percentages and is sorted, so a monitor that compares it with the last run (Hermes --monitor-script) starts the agent only when something changed. Outside a board it covers every board of the workspace. One tick per agent at a time (lock; second run prints busy, exit 5). While the owner has paused this machine (roadctl pause) tick starts nothing of any kind: it prints \"tick AGENT: paused\" and the reason, probes no limits, pulls nothing and exits 6. A RUN line of a routine whose supervised run died with its supervisor (and was not recorded yet) ends with "(recover: supervised run ID died)": tick writes no board file for this, roadctl supervise recovers it. Every run is appended to a ledger. --routine ID limits the tick to that one routine (its RUN item, or idle) and --kinds to some kinds, so a scheduler job can start a model for one routine only, when that routine is due; STALE lines of a claim whose working directory is on this machine and has uncommitted changes end with "(workdir dirty)".',
     usage: ['roadctl tick --as AGENT [--all] [--no-pull] [--json] [--prompt] [--routine ID] [--kinds take,accept,start,stale,run]', 'roadctl tick --ledger [--as AGENT] [-n 20] [--json]'],
     flags: [['--as AGENT', 'the agent the run is for (registry roles decide what applies)'], ALL('check'), ['--no-pull', 'do not pull first (default: git pull of each repository; a failure is a stable "sync:" line)'], ['--prompt', 'with work: print the instruction for the orchestrator model instead of the item list (a RUN item names the routine file, its model and environment; the routine text is not inserted)'], ['--routine ID', 'only the RUN item of this routine (idle when it is not due, not allowed or belongs to another agent); with --prompt the instruction for that routine only; has its own lock'], ['--kinds LIST', 'only these kinds, a comma list of take, accept, start, stale, run (default: all); the ledger records the filter'], ['--ledger', 'print the last runs and exit (read-only); -n N how many (default 20), --as filters'], J],
     examples: ['roadctl tick --as claude-code@home-wsl', 'roadctl tick --as hermes@home-host --routine server-watch --prompt', 'roadctl tick --as claude-code@home-wsl --kinds take,accept', 'roadctl tick --as claude-code@home-wsl --prompt > p.txt && claude -p "$(cat p.txt)"', 'roadctl tick --ledger -n 5'],
@@ -3723,7 +3746,7 @@ export const COMMANDS = {
   },
   routine: {
     group: 'Delegate', effect: 'git', summary: 'recurring routines (list, show read; new, on, off write; done git)',
-    purpose: 'Recurring, mostly mechanical project tasks (collect merge request, issue or message state, watch servers) in board/routines/<id>.md. Each has an executor the owner names when creating it: agent, model and env are REQUIRED; a routine without any of them never runs. A routine runs only when the board switch autonomy.routines is on (roadctl autonomy routines on), the routine is enabled, approved, due (no last_run, or now is at least last_run + every) and inside its optional hours window (header hours: days and times, local time or tz=ZONE; outside it list says "outside hours"); roadctl tick --as AGENT then offers it as RUN to that agent only. list shows every routine with its run state and why it would not run now (--all: every board); show prints one routine. new creates a routine from a template, switched off and not approved. on and off are the owner\'s switch: on records the approval (default scope read+board, --source required) and refuses without agent, model and env; only when the owner told you to. done is for the routine\'s own agent: sets last_run and last_result, appends a Log line (up to 1500 characters, the last 50 lines are kept) and commits and pushes ONLY that file, like report (offline it stays local; a conflict is applied again on the server file). The routine text is the owner\'s instruction within the approved scope (default: read external systems, write the board); hand over with roadctl delegate or a question for the owner, as its Escalate section says.',
+    purpose: 'Recurring, mostly mechanical project tasks (collect merge request, issue or message state, watch servers) in board/routines/<id>.md. Each has an executor the owner names when creating it: agent, model and env are REQUIRED; a routine without any of them never runs. A routine runs only when the board switch autonomy.routines is on (roadctl autonomy routines on), the routine is enabled, approved, due (no last_run, or now is at least last_run + every) and inside its optional hours window (header hours: days and times, local time or tz=ZONE; outside it list says "outside hours"); roadctl tick --as AGENT then offers it as RUN to that agent only. list shows every routine with its run state and why it would not run now (--all: every board); show prints one routine. new creates a routine from a template, switched off and not approved. on and off are the owner\'s switch: on records the approval (default scope read+board, --source required) and, on a board that requires roadctl 0.6.0, a hash of the routine\'s content (approved_hash): a routine edited afterwards (Steps, agent, every, scope, ...) is "changed after approval" and does not run until the owner runs on again (notify, enabled, last_* and the Log are outside the hash); on refuses without agent, model and env; only when the owner told you to. done is for the routine\'s own agent: sets last_run and last_result, appends a Log line (up to 1500 characters, the last 50 lines are kept) and commits and pushes ONLY that file, like report (offline it stays local; a conflict is applied again on the server file). The routine text is the owner\'s instruction within the approved scope (default: read external systems, write the board); hand over with roadctl delegate or a question for the owner, as its Escalate section says.',
     usage: ['roadctl routine list [--all] [--json]', 'roadctl routine show <id> [--json]', 'roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]', 'roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF]   (only when the owner told you to)', 'roadctl routine off <id> --by NAME   (only when the owner told you to)', 'roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary" [--json]'],
     flags: [ALL('list routines of'), ['--agent A / --model M / --env E', 'new: the executor (an agent name like claude-code@work-notebook, a model like claude-haiku-5-5, an environment like Work-notebook-wsl); all three are required, ask the owner, never guess'], ['--every SPAN', 'new: how often it is due: 30m, 2h, 1d (at least 5m)'], ['--hours H', 'new: the time window in which it may run: DAYS HH:MM-HH:MM[ tz=ZONE], for example "mon-fri 09:00-19:00" or "daily 08:00-23:00 tz=Europe/Moscow" (default: any time; local time of this machine without tz)'], ['--by NAME', 'on, off: the owner who decided'], ['--scope S', 'on: read+board (default) or read+board+external'], ['--source REF', 'on: where the owner said so (required when no approval is recorded yet)'], ['--as AGENT', 'done: the routine\'s own agent'], ['--result R', 'done: ok, escalated or failed'], J],
     examples: ['roadctl routine list', 'roadctl routine new mr-status "Collect MR and issue status" --agent claude-code@work-notebook --model claude-haiku-5-5 --env Work-notebook-wsl --every 2h', 'roadctl routine on mr-status --by Lujker --source "chat 2026-11-12"', 'roadctl routine done mr-status --as claude-code@work-notebook --result ok "3 cards updated, nothing to hand over"'],
@@ -3873,7 +3896,7 @@ TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
 const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint,
-  boardRequires, compareVersions, nowMs, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath }); // P5.9 doctor: the second line
+  boardRequires, compareVersions, nowMs, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks }); // P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
   const lines = [];
@@ -3938,9 +3961,10 @@ function parse(argv) {
   const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--run', '--workdir', '--hours', '--routine', '--kinds']);
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
   const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
-  const moduleValue = new Set(['--ask', '--not-checked', '--since-state']); // seam (P5.13)
+  const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card']); // seam (P5.13); --timeout, --card: P5.2
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
+    if (a === '--') { o.rest = argv.slice(i + 1); break; } // P5.2: what follows `--` is a command line for `supervise`, not flags
     if (a.startsWith('--')) {
       if (repeated.has(a)) (o.flags[a.slice(2)] ??= []).push(argv[++i]);
       else if (moduleValue.has(a) || withValue.has(a) || (a === '--check' && argv[0] === 'limits')) o.flags[a.slice(2)] = argv[++i];
@@ -3951,7 +3975,7 @@ function parse(argv) {
 }
 
 export async function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }) {
-  const { _: args, flags } = parse(argv);
+  const { _: args, flags, rest } = parse(argv);
   const cmd = args[0];
   if (flags.date) process.env.ROADCTL_DATE = flags.date;
   const out = (s) => io.out(`${s}\n`);
@@ -3975,7 +3999,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
       if (flags.project === true) throw new Error('usage: --project NAME');
       flags.board = boardByProject(flags.project); // a known board by project name or "match" name
     }
-    if (Object.hasOwn(MODULE_REG.commands, cmd)) return await MODULE_REG.commands[cmd].run({ flags, args, io, out, env: process.env, api: moduleApi(), modules: MODULE_REG.modules }); // module command (seam)
+    if (Object.hasOwn(MODULE_REG.commands, cmd)) return await MODULE_REG.commands[cmd].run({ flags, args, rest: rest ?? [], io, out, env: process.env, api: moduleApi(), modules: MODULE_REG.modules }); // module command (seam)
     if (cmd === 'instructions-install' || cmd === 'instructions-uninstall') {
       out(installInstructions({ claude: Boolean(flags.claude), codex: Boolean(flags.codex), apply: Boolean(flags.apply), uninstall: cmd === 'instructions-uninstall', claudeHome: flags['claude-home'], codexHome: flags['codex-home'], workspace: flags.workspace, helper: flags.helper }));
       return 0;

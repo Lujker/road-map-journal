@@ -107,6 +107,7 @@ test('a1: a board that requires a newer roadctl gives no RUN; the reason is visi
   assert.equal(r.run(['tick', '--as', AGENT, '--no-pull', '--prompt']).stdout.includes('RUN '), false, '--prompt names no RUN either');
   // the same board, asked at exactly this copy's version, is fine again
   r.setRequires('my-app', VERSION);
+  r.ok(['routine', 'on', 'mr-status', '--by', 'Owner', '--board', r.boards['my-app']]); // P5.15: 0.6.0 is the version that checks the approval hash, so a routine approved earlier is approved again
   assert.deepEqual(JSON.parse(r.tick().stdout).items.map((i) => i.kind), ['RUN']);
 });
 
@@ -179,6 +180,7 @@ test('a2: a board without requires (or with one this copy satisfies) behaves as 
   assert.doesNotMatch(r.run(['lint', '--json', ...b]).stdout, /requires/, 'lint has no requires finding');
   for (const ok of ['0.0.1', VERSION, `v${VERSION}`]) {
     r.setRequires('my-app', ok);
+    r.ok(['routine', 'on', 'mr-status', '--by', 'Owner', '--board', r.boards['my-app']]); // P5.15: from 0.6.0 on a board approves the routine with its hash
     const k = JSON.parse(r.tick().stdout);
     assert.deepEqual(k.items.map((i) => i.kind), ['RUN'], `requires ${ok}`);
     assert.deepEqual(k.sync, []);

@@ -97,6 +97,22 @@ function boardEvents(board, env) {
   return events;
 }
 
+/**
+ * Reasons a module marked `immediate` (P5.15: a routine changed after approval), per routine: Map id -> { row, policy, language, problems: [{ module, text, episode }] }.
+ * The episode tells a new problem from the one already told: the reason, the approval line, the hash and `approval_id` (new with every `routine on`, not taken from the
+ * Log, which is trimmed), so an approval that changed nothing visible still starts a new episode. A routine approved before `approval_id` existed has none: the rest is used.
+ */
+function moduleProblems(board, api, now) {
+  const out = new Map();
+  for (const row of api.routineRows(board, now)) {
+    if (!row.id) continue;
+    const r = (board.routines ?? []).find((x) => x.header.id === row.id);
+    const problems = (row.module_reasons ?? []).filter((m) => m.immediate).map((m) => ({ module: m.module, text: m.text, episode: hash(`${m.text}|${r?.header.approved ?? ''}|${r?.header.approved_hash ?? ''}|${r?.header.approval_id ?? ''}`) }));
+    out.set(row.id, { row, policy: NOTIFY.includes(r?.header.notify) ? r.header.notify : 'problems', language: board.config?.language, problems });
+  }
+  return out;
+}
+
 /** The runs only this machine knows (crashed, timeout, aborted; the orchestrator's own summaries; skipped streaks). */
 function localEvents(env, policies, languages) {
   const out = [];
@@ -264,6 +280,44 @@ function immediate({ boards, refused, env, api, now, name, dry, warn }) {
         for (const [k, v] of keys) next[k] = prev[k] ?? { kind: v.kind, text: v.text, since: now };
         if (Object.keys(next).length) active[target] = next;
         else delete active[target];
+      }
+    }
+    // module problems (P5.15) have their own state, `@module/<project>/<id>`: a run of the routine never closes them and they never close a problem of a run.
+    // Told when new (or a new episode), reported once as resolved when the reason is gone, nothing for the owner's `notify: never` (the state still follows).
+    for (const b of boards) {
+      const project = projectOf(b);
+      const now_ = moduleProblems(b, api, now);
+      for (const key of Object.keys(active)) if (key.startsWith(`@module/${project}/`) && !now_.has(key.slice(`@module/${project}/`.length))) delete active[key]; // the routine is gone
+      for (const [id, { row, policy, language, problems }] of now_) {
+        const slotKey = `@module/${project}/${id}`;
+        if (!row.enabled) { // switched off: the text is still not approved, so this is not a recovery; the state goes quietly (`routine on` starts it afresh)
+          delete active[slotKey];
+          continue;
+        }
+        const target = `${project}/${id}`;
+        const words = wordsFor(language);
+        const slot = active[slotKey] ?? {};
+        const next = {};
+        for (const m of problems) next[m.module] = slot[m.module]?.episode === m.episode ? slot[m.module] : { text: m.text, episode: m.episode, since: now };
+        const fresh = problems.filter((m) => slot[m.module]?.episode !== m.episode);
+        const gone = Object.keys(slot).filter((k) => !next[k]);
+        if (policy !== 'never' && (fresh.length || gone.length)) {
+          const lines = [];
+          if (fresh.length) {
+            const fields = { did: [], decisions: [], problems: fresh.map((m) => ({ key: m.module, kind: 'permanent', text: m.text })), needs_owner: null, not_checked: null };
+            lines.push(...renderSummary({ kind: 'routine', project, id, outcome: 'blocked', agent: row.agent, fields }, language));
+          }
+          const resolved = gone.map((k) => `${words.resolved}: ${target}: ${k}`);
+          lines.push(...resolved);
+          if (!push(lines.slice(0, 6), `@module/${target}`)) {
+            cut++;
+            continue; // does not fit this message: the state stays as it was and the next digest tells it
+          }
+          if (fresh.length) shown.push({ sig: `@module/${target}`, kind: 'routine', target, outcome: 'blocked', agent: row.agent, run_id: null, host: null, fields: { did: [], decisions: [], problems: fresh.map((m) => ({ key: m.module, kind: 'permanent', text: m.text })), needs_owner: null, not_checked: null } });
+          resolvedAll.push(...resolved);
+        }
+        if (Object.keys(next).length) active[slotKey] = next;
+        else delete active[slotKey];
       }
     }
     if (cut) blocks.push(`${cut} ${DAILY.en.more}: roadctl digest`);

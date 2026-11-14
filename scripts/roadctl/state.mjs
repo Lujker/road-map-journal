@@ -4,7 +4,7 @@
 // State directory: `${XDG_STATE_HOME:-~/.local/state}/road-map-journal/`, defined only here (a copy of roadctl.mjs without this folder uses a
 // small inline fallback, marked `seam (P5.28): lone-copy fallback` there). `xdgDir(env, name, fallback)` is the XDG rule for any base directory.
 //
-// Lock (`acquireLock`): a file created exclusively (`wx`). Whoever created it owns it; the owner may call `heartbeat()` (touches the file) so a
+// Lock (`acquireLock`): a file created exclusively and complete (written to a temporary file, then linked into place: no reader sees it empty). Whoever created it owns it; the owner may call `heartbeat()` (touches the file) so a
 // supervisor that lives longer than the stale time keeps its lock. A lock whose modification time is older than `staleMs` (real time: a lock is
 // about real processes, not the ROADCTL_NOW clock) belongs to nobody and is taken over. The takeover itself is guarded: removing a stale lock and
 // creating the new one happen while holding `<lock>.takeover` (also created exclusively), and the age is checked again under the guard, so two
@@ -25,6 +25,27 @@ const sleepSync = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),
 const NOOP = Object.freeze({ ok: true, held: false, release() {}, heartbeat() {} });
 
 /**
+ * Create `file` with its whole content or not at all: the content goes to a temporary file next to it and is linked into place (`link` fails with EEXIST when
+ * the lock is held), so no process ever sees a lock that exists but is still empty (a reader could take such a lock for one without an owner).
+ * Where the link cannot be made for any other reason the create FAILS with that error when `atomic` is required (strict callers: no non-atomic create, it would bring the
+ * empty-file window back); otherwise the old exclusive create (`wx`) is used, so a caller that never asked for strictness still gets a real lock. `link` is a test seam.
+ */
+function createExclusive(file, body, link = fs.linkSync, atomic = false) {
+  const tmp = `${file}.${process.pid}.${crypto.randomBytes(4).toString('hex')}.tmp`;
+  try {
+    fs.writeFileSync(tmp, body);
+    try {
+      link(tmp, file);
+    } catch (e) {
+      if (atomic || e.code === 'EEXIST') throw e;
+      fs.writeFileSync(file, body, { flag: 'wx' }); // no hard links here: the exclusive create, as before
+    }
+  } finally {
+    fs.rmSync(tmp, { force: true });
+  }
+}
+
+/**
  * Take the lock file `file`.
  *   staleMs   age (by modification time) after which an existing lock is taken over; required
  *   waitMs    how long to wait for a held lock (0: give up at once)
@@ -33,7 +54,7 @@ const NOOP = Object.freeze({ ok: true, held: false, release() {}, heartbeat() {}
  * Returns { ok: true, held: true, release(), heartbeat() } or { ok: false, reason: 'held' | code }.
  * `release()` removes the file only while it is still the owner's own (the token in the file, or the unchanged caller-supplied content).
  */
-export function acquireLock(file, { staleMs, waitMs = 0, pollMs = 15, content, strict = false } = {}) {
+export function acquireLock(file, { staleMs, waitMs = 0, pollMs = 15, content, strict = false, link = fs.linkSync } = {}) {
   if (!Number.isFinite(staleMs) || staleMs <= 0) throw new Error('acquireLock needs staleMs');
   const token = crypto.randomBytes(8).toString('hex');
   const body = content ?? JSON.stringify({ pid: process.pid, token });
@@ -79,7 +100,7 @@ export function acquireLock(file, { staleMs, waitMs = 0, pollMs = 15, content, s
   const age = () => Date.now() - fs.statSync(file).mtimeMs;
   for (;;) {
     try {
-      fs.writeFileSync(file, body, { flag: 'wx' });
+      createExclusive(file, body, link, strict);
       return handle;
     } catch (e) {
       if (e.code !== 'EEXIST') return lost(e.code ?? 'error');
@@ -113,10 +134,11 @@ export function acquireLock(file, { staleMs, waitMs = 0, pollMs = 15, content, s
           }
           if (still) fs.rmSync(file, { force: true });
           try {
-            fs.writeFileSync(file, body, { flag: 'wx' });
+            createExclusive(file, body, link, strict);
             return handle;
-          } catch {
-            /* a creator slipped in after the removal, or the lock was fresh: not ours */
+          } catch (e) {
+            if (e.code !== 'EEXIST') return lost(e.code ?? 'error'); // no atomic create here: the lock is not taken
+            /* else a creator slipped in after the removal, or the lock was fresh: not ours */
           }
         } finally {
           fs.rmSync(guard, { force: true });
