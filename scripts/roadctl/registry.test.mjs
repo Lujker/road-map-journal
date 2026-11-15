@@ -202,7 +202,8 @@ test('a copy of roadctl.mjs without its roadctl/ folder still runs the built-in 
   const bin = path.join(dir, 'roadctl.mjs');
   assert.equal(run(bin, ['version']).stdout, `${rc.VERSION}\n`);
   assert.match(run(bin, ['help']).stdout, /^Look:$/m);
-  const r = run(bin, ['module-probe']);
+  // From inside a project with a board: elsewhere roadctl stops at "no board found" before it reads the command (CI has no workspace).
+  const r = run(bin, ['module-probe'], { cwd: project() });
   assert.equal(r.status, 2);
   assert.match(r.stderr, /unknown command module-probe/);
 });
