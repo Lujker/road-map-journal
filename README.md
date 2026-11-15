@@ -22,34 +22,35 @@ The skill is an instruction set, not a task tracker or a guarantee that an agent
 
 ## How it works
 
-The top of the diagram is the skill alone: an agent session reads and records the plan. Everything below it is the optional board and `roadctl` helper for unattended work, which follows the cycle of an always-on agent: sleep, wake on a timer, decide without a model, do one bounded run, write the result back, report to the owner. Dashed lines are planned, not implemented.
+The top of the diagram is the skill alone: an agent session reads and records the plan. Everything below it is the optional board and `roadctl` helper for unattended work, which follows the cycle of an always-on agent: sleep, wake on a timer, decide without a model, do one bounded run, write the result back, report to the owner.
 
 ```mermaid
-flowchart TD
-  O(["Owner"])
-  subgraph I["Interactive: the skill"]
-    S["Agent session with the skill"]
-  end
-  B[("Board or roadmap in git: cards, routines, mandate")]
-  subgraph U["Unattended: board and roadctl"]
-    T[["Scheduler timer: systemd, Hermes cron"]] --> K{"roadctl tick (no model)"}
-    K -->|"no work, paused or reserve reached"| Z(["Sleep: no tokens spent"])
-    K -->|"work and limits allow"| R["roadctl supervise: one run, lock, timeout"]
-    R --> M["Model run: routine, orchestrator or delegated card"]
-    R -->|"outcome"| Lg[("Local run ledger")]
-  end
-  subgraph N["Owner channel"]
-    D["roadctl digest (no model)"] -->|"problems, questions, daily overview"| C["Channel: Telegram, VK"]
-  end
-  O -->|"asks, approves, answers"| S
-  S -->|"reads and records"| B
-  B -->|"pull"| K
-  M -->|"Log, Evidence, report, routine done"| B
-  B --> D
-  Lg --> D
-  C --> O
-  C -.->|"answers, requests (planned)"| B
-  C -.->|"wake on event (planned)"| K
+flowchart LR
+  owner(["👤 Owner"])
+  board[("📋 Board in git<br/>plan · cards · routines")]
+  timer(["⏰ Timer"])
+  tick{"roadctl tick<br/>work to do?<br/>limits OK?"}
+  sleep(["💤 Sleep<br/>no tokens spent"])
+  run["🤖 One bounded agent run<br/>routine · orchestrator · task"]
+  digest["✉️ Short digest<br/>problems · questions · daily"]
+
+  owner -- "plans, approves<br/>(agent session + skill)" --> board
+  timer --> tick
+  board -.-> tick
+  tick -- no --> sleep
+  tick -- yes --> run
+  run -- "results, evidence" --> board
+  board --> digest
+  digest --> owner
+
+  classDef person fill:#fde68a,stroke:#b45309,color:#1f2937
+  classDef store fill:#bfdbfe,stroke:#1d4ed8,color:#1f2937
+  classDef step fill:#ddd6fe,stroke:#6d28d9,color:#1f2937
+  classDef rest fill:#e5e7eb,stroke:#6b7280,color:#1f2937
+  class owner person
+  class board store
+  class timer,tick,run,digest step
+  class sleep rest
 ```
 
 The unattended-work design was compared with and refined after Anthropic's article [Building always-on agents](https://claude.com/resources/articles/building-always-on-agents) (2026-11-13); [docs/always-on-model.md](docs/always-on-model.md) maps our parts onto its five primitives and lists what we deliberately do differently.

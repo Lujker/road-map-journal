@@ -22,34 +22,35 @@ Skill — это набор инструкций, а не трекер зада�
 
 ## Как это работает
 
-Верх схемы — это сам skill: сессия агента читает и записывает план. Всё ниже — необязательные доска и помощник `roadctl` для работы без присмотра, построенные по циклу always-on агента: сон, пробуждение по таймеру, решение без модели, один ограниченный запуск, запись результата, отчёт владельцу. Пунктир — запланированное, ещё не реализованное.
+Верх схемы — это сам skill: сессия агента читает и записывает план. Всё ниже — необязательные доска и помощник `roadctl` для работы без присмотра, построенные по циклу always-on агента: сон, пробуждение по таймеру, решение без модели, один ограниченный запуск, запись результата, отчёт владельцу.
 
 ```mermaid
-flowchart TD
-  O(["Владелец"])
-  subgraph I["Интерактивно: skill"]
-    S["Сессия агента со skill"]
-  end
-  B[("Доска или дорожная карта в git: карточки, рутины, мандат")]
-  subgraph U["Без присмотра: доска и roadctl"]
-    T[["Таймер планировщика: systemd, Hermes cron"]] --> K{"roadctl tick (без модели)"}
-    K -->|"нет работы, пауза или резерв"| Z(["Сон: токены не тратятся"])
-    K -->|"есть работа и лимиты позволяют"| R["roadctl supervise: один запуск, блокировка, таймаут"]
-    R --> M["Запуск модели: рутина, оркестратор или делегированная карточка"]
-    R -->|"исход"| Lg[("Локальный журнал запусков")]
-  end
-  subgraph N["Канал владельца"]
-    D["roadctl digest (без модели)"] -->|"проблемы, вопросы, ежедневный обзор"| C["Канал: Telegram, VK"]
-  end
-  O -->|"спрашивает, подтверждает, отвечает"| S
-  S -->|"читает и записывает"| B
-  B -->|"pull"| K
-  M -->|"Log, Evidence, report, routine done"| B
-  B --> D
-  Lg --> D
-  C --> O
-  C -.->|"ответы, запросы (запланировано)"| B
-  C -.->|"пробуждение по событию (запланировано)"| K
+flowchart LR
+  owner(["👤 Owner"])
+  board[("📋 Board in git<br/>plan · cards · routines")]
+  timer(["⏰ Timer"])
+  tick{"roadctl tick<br/>work to do?<br/>limits OK?"}
+  sleep(["💤 Sleep<br/>no tokens spent"])
+  run["🤖 One bounded agent run<br/>routine · orchestrator · task"]
+  digest["✉️ Short digest<br/>problems · questions · daily"]
+
+  owner -- "plans, approves<br/>(agent session + skill)" --> board
+  timer --> tick
+  board -.-> tick
+  tick -- no --> sleep
+  tick -- yes --> run
+  run -- "results, evidence" --> board
+  board --> digest
+  digest --> owner
+
+  classDef person fill:#fde68a,stroke:#b45309,color:#1f2937
+  classDef store fill:#bfdbfe,stroke:#1d4ed8,color:#1f2937
+  classDef step fill:#ddd6fe,stroke:#6d28d9,color:#1f2937
+  classDef rest fill:#e5e7eb,stroke:#6b7280,color:#1f2937
+  class owner person
+  class board store
+  class timer,tick,run,digest step
+  class sleep rest
 ```
 
 Устройство работы без присмотра сверено и доработано по статье Anthropic [Building always-on agents](https://claude.com/resources/articles/building-always-on-agents) (13.11.2026); в [docs/always-on-model.ru.md](docs/always-on-model.ru.md) — какие её примитивы у нас чему соответствуют и что мы сознательно делаем иначе.
