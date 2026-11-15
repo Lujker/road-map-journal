@@ -20,6 +20,40 @@ A portable [Agent Skill](https://agentskills.io/) that keeps a project's roadmap
 
 The skill is an instruction set, not a task tracker or a guarantee that an agent will follow every rule. Its operation depends on the model, host, permissions and project instructions. It adds no service, hooks, scheduled jobs or executable helpers. An optional maintenance script lives in `scripts/` outside the skill folder and is not installed with it.
 
+## How it works
+
+The top of the diagram is the skill alone: an agent session reads and records the plan. Everything below it is the optional board and `roadctl` helper for unattended work, which follows the cycle of an always-on agent: sleep, wake on a timer, decide without a model, do one bounded run, write the result back, report to the owner. Dashed lines are planned, not implemented.
+
+```mermaid
+flowchart TD
+  O(["Owner"])
+  subgraph I["Interactive: the skill"]
+    S["Agent session with the skill"]
+  end
+  B[("Board or roadmap in git: cards, routines, mandate")]
+  subgraph U["Unattended: board and roadctl"]
+    T[["Scheduler timer: systemd, Hermes cron"]] --> K{"roadctl tick (no model)"}
+    K -->|"no work, paused or reserve reached"| Z(["Sleep: no tokens spent"])
+    K -->|"work and limits allow"| R["roadctl supervise: one run, lock, timeout"]
+    R --> M["Model run: routine, orchestrator or delegated card"]
+    R -->|"outcome"| Lg[("Local run ledger")]
+  end
+  subgraph N["Owner channel"]
+    D["roadctl digest (no model)"] -->|"problems, questions, daily overview"| C["Channel: Telegram, VK"]
+  end
+  O -->|"asks, approves, answers"| S
+  S -->|"reads and records"| B
+  B -->|"pull"| K
+  M -->|"Log, Evidence, report, routine done"| B
+  B --> D
+  Lg --> D
+  C --> O
+  C -.->|"answers, requests (planned)"| B
+  C -.->|"wake on event (planned)"| K
+```
+
+The unattended-work design was compared with and refined after Anthropic's article [Building always-on agents](https://claude.com/resources/articles/building-always-on-agents) (2026-11-13); [docs/always-on-model.md](docs/always-on-model.md) maps our parts onto its five primitives and lists what we deliberately do differently.
+
 ## Usage
 
 Ask your agent, for example:
