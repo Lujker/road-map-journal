@@ -117,7 +117,7 @@ function filled(card, names) {
 }
 
 /** Cards taken by the mandate, from the Log lines `approved by mandate <hash>` of every card: [{ id, date }]. */
-const takes = (board) => board.cards.flatMap((c) => c.log.filter((l) => TAKEN_RE.test(l.text)).map((l) => ({ id: c.header.id, date: l.date })));
+export const takes = (board) => board.cards.flatMap((c) => c.log.filter((l) => TAKEN_RE.test(l.text)).map((l) => ({ id: c.header.id, date: l.date })));
 
 /** Is `card` admitted by mandate `m`? mode: 'start' (tick: ready), 'delegate' (ready or doing) or 'work' (lint: a card already taken). { ok, reasons, rank }. */
 export function admission(board, card, m, mode, api) {

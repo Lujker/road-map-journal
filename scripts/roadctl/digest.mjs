@@ -68,7 +68,7 @@ const projectOf = (board) => String(board.project).split(/[\\/]/).filter(Boolean
 const dayMs = (d) => Date.parse(`${d}T12:00:00Z`); // the Log has a date only: noon is the best guess
 
 /** All finished runs and reports the boards tell about, as events: { sig, kind, project, id, outcome, agent, run_id, host, duration_s, fields, time, policy, language }. */
-function boardEvents(board, env) {
+export function boardEvents(board, env) {
   const project = projectOf(board);
   const language = board.config?.language;
   const events = [];
@@ -180,7 +180,7 @@ const short = (s, n) => (s.length > n ? `${s.slice(0, n - 1)}…` : s);
 
 // ---------------------------------------------------------------- the command
 
-function loadBoards(flags, env, api, warn) {
+export function loadBoards(flags, env, api, warn) {
   const dirs = flags.all ? api.knownBoards(env).map((b) => b.dir) : [api.findBoard(process.cwd(), typeof flags.board === 'string' ? flags.board : undefined, env)];
   if (!flags.all && !dirs[0]) throw new Error('no board found; run inside the project or use --board DIR / --project NAME / --all');
   if (flags.all && !api.hasBoardSources(env)) throw new Error('no workspace found; set ROADCTL_WORKSPACE, use --workspace DIR or add a board with roadctl boards add');

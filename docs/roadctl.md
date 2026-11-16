@@ -35,6 +35,7 @@ roadctl runs [--open] [--json] [--as AGENT] [-n 20]   the runs of routines and d
 roadctl run begin <routine|card> --as AGENT [--run ID] | run note [RUN_ID] "text"   start a run (a second begin: exit 5) or leave a checkpoint
 roadctl run done --as AGENT --result ok|escalated|failed --did "text" [--decision T] [--problem "kind: key: text"] [--ask T] [--not-checked T]   the duty orchestrator ends its run with a summary (local; see Run summary and delivery)
 roadctl digest [--since-state NAME] [--dry-run] [--all] [--json] | digest --daily   model-free text for the owner: problems and questions once, or the daily overview (see Run summary and delivery)
+roadctl stats [--since DATE] [--accept-from DATE] [--all] [--json]   read only: autonomy metrics from the Logs in git, the run ledger, the owner audit and the mandate (see Autonomy metrics)
 roadctl routine list [--all] [--json]          recurring routines with their run state and why one would not run; show <id> prints one
 roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]   a routine from a template, switched off (agent, model and env are required)
 roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME   the owner's switch; only when the owner told you to
@@ -607,6 +608,28 @@ A template is found under the agent's full name, else under its host (`claude-co
 `doctor` checks the file (`launch-templates`). Exit codes: 0 described, 1 refused, 2 usage error, invalid file, unknown routine or card, or no board.
 
 **Format.** `conductor.json` is local to a machine, not part of a board: no card, routine or `config.json` key was added, so no board needs a new `requires`. `VERSION` is 0.7.0 so that a launcher can require a copy that has `routine launch`, `supervise --stdin` and `--model`.
+
+## Autonomy metrics (`roadctl stats`, P5.27)
+
+Numbers for the owner who decides which kinds of work may go without confirmation. `roadctl stats [--since DATE] [--accept-from DATE] [--all] [--json]` counts them; it reads and writes nothing (no board file, no state file, no git), and a channel only shows what it printed. Sources: the Log lines of routines and cards in git (`RUN`, `REPORT`, `RETURNED`, `ACCEPTED`, `approved by mandate`, the `accepted` header), this machine's run ledger (the runs the Log does not know: crashed, timeout, aborted, skipped; durations), the audit of owner commands (`owner-commands.jsonl`, P5.3) plus the owner's traces in git (`approved`, `accepted`, `routine on|off`), and the mandate (P5.33). The runs of another machine arrive through git: `roadctl pull` first. Days are compared, never times: the Log has a date only.
+
+**Without the owner** (the definition behind `autonomy`): a run counts as without the owner when (1) it ended `ok`, (2) it asked nothing (no `ask`, so no `needs_owner`), and (3) the owner ran no command on the same routine or card after it, up to the next run of that routine or card (a command on the day of the next run counts for the earlier run). A run that escalated, failed, crashed, timed out or was aborted is never without the owner. A refused command (an unattended run tried an owner command) is not the owner's command.
+
+`--json` (the schema is `scripts/testkit/stats-schema.mjs`; a reader tolerates extra fields, the not yet counted ones are already there as `null` or empty):
+
+| Field | Meaning |
+|---|---|
+| `stats`, `generated`, `since`, `accept_from`, `projects` | schema version (1), the time of the report, the flags, the boards counted |
+| `sources` | how many runs came from `board_logs` and from the `local_runs` ledger, and how many owner commands from the `owner_audit` and from `owner_git`; without a ledger or an audit file these are 0 and the numbers rest on the Log |
+| `runs` | `total` finished runs and their outcomes (`ok`, `escalated`, `failed`, `crashed`, `timeout`, `aborted`), `skipped` (this machine: runs per reason), `duration_s` (`n`, `median`, `p90`: the time of a run in seconds, where the run line or the ledger has it) |
+| `autonomy` | `runs`, `without_owner` and their `share` (null without runs); `by_routine` (`project/id` of a routine) and `by_track` (a card's track prefix of its id, `P5` for `P5.27`, or `orchestrator`): the same three numbers per kind of work |
+| `owner_wait.review_to_acceptance` | the wait for acceptance: from the day a card reached review (its last `ACCEPTED` or `REPORT` Log line) to its `accepted` date: `n`, `median_days`, `p90_days`; `open` cards still in review with `open_oldest_days`; `unknown_start` cards with no such Log line (left out). `--accept-from DATE`: an acceptance before that date is left out and the wait counts from that date at the earliest; use it when a pile of cards waits in review by decision (the date of the release candidate); without it all history counts |
+| `owner_wait.question_to_answer` | question to answer, `n`, `median_days`, `p90_days`: empty (0, null) until the questions of P5.24 exist |
+| `escalations` | `escalated_runs`, `asks` (runs that asked the owner something), `top_problems` (the ten most frequent `--problem` keys with their kind and count) |
+| `returns` | `returned` (`RETURNED` Log lines), `cards` returned, `task_reports` and `share_of_reports` |
+| `mandate` | `boards` (project, level, state of its mandate; `none` without a file), `started_by_mandate` (`n` and the `cards` taken by `approved by mandate` Log lines); `proposed` (P5.34), `undone_share` and `blocking_questions_per_week` (P5.24), `milestone_returns` (P5.35) are `null` until those parts exist |
+
+`--since DATE` counts only runs, returns, acceptances and owner commands from that day (the mandate's started cards too). With no board data, no ledger and no audit, every count is 0 and every share `null`; the command still exits 0.
 
 ## What was tested
 
