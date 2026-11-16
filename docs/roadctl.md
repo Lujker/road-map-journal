@@ -383,6 +383,31 @@ Generic starting texts for both are in [`examples/routines/`](../examples/routin
 
 What routines do not do: roadctl starts no model and calls no external system; whether the executor kept to May write is not checked by a tool, the approved scope limits what the executor was told, and a run is a claim to verify like a report.
 
+## Work environment apart from the executor's machine (P5.23)
+
+Where the model runs and where the work lies are two things. A routine already has `agent` (the executor, whose registry name ends in its machine) and `env` (the environment); a card may carry `env`, `role` and `needs` (tools or MCP servers, `data:NAME` for data access) in its header. The owner's local registry (never the public skill) says how an executor reaches an environment. Both ways are legitimate:
+
+- `placement: on-host` (the default): the executor runs on the machine of the environment (an agent such as `claude-code@work-notebook`).
+- `placement: remote-access`: the model runs on another machine (for example the home PC) and reaches the environment through the `access` paths: `ssh` host and the MCP servers the path is said to offer.
+
+```json
+"environments": { "Work-notebook-wsl": { "machine": "work-notebook", "placement": "remote-access",
+                  "access": [ { "from": "home-wsl", "ssh": "work-notebook", "mcp": ["atom-services"] } ] } },
+"preference":   { "worker": ["claude-code@home-wsl", "codex@home-wsl"] },
+"agents":       { "claude-code@home-wsl": { "machine": "home-wsl", "tools": ["atom-services"], "data": ["atom"], "fit": { "worker": { "confirmed": "2026-11-10", "evidence": "checks of similar tasks" } } } }
+```
+
+A registry without these keys behaves as before. The `ssh` value must look like a host name (letters, digits and `. _ @ : -`, not starting with `-`): anything else is refused and never passed to ssh, so a registry cannot slip in an ssh option. MCP in the registry is a declaration, never proof that the server works now, and ssh to the machine is not the MCP server.
+
+- `tick` and `routine show` show the environment and the way to it for a described `remote-access` environment: `RUN` items carry `routine.access`, `TAKE` items `delegate.env` and `delegate.access` (`placement`, `via` ssh|local|none, `machine`, `ssh`, `mcp`). Without the registry keys the output is unchanged.
+- `lint` warns (rule 32 for a routine, the board check for a delegated card) when the executor is on machine A, the environment on B and the registry has no access path from A to B, and when the placement is `remote-access` but the executor runs on the environment's own machine.
+- `roadctl env check ENV [--as AGENT | --from MACHINE] [--json]` is read only: the environment is on the executor's machine (reachable), or `ssh -o BatchMode=yes -o ConnectTimeout=5 HOST true` answers, or there is no path (unreachable; exit 1). `supervise` makes the same check before the model starts; when the environment is unreachable the run is recorded as `skipped: unreachable` (exit 4) and the command does not start.
+- `roadctl candidates --card ID [--json]` or `roadctl candidates --env NAME [--role ROLE] [--needs a,b,data:x] [--json]` is one read-only choice of an executor. It walks `preference.ROLE` (the first is the main one, the rest the agreed reserve; without a list, every agent with the role) and shows for each agent the order and why it is refused: not in the owner's list, no role, fitness for the role not confirmed (`agents.NAME.fit.ROLE.confirmed`), missing tool or data, no access path, environment unreachable, the agent's own limits (reserve reached, unknown limit: no guess), a paid API with no agreed `budget`. The first eligible agent is `chosen`; no candidate means exit 1 and nothing is launched. It never changes the environment, the rights, the data access or the budget, does not map S/M/L to a model and does not learn; no model name is built into roadctl. The choice is checked again before the actual start.
+
+**Profiles and fitness.** The registry holds profiles by kind of work (ordinary implementation, hard diagnosis or planning, review), a main executor and an agreed reserve. Fitness is confirmed by checks of similar tasks; price and usage count only among the fit candidates.
+
+**Hermes.** Hermes is no longer the main way to work on a remote environment: with `remote-access` the model starts locally and reaches the environment by ssh and MCP. With `on-host` it is as before (the example scripts run `claude -p` on the machine of the environment over ssh). Starting a model on the environment's machine from a service waits for the release candidate; the dispatcher starts models on its own machine only.
+
 ## Checking the environment (doctor)
 
 Machines differ in small ways that only show on the first real run: an old installed copy, a path with another letter case, a command that is in `PATH` of a login shell but not of cron or `ssh host command`, a repository the user cannot write to, a state directory on the WSL side and another on the Windows side. `roadctl doctor [--agent NAME] [--json] [--online [--host HOST]]` finds them in one command. It is **read only**: it writes no file and no git state (it runs `git` with `GIT_OPTIONAL_LOCKS=0`), starts no model, does not poll the limits, and touches the network only with `--online`. A test compares a snapshot of the whole working tree before and after.
