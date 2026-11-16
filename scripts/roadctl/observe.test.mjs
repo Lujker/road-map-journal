@@ -281,3 +281,40 @@ test('P5.6 a10: a routine with model none and a script agent: tick --as <script>
   r.ok(['routine', 'on', 'wd2', '--by', OWNER, '--source', 'chat 2026-11-12']);
   assert.equal(r.run(['tick', '--as', SCRIPT_AGENT, '--no-pull', '--routine', 'wd2']).status, 3);
 });
+
+// ---------------------------------------------------------------- a9: the shipped example watchdog (examples/routines + examples/scheduler) on fixture data
+
+const PY = spawnSync('python3', ['--version']).status === 0;
+const EXAMPLES = path.join(scripts, '..', 'examples');
+
+test('P5.6 a9: the example watchdog routine lints in a board, is switched off, and the example script on fixture facts gives problems by status and last movement, numbers in did', { skip: !PY && 'python3 missing' }, () => {
+  const r = rig();
+  fs.mkdirSync(path.join(r.board, 'routines'), { recursive: true });
+  fs.copyFileSync(path.join(EXAMPLES, 'routines', 'watchdog.md'), path.join(r.board, 'routines', 'server-watchdog.md'));
+  r.ok(['sync']);
+  const lint = r.run(['lint']);
+  assert.equal(lint.status, 0, `${lint.stderr}${lint.stdout}`);
+  assert.match(fs.readFileSync(path.join(r.board, 'routines', 'server-watchdog.md'), 'utf8'), /^enabled: false$/m);
+  assert.match(fs.readFileSync(path.join(r.board, 'routines', 'server-watchdog.md'), 'utf8'), /EXAMPLE, not a real routine/);
+  const facts = {
+    now: '2026-11-16T10:00:00Z',
+    nodes: [...Array.from({ length: 6 }, (_, i) => ({ name: `srv-${i + 1}`, up: true })), { name: 'srv-7', up: false }],
+    requests: [
+      { id: 'R-1', status: 'waiting_customer', created: '2026-11-01T09:00:00Z', updated: '2026-11-16T09:00:00Z' }, // old, but moved an hour ago: fine
+      { id: 'R-2', status: 'open', created: '2026-11-16T08:00:00Z', updated: '2026-11-16T08:00:00Z' }, // young, 2h in open (limit 8h): fine
+      { id: 'R-3', status: 'open', created: '2026-11-16T09:00:00Z', updated: '2026-11-15T22:00:00Z' }, // 12h without movement: a problem
+      { id: 'R-4', status: 'closed', created: '2026-10-01T09:00:00Z', updated: '2026-10-02T09:00:00Z' }, // closed: never a problem
+    ],
+  };
+  const file = path.join(r.dir, 'facts.json');
+  fs.writeFileSync(file, JSON.stringify(facts));
+  const py = spawnSync('python3', [path.join(EXAMPLES, 'scheduler', 'watchdog-example.py'), '--facts', file, '--print'], { encoding: 'utf8' });
+  assert.equal(py.status, 0, py.stderr);
+  const out = JSON.parse(py.stdout);
+  assert.deepEqual(out.problems.map((p) => p.key), ['node-down-srv-7', 'request-stale-R-3']);
+  assert.equal(out.did, 'nodes 6/7, requests open 3');
+  // the output is exactly what observe reads: it records the run with the numbers
+  r.ok(['routine', 'new', 'wd-fixture', 'fixture', '--agent', ME, '--model', 'none', '--env', 'laptop', '--every', '30m']);
+  assert.equal(r.observe('wd-fixture', out).status, 0);
+  assert.match(fs.readFileSync(r.routineFile('wd-fixture'), 'utf8'), /did: nodes 6\/7, requests open 3 \| problem: unknown: node-down-srv-7/);
+});
