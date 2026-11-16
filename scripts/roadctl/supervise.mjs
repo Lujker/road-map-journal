@@ -259,7 +259,7 @@ const appendEnd = (env, rec) => { for (let i = 0; i < 3; i++) if (appendLine(led
 
 // ---------------------------------------------------------------- one run
 
-const USAGE = 'usage: roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT [--timeout 30m] [--detach] [--board DIR] -- COMMAND [ARGS...]   |   roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT --reset';
+const USAGE = 'usage: roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT [--timeout 30m] [--stdin] [--model NAME] [--detach] [--board DIR] -- COMMAND [ARGS...]   |   roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT --reset';
 const WINDOWS = 'roadctl supervise is not supported on native Windows (it needs POSIX process groups and signals); run it inside WSL';
 const NEEDS_VERSION = '0.6.0'; // the first roadctl that reads the `src=supervisor` trailer
 const UNIT = { s: 1e3, m: 60e3, h: 3600e3, d: 86400e3 };
@@ -279,17 +279,18 @@ function parseArgs({ flags, rest }) {
     timeout = Number(m[1]) * UNIT[m[2]];
   }
   if (!flags.reset && !rest.length) throw new Error(`${USAGE}; the command to supervise goes after --`);
-  return { sel: { kind, id: kind === 'orchestrator' ? flags.as : value }, as: flags.as, timeout, argv: rest };
+  if (flags.model !== undefined && (typeof flags.model !== 'string' || !AGENT_RE.test(flags.model))) throw new Error(`${USAGE}; --model is the model name of this run`);
+  return { sel: { kind, id: kind === 'orchestrator' ? flags.as : value }, as: flags.as, timeout, argv: rest, stdin: Boolean(flags.stdin), model: flags.model ?? null };
 }
 
 /** The key parts of the run ledger and what the board says about the target. Throws when the board does not know the routine or the card. */
-function targetOf(sel, as, board, timeout) {
-  if (sel.kind === 'orchestrator') return { kind: 'orchestrator', project: null, id: as, model: null, anchor: null, timeout: timeout ?? DEFAULT_TIMEOUT_MS, nodata: 'no data' };
+function targetOf(sel, as, board, timeout, model = null) {
+  if (sel.kind === 'orchestrator') return { kind: 'orchestrator', project: null, id: as, model, anchor: null, timeout: timeout ?? DEFAULT_TIMEOUT_MS, nodata: 'no data' };
   const project = projectOf(board);
   const nodata = String(board.config?.language ?? '').toLowerCase().startsWith('ru') ? 'нет данных' : 'no data';
   if (sel.kind === 'card') {
     if (!board.cards.some((c) => c.header.id === sel.id)) throw new Error(`no card ${cleanText(sel.id, 60)} on the board`);
-    return { kind: 'task', project, id: sel.id, model: null, anchor: null, timeout: timeout ?? DEFAULT_TIMEOUT_MS, nodata };
+    return { kind: 'task', project, id: sel.id, model, anchor: null, timeout: timeout ?? DEFAULT_TIMEOUT_MS, nodata };
   }
   const r = (board.routines ?? []).find((x) => x.header.id === sel.id);
   if (!r) throw new Error(`no routine ${cleanText(sel.id, 60)} on the board`);
@@ -434,7 +435,7 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
   process.on('exit', onExit);
   let child = null;
   try {
-    child = spawn(a.argv[0], a.argv.slice(1), { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: { ...childEnv, ROADCTL_RUN_ID: run_id }, cwd: process.cwd() });
+    child = spawn(a.argv[0], a.argv.slice(1), { detached: true, stdio: [a.stdin ? 'inherit' : 'ignore', 'pipe', 'pipe'], env: { ...childEnv, ROADCTL_RUN_ID: run_id }, cwd: process.cwd() });
     child.on('error', (e) => { spawnError = e; });
     pgid = child.pid ?? null;
     if (pgid) {
@@ -513,12 +514,12 @@ export async function superviseRun(ctx, { platform = process.platform, started }
   const dir = path.dirname(api.tickLedgerPath(env)); // the machine state directory
   let bdir = null;
   let t;
-  if (a.sel.kind === 'orchestrator') t = targetOf(a.sel, a.as, null, a.timeout);
+  if (a.sel.kind === 'orchestrator') t = targetOf(a.sel, a.as, null, a.timeout, a.model);
   else {
     bdir = api.findBoard(process.cwd(), typeof ctx.flags.board === 'string' ? ctx.flags.board : undefined, env);
     if (!bdir) throw new Error('no board found; run inside the project or use --board DIR / --project NAME');
     const board = api.loadBoard(bdir);
-    t = targetOf(a.sel, a.as, board, a.timeout);
+    t = targetOf(a.sel, a.as, board, a.timeout, a.model);
     const needs = t.kind === 'routine' && !ctx.flags.reset ? needsBoardVersion(api, board) : null;
     if (needs) return { code: EXIT.notStarted, text: needs };
   }
@@ -577,9 +578,9 @@ const ROADCTL = fileURLToPath(new URL('../roadctl.mjs', import.meta.url));
 function detachParent(ctx) {
   const { flags, rest, out } = ctx;
   const sel = flags.routine !== undefined ? ['--routine', flags.routine] : flags.card !== undefined ? ['--card', flags.card] : ['--orchestrator'];
-  const argv = [ROADCTL, 'supervise', ...sel, '--as', String(flags.as), ...(flags.timeout !== undefined ? ['--timeout', String(flags.timeout)] : []), ...(typeof flags.board === 'string' ? ['--board', flags.board] : []), '--', ...rest];
+  const argv = [ROADCTL, 'supervise', ...sel, '--as', String(flags.as), ...(flags.timeout !== undefined ? ['--timeout', String(flags.timeout)] : []), ...(flags.stdin ? ['--stdin'] : []), ...(flags.model !== undefined ? ['--model', String(flags.model)] : []), ...(typeof flags.board === 'string' ? ['--board', flags.board] : []), '--', ...rest];
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, argv, { detached: true, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], env: { ...process.env, ROADCTL_SUPERVISE_CHILD: '1' }, cwd: process.cwd() });
+    const child = spawn(process.execPath, argv, { detached: true, stdio: [flags.stdin ? 'inherit' : 'ignore', 'ignore', 'ignore', 'ipc'], env: { ...process.env, ROADCTL_SUPERVISE_CHILD: '1' }, cwd: process.cwd() });
     let done = false;
     const finish = (code, line) => {
       if (done) return;
@@ -631,8 +632,8 @@ export default {
     supervise: {
       group: 'Record', effect: 'write', hidden: true, summary: 'run a command under a lock, a timeout and a result check',
       purpose: 'Runs COMMAND (after --) as one supervised run of a routine, a card or the orchestrator of an agent. One run per key at a time on this machine, for the whole run: a second supervise of the same key exits 5 (busy, recorded as skipped: busy), and `tick` offers no RUN for a routine whose run is live. Under the lock it checks again that the run is still allowed (pause, requires, "allowed and due" for a routine), begins the run in the run ledger (ROADCTL_RUN_ID is passed to the command), starts the command in its own process group, keeps a pulse in the lock every 30 seconds and a private log (mode 0600, bounded, kept 30 days; its last 600 characters go to the ledger). A command that outlives --timeout (default: the routine\'s timeout, else 2 hours) gets TERM, then KILL, for its whole group (outcome timeout). A command that ends without a result in the ledger (routine done, report, run done) is "failed: no result"; for a routine the supervisor then writes the result to the routine file itself (the Log line ends with src=supervisor). TERM, INT or HUP to the supervisor, or pause --now, stops the group (outcome aborted). If the supervisor itself is killed with -9, the next supervise finds the orphan: its command alive -> busy, gone -> the lock is taken at once and the old run is crashed, and a local back-off (10, 20, 40 minutes, then a stop until --reset) keeps a routine whose result cannot be written from being offered on every tick. The result is written through the same hooks as `routine done` (a refusing hook means nothing is written). A routine\'s board must say "requires": "0.6.0" in config.json; a card whose run ended without a result is not run again until --reset; an open run begun by `run begin` or a claim is not taken over (busy); `tick` only marks the RUN of a dead supervisor (recover), the recovery is done by supervise. --detach prints run_id and returns while the supervisor goes on in its own session (it survives a dropped ssh). POSIX only (WSL included); native Windows is refused. Starts no model by itself: COMMAND is yours.',
-      usage: ['roadctl supervise --routine ID --as AGENT [--timeout 30m] [--detach] [--board DIR] -- COMMAND [ARGS...]', 'roadctl supervise --card ID --as AGENT [--timeout 30m] [--detach] -- COMMAND [ARGS...]', 'roadctl supervise --orchestrator --as AGENT [--timeout 30m] [--detach] -- COMMAND [ARGS...]', 'roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT --reset'],
-      flags: [['--routine ID', 'supervise a run of this routine (the routine\'s own agent in --as)'], ['--card ID', 'supervise a run of this card'], ['--orchestrator', 'supervise the orchestrator run of the agent in --as'], ['--as AGENT', 'the agent that runs it'], ['--timeout SPAN', 'kill the command after this long: 90s, 30m, 2h, 1d (default: the routine\'s timeout, else 2h)'], ['--detach', 'print run_id and return at once; the supervisor goes on in its own session'], ['--reset', 'clear the local back-off or stop of this key; starts nothing'], ['--json', 'machine-readable output']],
+      usage: ['roadctl supervise --routine ID --as AGENT [--timeout 30m] [--stdin] [--detach] [--board DIR] -- COMMAND [ARGS...]', 'roadctl supervise --card ID --as AGENT [--timeout 30m] [--stdin] [--model NAME] [--detach] -- COMMAND [ARGS...]', 'roadctl supervise --orchestrator --as AGENT [--timeout 30m] [--detach] -- COMMAND [ARGS...]', 'roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT --reset'],
+      flags: [['--routine ID', 'supervise a run of this routine (the routine\'s own agent in --as)'], ['--card ID', 'supervise a run of this card'], ['--orchestrator', 'supervise the orchestrator run of the agent in --as'], ['--as AGENT', 'the agent that runs it'], ['--timeout SPAN', 'kill the command after this long: 90s, 30m, 2h, 1d (default: the routine\'s timeout, else 2h)'], ['--stdin', 'the command reads this process\'s stdin (the prompt of `roadctl launch`); without it the command gets none'], ['--model NAME', 'record the model of this run (for a card or the orchestrator; a routine\'s model is its own header): an escalated second attempt keeps the actual models'], ['--detach', 'print run_id and return at once; the supervisor goes on in its own session'], ['--reset', 'clear the local back-off or stop of this key; starts nothing'], ['--json', 'machine-readable output']],
       examples: ['roadctl supervise --routine server-watch --as claude-code@home-wsl --timeout 30m -- claude -p --max-turns 30 "$(cat prompt.txt)"', 'roadctl supervise --routine server-watch --as claude-code@home-wsl --detach -- ./run-watch.sh', 'roadctl supervise --orchestrator --as claude-code@home-wsl -- claude -p "$(roadctl tick --as claude-code@home-wsl --prompt)"'],
       changes: 'Writes in the machine state directory (the lock supervise-<key>.lock and its .run file, run-logs/, supervise.state.json, runs.jsonl). For a routine whose run left no result it writes the routine file (last_run, last_result failed, a Log line) and commits and pushes it like routine done. No other board file.',
       exits: '0 the run ended ok or escalated (or --detach started it, or --reset); 1 failed (no result, or the command reported failed); 2 usage error or unsupported platform; 4 not started (not allowed or not due any more, back-off or stop); 5 busy; 6 paused; 7 timeout; 8 aborted',

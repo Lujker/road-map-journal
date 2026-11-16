@@ -61,7 +61,7 @@ try {
 }
 const xdgDir = STATE?.xdgDir ?? ((env, name, fallback) => (env[name]?.trim() ? env[name].trim() : path.join(os.homedir(), ...fallback))); // seam (P5.28): lone-copy fallback
 
-export const VERSION = '0.6.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.7.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -3457,7 +3457,7 @@ export function showRoutine(board, id, { log = 5 } = {}) {
 /** The board switch: `roadctl autonomy routines on|off`. */
 export const setRoutinesSwitch = (board, on) => writeAutonomy(board, { routines: on });
 
-const ROUTINE_USAGE = 'usage: roadctl routine list [--all] [--json] | show <id> [--json] | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00"] | on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME | done <id> --as AGENT --result ok|escalated|failed "summary"';
+const ROUTINE_USAGE = 'usage: roadctl routine list [--all] [--json] | show <id> [--json] | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00"] | on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME | launch <id> [--json] | done <id> --as AGENT --result ok|escalated|failed "summary"';
 
 /**
  * The whole of `routine done` including the module hooks (routine-done-before may refuse or replace the text, routine-done-after sees the result).
@@ -3528,6 +3528,10 @@ export function routineCommand(flags, args, io, env = process.env) {
     const sw = autonomyOf(board).routines;
     out(`${args[2]}: ${sub === 'on' ? 'enabled' : 'disabled'}${r.note}.${sub === 'on' && !sw ? ' The board switch is OFF, so nothing runs until the owner runs roadctl autonomy routines on --by NAME.' : ''} Not committed: run roadctl save`);
     return 0;
+  }
+  if (sub === 'launch') { // P5.7: the description lives in the launch module; `routine launch ID` is its `launch --routine ID`
+    if (!args[2] || !MODULE_REG.commands.launch) throw new Error(ROUTINE_USAGE);
+    return MODULE_REG.commands.launch.run({ flags: { ...flags, routine: args[2], card: undefined }, args, rest: [], io, out, env, api: moduleApi(), modules: MODULE_REG.modules });
   }
   if (sub === 'done') {
     if (!args[2] || !str('as') || !str('result') || !(args[3] || flags.did)) throw new Error('usage: roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary"   |   roadctl routine done <id> --as AGENT --result ok|escalated|failed --did "what was done" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]'); // seam (P5.13): --did instead of the text
@@ -3745,12 +3749,12 @@ export const COMMANDS = {
     changes: 'The delegate and claim headers and one Log line of that card (not committed: run roadctl save).', exits: '0 ok; 1 refused; 2 usage error, unknown card or no board found',
   },
   routine: {
-    group: 'Delegate', effect: 'git', summary: 'recurring routines (list, show read; new, on, off write; done git)',
+    group: 'Delegate', effect: 'git', summary: 'recurring routines (list, show, launch read; new, on, off write; done git)',
     purpose: 'Recurring, mostly mechanical project tasks (collect merge request, issue or message state, watch servers) in board/routines/<id>.md. Each has an executor the owner names when creating it: agent, model and env are REQUIRED; a routine without any of them never runs. A routine runs only when the board switch autonomy.routines is on (roadctl autonomy routines on), the routine is enabled, approved, due (no last_run, or now is at least last_run + every) and inside its optional hours window (header hours: days and times, local time or tz=ZONE; outside it list says "outside hours"); roadctl tick --as AGENT then offers it as RUN to that agent only. list shows every routine with its run state and why it would not run now (--all: every board); show prints one routine. new creates a routine from a template, switched off and not approved. on and off are the owner\'s switch: on records the approval (default scope read+board, --source required) and, on a board that requires roadctl 0.6.0, a hash of the routine\'s content (approved_hash): a routine edited afterwards (Steps, agent, every, scope, ...) is "changed after approval" and does not run until the owner runs on again (notify, enabled, last_* and the Log are outside the hash); on refuses without agent, model and env; only when the owner told you to. done is for the routine\'s own agent: sets last_run and last_result, appends a Log line (up to 1500 characters, the last 50 lines are kept) and commits and pushes ONLY that file, like report (offline it stays local; a conflict is applied again on the server file). The routine text is the owner\'s instruction within the approved scope (default: read external systems, write the board); hand over with roadctl delegate or a question for the owner, as its Escalate section says.',
-    usage: ['roadctl routine list [--all] [--json]', 'roadctl routine show <id> [--json]', 'roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]', 'roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF]   (only when the owner told you to)', 'roadctl routine off <id> --by NAME   (only when the owner told you to)', 'roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary" [--json]'],
+    usage: ['roadctl routine list [--all] [--json]', 'roadctl routine show <id> [--json]', 'roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]', 'roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF]   (only when the owner told you to)', 'roadctl routine off <id> --by NAME   (only when the owner told you to)', 'roadctl routine launch <id> [--json]   (read only: the argv, stdin and timeout to start the agent; docs/roadctl.md, Launch description)', 'roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary" [--json]'],
     flags: [ALL('list routines of'), ['--agent A / --model M / --env E', 'new: the executor (an agent name like claude-code@work-notebook, a model like claude-haiku-5-5, an environment like Work-notebook-wsl); all three are required, ask the owner, never guess'], ['--every SPAN', 'new: how often it is due: 30m, 2h, 1d (at least 5m)'], ['--hours H', 'new: the time window in which it may run: DAYS HH:MM-HH:MM[ tz=ZONE], for example "mon-fri 09:00-19:00" or "daily 08:00-23:00 tz=Europe/Moscow" (default: any time; local time of this machine without tz)'], ['--by NAME', 'on, off: the owner who decided'], ['--scope S', 'on: read+board (default) or read+board+external'], ['--source REF', 'on: where the owner said so (required when no approval is recorded yet)'], ['--as AGENT', 'done: the routine\'s own agent'], ['--result R', 'done: ok, escalated or failed'], J],
     examples: ['roadctl routine list', 'roadctl routine new mr-status "Collect MR and issue status" --agent claude-code@work-notebook --model claude-haiku-5-5 --env Work-notebook-wsl --every 2h', 'roadctl routine on mr-status --by Lujker --source "chat 2026-11-12"', 'roadctl routine done mr-status --as claude-code@work-notebook --result ok "3 cards updated, nothing to hand over"'],
-    changes: 'list, show: nothing. new: creates board/routines/<id>.md. on, off: the enabled (and approved) header and one Log line of that routine file (not committed: run roadctl save). done: the last_run, last_result headers and one Log line of that file, then a git commit and push of that file only (needs the network; offline keeps the commit local).', exits: '0 ok (done: recorded or recorded-local); 1 refused (on: missing agent, model or env; done: not the routine\'s agent) or failed; 2 usage error, missing agent/model/env on new, unknown routine or no board found',
+    changes: 'list, show, launch: nothing. new: creates board/routines/<id>.md. on, off: the enabled (and approved) header and one Log line of that routine file (not committed: run roadctl save). done: the last_run, last_result headers and one Log line of that file, then a git commit and push of that file only (needs the network; offline keeps the commit local).', exits: '0 ok (done: recorded or recorded-local); 1 refused (on: missing agent, model or env; done: not the routine\'s agent) or failed; 2 usage error, missing agent/model/env on new, unknown routine or no board found',
   },
   approve: {
     group: 'Owner only', effect: 'write', owner: true, summary: 'record the owner approval on a card',
@@ -3961,7 +3965,7 @@ function parse(argv) {
   const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--run', '--workdir', '--hours', '--routine', '--kinds']);
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
   const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
-  const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card']); // seam (P5.13); --timeout, --card: P5.2
+  const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { o.rest = argv.slice(i + 1); break; } // P5.2: what follows `--` is a command line for `supervise`, not flags

@@ -29,7 +29,7 @@ roadctl tick --ledger [--as AGENT] [-n 20]     the last runs of tick (read-only)
 roadctl pause [--reason TEXT] [--until SPAN|TIME] [--by NAME] | pause status [--json]   the owner's local stop switch: tick starts nothing on this machine until resume (see Pause and resume)
 roadctl pause --now [--reason TEXT] ...   the same, and the runs held by roadctl supervise on this machine are stopped too
 roadctl resume                    end the pause of this machine (owner only)
-roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT [--timeout 30m] [--detach] -- COMMAND...   run COMMAND as one supervised run: a lock for the whole run, a timeout, a check that a result was reported (see Run supervisor)
+roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT [--timeout 30m] [--stdin] [--model NAME] [--detach] -- COMMAND...   run COMMAND as one supervised run: a lock for the whole run, a timeout, a check that a result was reported (see Run supervisor)
 roadctl runs [--open] [--json] [--as AGENT] [-n 20]   the runs of routines and delegated tasks on this machine: outcome, attempt, duration, summary fields (read-only; see Run ledger)
 roadctl run begin <routine|card> --as AGENT [--run ID] | run note [RUN_ID] "text"   start a run (a second begin: exit 5) or leave a checkpoint
 roadctl run done --as AGENT --result ok|escalated|failed --did "text" [--decision T] [--problem "kind: key: text"] [--ask T] [--not-checked T]   the duty orchestrator ends its run with a summary (local; see Run summary and delivery)
@@ -37,6 +37,7 @@ roadctl digest [--since-state NAME] [--dry-run] [--all] [--json] | digest --dail
 roadctl routine list [--all] [--json]          recurring routines with their run state and why one would not run; show <id> prints one
 roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]   a routine from a template, switched off (agent, model and env are required)
 roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME   the owner's switch; only when the owner told you to
+roadctl routine launch <id> [--json]   read only: the argv, stdin, environment names and timeout that start the routine's agent, from the routine and the local launch template (see Launch description)
 roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary"   the routine's agent records a run; commits and pushes only that file
 roadctl routine done <id> --as AGENT --result R --did "text" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]   the same with a run summary (fields: see Run summary and delivery)
 roadctl autonomy routines on|off --by NAME     the board switch for routines (own key autonomy.routines); only when the owner told you to
@@ -352,6 +353,7 @@ Each check has an `id`, a `status`, a `detail` and a `hint`. `ok` passed; `warn`
 | `state-dirs` | on WSL: a second, native Windows state directory (`<Windows home>/.local/state/road-map-journal`; found under `/mnt/c/Users/*`, or set `ROADCTL_WINDOWS_HOME`). Locks, the ledger and limit confirmations are not shared between the two | both exist: warn. A Hermes monitor state directory (`~/.road-map-journal`) is mentioned, not judged |
 | `registry` | the registry is readable and its providers are defined | broken JSON or unknown provider: fail (tick, limits and delegation stop with exit 2); no registry: skip |
 | `agent`, `executor`, `launch`, `limits-command` | with `--agent NAME`: it is in the registry, the command of its host (`claude`, `codex`, `hermes`) is found in `PATH` as a non-interactive shell finds it, the registry's `launch` command and a `command` provider are found | executor missing: **fail**, with the `PATH` hint; agent not in the registry, unknown host, a missing launch or limits command: warn. Without `--agent` the executors are only listed (skip) |
+| `launch-templates`, `launch-template` | the local file `conductor.json` (see [Launch description](#launch-description)): absent is `skip`; inside a git work tree, owned by another user or writable by group or others, or invalid: **fail**; a settings or MCP file it names that does not exist: warn; with `--agent NAME`, `launch-template` warns when no template exists for that agent | fail / warn as listed |
 | `boards` | the boards found: the workspace, the boards list and the one for the current directory | none: warn |
 | `board-load`, `board-requires`, `board-requires-installed` | per board: `config.json` reads; `requires` (see [Compatibility between copies](developing-roadctl.md)) against this copy and against the installed copy | a board that this copy or the installed copy is too old for: **fail** (`board requires a newer copy`); unreadable board: fail |
 | `board-git`, `board-sync`, `origin-reachable` | per board repository: its `.git` is writable by this user and has no stale `index.lock`; uncommitted changes, commits not pushed, commits behind origin as last fetched; with `--online`: `git ls-remote` answers | `.git` not writable: fail; the rest: warn |
@@ -477,7 +479,7 @@ An empty output means silence: a scheduler forwards whatever is printed and noth
 
 ## Run supervisor
 
-`roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT [--timeout 30m] [--detach] [--board DIR] -- COMMAND [ARGS...]` runs COMMAND as **one supervised run** and makes sure it is not duplicated, does not hang for ever and does not lose its result, whatever the agent is. It starts no model by itself: COMMAND is yours (`claude -p ...`, a script of a scheduler). POSIX only (WSL included); on native Windows it refuses with an explanation and exit 2. Everything after `--` is the command line, never roadctl flags. It needs a board for `--routine` and `--card` (`--board DIR`, `--project NAME` or the current directory); `--orchestrator` takes the agent from `--as`.
+`roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT [--timeout 30m] [--stdin] [--model NAME] [--detach] [--board DIR] -- COMMAND [ARGS...]` runs COMMAND as **one supervised run** and makes sure it is not duplicated, does not hang for ever and does not lose its result, whatever the agent is. It starts no model by itself: COMMAND is yours (`claude -p ...`, a script of a scheduler). POSIX only (WSL included); on native Windows it refuses with an explanation and exit 2. Everything after `--` is the command line, never roadctl flags. `--stdin` gives the command this process's stdin (the prompt from [`roadctl launch`](#launch-description); without it the command has none, also with `--detach`, where the pipe is inherited by the detached supervisor), and `--model NAME` records the actual model of a card or orchestrator run (a routine's model is its header), so a later attempt of the card keeps the models it really ran under. It needs a board for `--routine` and `--card` (`--board DIR`, `--project NAME` or the current directory); `--orchestrator` takes the agent from `--as`.
 
 - **One run per key, for the whole run.** The key is a routine of a project (`routine:PROJECT/ID`), a card (`task:PROJECT/ID`) or the orchestrator of an agent (`orchestrator:-/AGENT`). The lock is a file `supervise-<key>.lock` in the machine state directory, taken with the same helper as the other locks (exclusive create; no `flock`); it holds the pid of the supervisor and its pulse is the modification time, touched every 30 seconds. A second `supervise` of the key prints `busy` and exits **5** (the same code as a busy `tick`) and writes a `skipped` record with the reason `busy` to the run ledger, instead of exiting 0 silently. A lock whose supervisor is dead is taken at once, not after 10 minutes; a lock with a live pid and a pulse older than 10 minutes is taken over by age.
 - **Checked again under the lock.** Between `tick` and `supervise` the decision may change: under the lock the supervisor checks the pause (exit **6**), the local back-off below, the board's `requires` and, for a routine, "allowed and due" with the same rules as `tick` (routine switched off, outside hours, not approved, not due any more): then it starts nothing and exits **4**.
@@ -511,6 +513,47 @@ The state files are `supervise-<key>.lock`, its `.run` sidecar, `run-logs/` and 
 **Known limitations.** (1) A SIGKILL of the supervisor in the instant between starting the command and writing its process-group id leaves a group nobody can find; the next `supervise` takes the lock for dead. (2) `run begin`/claim runs of another executor that are past their own deadline are marked `crashed` by the run ledger (P5.1) when a supervisor begins its run, so an executor that is still alive can run beside the command; both wait for a liveness proof for unsupervised runs (P5.4, P5.21). (3) If the takeover guard stays busy when a run ends, no `stop_unsaved` marker is set, so a stop that could not be saved may be lost once the supervisor exits. (4) The shared lock helper (`acquireLock`) still removes a takeover guard older than 5 seconds; the supervisor's own guard handling removes one only when its owner is dead or it is older than 10 minutes.
 
 **Format change (roadctl 0.6.0).** New: the supervisor's Log line trailer ` src=supervisor` (`[run=ID dur=Ns host=H src=supervisor]`), the command `supervise`, `pause --now` (a `now` key in `pause.json`), the module hook text `a supervised run is live`, the `routine.recover` field of a RUN item in `tick --json` (and ` (recover: ...)` in its text), and the module api `routineDoneWithHooks` (the whole of `routine done`, hooks included). An older copy reads the new trailer as plain text of the line (the strict trailer expression does not match, so it shows no run id for that line), and does not know `supervise`; so a board whose routines are run by a supervisor sets `"requires": "0.6.0"` in `board/config.json` first (and installs 0.6.0 on every machine that runs them). `last_result` keeps `ok`, `escalated` and `failed` (a supervised `timeout` or `aborted` is `failed` in the routine file and has its own outcome in the local ledger).
+
+## Launch description
+
+`roadctl routine launch <id> [--json]` (and `roadctl launch --card ID --profile NAME [--json]`, hidden from the overview) is the one source of the command that starts an agent. It is read only and **starts nothing**: a scheduler, the conductor service (P5.25) or any other launcher reads the description and runs it, normally under [`supervise`](#run-supervisor). It prints:
+
+- `argv`: the command, with the model, the settings file, the list of MCP servers and the turn cap filled in; the prompt is **never** in argv (it can be long and shows in `ps`);
+- `stdin`: the prompt, which the launcher writes to the command's standard input (`supervise --stdin` passes it on);
+- `env`: the **names** of the environment variables the launcher passes through, never their values (`doctor` treats them the same way);
+- `timeout_s`: for a routine, its own `timeout` (the cap `supervise` takes by default), and `max_turns`;
+- `supervise_argv`: the arguments for `roadctl supervise`, ending in `--`, so the launcher appends `argv`; the time cap in it is the one `supervise` enforces. `reasons`: why the routine would not run now (empty when it would).
+
+**Where the command comes from.** The rule: **`roadctl` does not run a command taken from git.** Launch templates live only in the local file `${XDG_CONFIG_HOME:-~/.config}/road-map-journal/conductor.json` of the machine. A routine on the board gives only data under the approval hash (agent, model, `timeout`; later `mcp:` and `allow:`). A `launch` string in the registry (a file in git that agents write) is ignored with a warning. The file is refused when it lies inside a git work tree, belongs to another user or is writable by group or others, and without a template for the agent the command refuses with a hint and exit 1: nothing is started "somehow".
+
+```json
+{
+  "version": 1,
+  "templates": {
+    "claude-code": {
+      "argv": ["claude", "-p", "--model", "{model}", "--strict-mcp-config", "--mcp-config", "{mcp_config}", "--settings", "{settings}", "--max-turns", "{max_turns}", "--output-format", "json"],
+      "mcp_config": "/home/me/.config/road-map-journal/mcp-routines.json",
+      "settings": "/home/me/.config/road-map-journal/claude-routines.json",
+      "max_turns": 30,
+      "env": ["HOME"]
+    }
+  },
+  "profiles": {
+    "worker": { "agent": "claude-code@home-wsl", "model": "claude-sonnet-5-5", "attempt": { "timeout": "30m", "turns": 40 }, "card": { "timeout": "2h" }, "strong": "strong" },
+    "strong": { "agent": "claude-code@home-wsl", "model": "claude-opus-5-5", "attempt": { "timeout": "45m" } }
+  }
+}
+```
+
+A template is found under the agent's full name, else under its host (`claude-code`). The only placeholders are `{model}`, `{mcp_config}`, `{settings}` and `{max_turns}` (`{prompt}` is refused). `mcp_config` is a file with only the MCP servers the run needs, passed with `--strict-mcp-config`: the tools in the context are the main cost of a run, so a strict list saves most without any accounting. Paths are absolute. This change enables nothing: no template, profile or limit exists until the owner writes it.
+
+**Cards and a second attempt.** A profile gives the agent, the model, an attempt limit (`attempt.timeout`, required; `attempt.turns`), the limit of the whole card (`card.timeout`, `card.turns`) and, optionally, the one stronger profile it permits (`strong`). The time cap of a first attempt is the smaller of the attempt and the card limit. A later attempt (a profile that another profile permits as `strong`, the one whose model matches the first attempt's) gets only what the run ledger can measure: **remaining = card limit minus the sum of the durations of the earlier runs of the card**; turns are **not measured** (the ledger keeps them only for a run the supervisor had to end itself, whose outcome is unknown anyway), so a card with a `card.turns` limit allows the first attempt only and refuses the second. A change of model resets nothing, and the description lists the actual `previous` runs and `models`. It is refused (exit 1, never guessed) while a run of the card is live or its outcome is unknown (crashed, timeout, aborted, or a failure the supervisor wrote because nothing was reported), when the card has no time limit, when the time used cannot be measured or a turn limit of the whole card is set, and when the limit is used up. Units: time is wall-clock seconds of runs under `supervise`; turns are what the CLI counts and are not comparable between CLIs. Without limits or a measurable remainder, escalation is not offered (the `escalation` field of the first attempt says why). Whether and when to escalate is the conductor's policy (P5.25, P5.21), not decided here. These are the time and turn limits and the subscription reserves that exist today; money accounting and the daily cap stay the deferred P5.20, and a list-price estimate is not spending.
+
+**Hermes.** Restricting the tools of a Hermes job is a setting of that Hermes job itself (its own tool or skill set); `roadctl` documents it and prints no argv for it unless a template for `hermes` exists in `conductor.json`.
+
+`doctor` checks the file (`launch-templates`). Exit codes: 0 described, 1 refused, 2 usage error, invalid file, unknown routine or card, or no board.
+
+**Format.** `conductor.json` is local to a machine, not part of a board: no card, routine or `config.json` key was added, so no board needs a new `requires`. `VERSION` is 0.7.0 so that a launcher can require a copy that has `routine launch`, `supervise --stdin` and `--model`.
 
 ## What was tested
 

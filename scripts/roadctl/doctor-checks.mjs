@@ -10,6 +10,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { INSTALLED_JSON, declaredVersion, fingerprint, readInstalledJson } from './fingerprint.mjs';
+import { readConductor } from './launch.mjs';
 import { pauseLine, readPause } from './pause.mjs';
 
 export const STATUSES = ['ok', 'warn', 'fail', 'skip'];
@@ -507,6 +508,26 @@ function routineCheck(ctx, board, b, loaded) {
   return res('routines', 'ok', tail, null, b.name);
 }
 
+/** P5.7: the local launch templates (conductor.json): present, safe to trust (not in git, not writable by others), valid, and the files they name exist. Absent is fine: `routine launch` then refuses. */
+export function checkLaunch(ctx, loaded) {
+  const c = readConductor(ctx.env, ctx.platform);
+  const shown = tilde(c.file, ctx.home);
+  if (c.state === 'missing') return res('launch-templates', 'skip', `no ${shown}: roadctl routine launch refuses until a template exists (nothing is taken from the registry or from git)`, 'create it, see docs/roadctl.md "Launch description"');
+  if (c.state === 'git' || c.state === 'unsafe') return res('launch-templates', 'fail', c.reason.replace(c.file, shown), c.state === 'git' ? 'move the file out of the repository: templates are a command, and agents write git' : `chmod go-w ${shown}   (and keep it owned by you)`);
+  if (c.state === 'invalid') return res('launch-templates', 'fail', c.reason.replace(c.file, shown), 'fix the file; roadctl launch refuses until it is valid');
+  const { templates = {}, profiles = {} } = c.conductor;
+  const files = [...Object.values(templates), ...Object.values(profiles)].flatMap((x) => [x.mcp_config, x.settings]).filter(Boolean);
+  const gone = [...new Set(files)].filter((f) => !fs.existsSync(f));
+  const out = [];
+  if (gone.length) out.push(res('launch-templates', 'warn', `${shown} names files that do not exist: ${names(gone.map((f) => tilde(f, ctx.home)))}`, 'create them or fix the paths (the strict MCP list and the settings file are passed to the agent)'));
+  else out.push(res('launch-templates', 'ok', `${shown}: ${Object.keys(templates).length} template(s), ${Object.keys(profiles).length} profile(s), permissions and paths fine`));
+  if (ctx.agent) {
+    const host = ctx.api.hostOfAgent(ctx.agent, loaded.reg);
+    out.push(templates[ctx.agent] || templates[host] ? res('launch-template', 'ok', `a template exists for ${ctx.agent}`, null, ctx.agent) : res('launch-template', 'warn', `no template for ${ctx.agent} (looked for templates.${ctx.agent} and templates.${host}): roadctl routine launch refuses for it`, 'add one to conductor.json', ctx.agent));
+  }
+  return out;
+}
+
 export const CHECKS = [
   ['runtime', checkRuntime],
   ['installed-copy', checkInstalledCopy],
@@ -517,5 +538,6 @@ export const CHECKS = [
   ['state', checkState],
   ['registry', (ctx, loaded) => checkRegistry(ctx, loaded)],
   ['executors', (ctx, loaded) => checkExecutors(ctx, loaded)],
+  ['launch-templates', (ctx, loaded) => checkLaunch(ctx, loaded)],
   ['boards', (ctx, loaded) => checkBoards(ctx, loaded)],
 ];

@@ -9,7 +9,8 @@ import pause from './pause.mjs';
 import digest from './digest.mjs';
 import supervise from './supervise.mjs';
 import approvalHash from './approval-hash.mjs';
+import launch from './launch.mjs';
 
-export const MODULES = [probe, doctor, runLedger, pause, digest, supervise, approvalHash];
+export const MODULES = [probe, doctor, runLedger, pause, digest, supervise, approvalHash, launch];
 
 export const buildModuleRegistry = (opts) => buildRegistry(MODULES, opts);
