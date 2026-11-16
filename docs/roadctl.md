@@ -36,6 +36,7 @@ roadctl run begin <routine|card> --as AGENT [--run ID] | run note [RUN_ID] "text
 roadctl run done --as AGENT --result ok|escalated|failed --did "text" [--decision T] [--problem "kind: key: text"] [--ask T] [--not-checked T]   the duty orchestrator ends its run with a summary (local; see Run summary and delivery)
 roadctl digest [--since-state NAME] [--dry-run] [--all] [--json] | digest --daily   model-free text for the owner: problems and questions once, or the daily overview (see Run summary and delivery)
 roadctl stats [--since DATE] [--accept-from DATE] [--all] [--json]   read only: autonomy metrics from the Logs in git, the run ledger, the owner audit and the mandate (see Autonomy metrics)
+roadctl plan check FILE [--json]   read only: check a card proposal (JSON) against the board and the mandate (see Plan check)
 roadctl routine list [--all] [--json]          recurring routines with their run state and why one would not run; show <id> prints one
 roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]   a routine from a template, switched off (agent, model and env are required)
 roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME   the owner's switch; only when the owner told you to
@@ -235,6 +236,7 @@ kinds: fix, docs, tests             fix feature docs tests refactor research
 max_size: M                         S | M | L
 merge: branch                       branch | main (main needs L4)
 budget: cards_per_day=2, runs_per_week=10
+plan_max_cards: 5                   optional (0.11.0): the most cards one plan may propose (default 5)
 approved: Owner, 2026-11-16         written by roadctl mandate approve
 approved_hash: sha256-v1:...        ... with the content hash
 ---
@@ -633,6 +635,43 @@ A template is found under the agent's full name, else under its host (`claude-co
 `doctor` checks the file (`launch-templates`). Exit codes: 0 described, 1 refused, 2 usage error, invalid file, unknown routine or card, or no board.
 
 **Format.** `conductor.json` is local to a machine, not part of a board: no card, routine or `config.json` key was added, so no board needs a new `requires`. `VERSION` is 0.7.0 so that a launcher can require a copy that has `routine launch`, `supervise --stdin` and `--model`.
+
+## Plan check (`roadctl plan check`, P5.34 early slice)
+
+`roadctl plan check FILE [--json]` reads one **proposal file** (JSON) and says what would become of each card. It is read only: no model, no network, no write, no start (hidden from the overview, like `stats`). The same file is meant for a collaborative session (L2), a future planner run on a mandate (L3) and a future request from the channel (P5.36): one format, no second planner. Writing the cards (`plan apply`), inbox, milestones as records and the planner launcher are not built; the owner creates the cards with the existing `new` and fills them from the file. A walk-through for the owner: [plan-check-runbook.md](plan-check-runbook.md).
+
+```text
+{ "plan": 1, "source": "collab",                       // collab | mandate | channel (informational)
+  "cards": [ { "key": "c1", "title": "...", "goal": "...",
+               "criteria": [ { "id": "a1", "text": "...", "check": "test: node --test scripts/x.test.mjs" } ],
+               "kind": "fix", "size": "S",              // mandate kinds, S | M | L
+               "env": "Local", "role": "worker", "needs": ["data:x"],
+               "effects": "scripts/ only", "stop_conditions": "stop on a red test",
+               "depends_on": ["c0", "P5.2"],            // keys of this file or existing card ids
+               "roadmap": "P5.34", "mandate_goal": "G1" } ],   // one of the two is required
+  "milestones": [ { "title": "...", "cards": ["c1"], "meaning": "...", "goal_check": "how the overall goal is checked" } ] }
+```
+
+A check method is `test`, `command`, `inspect`, `review` or `owner`, then `:` and what is run or looked at. Per card the result is **refused** (a reason from the table), **proposed** (valid, grants nothing) or **in-mandate** (see below). The file is `proposed` as a whole when no card is refused (exit 0), else `refused` (exit 1). `--json` has `cards[]` (`key`, `title`, `result`, `reasons`, `notes`), `file_reasons`, `limit`, `milestones`, `mandate`, `summary` and the table `reasons_table`; the text output ends with the table of the reasons that occurred.
+
+| Reason | Refused when |
+| --- | --- |
+| `bad-file` | not JSON, not an object, `plan` is not 1, or `cards` is not a list |
+| `no-goal` | the card has no goal |
+| `no-criterion` | no criterion, or none with a check method written |
+| `no-link` | neither a ROADMAP item (`roadmap`, form only) nor a `mandate_goal` |
+| `unknown-goal` | the `mandate_goal` is not in the mandate Goals |
+| `over-limit` | the card is beyond `plan_max_cards` of the mandate (built-in default 5): it would not be recorded |
+| `duplicate`, `duplicate-in-file` | the same normalised title as an existing card (or an earlier card of the file), or the same mandate goal with the same criteria |
+| `unknown-dependency` | `depends_on` names neither an existing card nor a card of the file |
+| `dependency-cycle` | the card is in a cycle, or depends on itself |
+| `bad-milestone` | a milestone lacks title, meaning, `goal_check` or cards, or names a card that is neither in the file nor on the board |
+
+**What is not a refusal.** A kind or size outside the mandate (`kinds`, `max_size`), no kind or size, an unknown size (it is never turned into S), and a missing, template (`TBD`, `(...)`, `none`) or unknown `env`, `role`, `effects`, `stop_conditions` or check method leave a valid proposal with a note. None of it is ever permission. **Without a mandate, at L1 or L2, or with a mandate that is not approved, was changed after approval or is malformed, no card is better than "proposed"** (the card path stays `approve` by the owner). Only an approved, unchanged L3 or L4 mandate gives "in-mandate", and only for a card whose kind and size are inside it, that links a mandate goal and has a defined environment (the registry is consulted when it describes environments and roles), role, effects, stop conditions and check methods. "In-mandate" is not ready and not taken: the full admission (dependencies done, the budget, the labelled Plan lines) is made at START and `delegate`, and `by_mandate` is written there, never by the check.
+
+**What the check does not judge.** Form and mechanical limits only: it does not know whether a size, an effect or a criterion is true, whether a ROADMAP item exists, or whether `## Forbidden` is respected; that stays with the owner's review and the check afterwards. A milestone is checked for form (its own `goal_check` is required, since closed cards alone do not prove the overall goal); recording and checking it is stage 3.
+
+**Size and splitting.** S, M and L are a rubric for the author (S one bounded, clear result; M one goal across components, with a reason it cannot be split; L composite, split before unattended work), not a count of criteria and not a safety class. A simple task stays one card. A big one is split by results that can each be checked, with `depends_on`, without duplicating existing cards and without artificial pieces. Parallel work gets its change boundaries in the Delegation section; there is no file-overlap analysis or scoring. **Size never chooses a model**: the executor comes from the profile, suitability and availability (`roadctl candidates`, P5.23), and `tick` and `delegate` do not choose it.
 
 ## Autonomy metrics (`roadctl stats`, P5.27)
 
