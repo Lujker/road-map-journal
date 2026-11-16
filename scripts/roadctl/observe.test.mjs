@@ -43,7 +43,7 @@ function rig() {
     ok(['routine', 'on', id, '--by', OWNER, '--source', 'chat 2026-11-12']);
     ok(['autonomy', 'routines', 'on', '--by', OWNER]);
   };
-  const observe = (id, facts, agent = ME, over = {}) => run(['routine', 'observe', id, '--as', agent], over, JSON.stringify(facts));
+  const observe = (id, facts, agent = ME, over = {}, flags = []) => run(['routine', 'observe', id, '--as', agent, ...flags], over, JSON.stringify(facts));
   const digest = (args = [], over = {}) => run(['digest', ...args], over);
   const calls = (n) => readCalls(env.FAKE_LOG, n);
   const routineFile = (id = 'mr-status') => path.join(board, 'routines', `${id}.md`);
@@ -88,7 +88,7 @@ test('P5.6 a2: the same problem key in two observations gives one digest message
   const snap = JSON.parse(fs.readFileSync(r.observeFile, 'utf8'));
   assert.equal(snap.v, 1);
   assert.deepEqual(Object.keys(snap.routines), ['my-app/mr-status']);
-  assert.deepEqual(snap.routines['my-app/mr-status'].problems['disk-full'], { key: 'disk-full', text: '/var is full on srv-3', since: T0 });
+  assert.deepEqual(snap.routines['my-app/mr-status'].problems['disk-full'], { key: 'disk-full', text: '/var is full on srv-3', since: T0, streak: 2, gone: 0 });
 });
 
 test('P5.6 a2: a changed key is a new message, and dedupe is by key (a changed text alone is still the same problem)', FAKES_SKIP, () => {
@@ -103,6 +103,72 @@ test('P5.6 a2: a changed key is a new message, and dedupe is by key (a changed t
   assert.match(d.stdout, /dns-timeout/, 'a new key is a new message');
 });
 
+// ---------------------------------------------------------------- a3/a4: hysteresis (--confirm-after N)
+
+test('P5.6 a3: a problem is reported as resolved only after N observations in a row without it', FAKES_SKIP, () => {
+  const r = rig();
+  r.routine(ME);
+  const facts = { problems: [{ key: 'disk-full', text: '/var is full on srv-3' }], did: 'nodes 7/7' };
+  const flags = ['--confirm-after', '2'];
+  const at = (m) => clock(shift(180 + m)); // after noon: the day fallback (noon) stays before every last_run, so the Log order is preserved
+  assert.equal(r.observe('mr-status', facts, ME, at(0), flags).status, 0);
+  assert.equal(r.observe('mr-status', facts, ME, at(1), flags).status, 0); // confirmed now
+  const first = r.digest([]);
+  assert.equal(first.status, 0, `${first.stderr}${first.stdout}`);
+  assert.match(first.stdout, /disk-full/, 'the confirmed problem is told');
+  assert.doesNotMatch(first.stdout, /снято/, 'nothing is resolved yet');
+  // one observation without it: still published, so nothing is resolved yet
+  assert.equal(r.observe('mr-status', { problems: [], did: 'nodes 7/7' }, ME, at(2), flags).status, 0);
+  assert.equal(r.digest([]).stdout.trim(), '', 'not gone after one absence');
+  // the second absence confirms it is gone: one resolved line, told once
+  assert.equal(r.observe('mr-status', { problems: [], did: 'nodes 7/7' }, ME, at(3), flags).status, 0);
+  const third = r.digest([]);
+  assert.equal(third.status, 0, `${third.stderr}${third.stdout}`);
+  assert.match(third.stdout, /снято: my-app\/mr-status: disk-full/);
+  assert.equal(r.digest([]).stdout.trim(), '', 'the resolved line is told once');
+});
+
+test('P5.6 a4: a problem shorter than N observations in a row is never published', FAKES_SKIP, () => {
+  const r = rig();
+  r.routine(ME);
+  const facts = { problems: [{ key: 'disk-full', text: '/var is full on srv-3' }], did: 'nodes 7/7' };
+  const flags = ['--confirm-after', '2'];
+  assert.equal(r.observe('mr-status', facts, ME, {}, flags).status, 0);
+  assert.equal(r.observe('mr-status', { problems: [], did: 'nodes 7/7' }, ME, {}, flags).status, 0);
+  const dry = r.digest(['--dry-run']);
+  assert.equal(dry.status, 0, `${dry.stderr}${dry.stdout}`);
+  assert.equal(dry.stdout.trim(), '', 'a one-off problem is never reported');
+  assert.doesNotMatch(dry.stdout, /disk-full/);
+});
+
+// ---------------------------------------------------------------- a5: bad input is a recorded failed run
+
+test('P5.6 a5: stdin that is not JSON records a failed run with a transient observe-input problem and exits 1', FAKES_SKIP, () => {
+  const r = rig();
+  r.routine(ME);
+  const res = r.run(['routine', 'observe', 'mr-status', '--as', ME], {}, 'not json');
+  assert.equal(res.status, 1);
+  const file = fs.readFileSync(r.routineFile(), 'utf8');
+  assert.match(file, /RUN failed: did: observe input \| problem: transient: observe-input: stdin is not JSON/);
+  assert.match(file, /last_result: failed/);
+  assert.ok(!fs.existsSync(r.observeFile), 'bad input does not touch the snapshot');
+  assert.equal(r.calls('claude').length, 0, 'no model');
+});
+
+test('P5.6 a5: stdin JSON of the wrong shape or with a bad problem key is a failed run, not a refusal', FAKES_SKIP, () => {
+  const r = rig();
+  r.routine(ME);
+  const wrong = r.run(['routine', 'observe', 'mr-status', '--as', ME], {}, JSON.stringify({ problems: 'nope' }));
+  assert.equal(wrong.status, 1);
+  assert.match(fs.readFileSync(r.routineFile(), 'utf8'), /problem: transient: observe-input: stdin JSON must be an object with a problems array/);
+  const bad = r.run(['routine', 'observe', 'mr-status', '--as', ME], {}, JSON.stringify({ problems: [{ key: 'not a key', text: 'x' }] }));
+  assert.equal(bad.status, 1);
+  const file = fs.readFileSync(r.routineFile(), 'utf8');
+  assert.match(file, /problem: transient: observe-input: bad problem key not a key/);
+  assert.doesNotMatch(file, /RUN ok/);
+  assert.equal(r.calls('claude').length, 0, 'no model');
+});
+
 // ---------------------------------------------------------------- a6: only the routine's agent
 
 test('P5.6 a6: observe from an agent that is not the routine\'s agent is refused (non-zero, clear message, nothing written, no model)', FAKES_SKIP, () => {
@@ -114,16 +180,6 @@ test('P5.6 a6: observe from an agent that is not the routine\'s agent is refused
   assert.doesNotMatch(fs.readFileSync(r.routineFile(), 'utf8'), /RUN ok/, 'no run was recorded on the board');
   assert.ok(!fs.existsSync(r.observeFile), 'no snapshot was written');
   assert.equal(r.calls('claude').length, 0, 'no model, no probe');
-});
-
-test('P5.6 a6: a bad problem key is refused with a clear message and writes nothing', FAKES_SKIP, () => {
-  const r = rig();
-  r.routine(ME);
-  const res = r.observe('mr-status', { problems: [{ key: 'not a key', text: 'x' }] });
-  assert.equal(res.status, 1);
-  assert.match(res.stderr, /bad problem key/);
-  assert.doesNotMatch(fs.readFileSync(r.routineFile(), 'utf8'), /RUN ok/);
-  assert.ok(!fs.existsSync(r.observeFile));
 });
 
 test('P5.6: more than three problems are not dropped: two are told, the rest is one stable `more` message; the snapshot keeps all and their first-seen time', FAKES_SKIP, () => {
