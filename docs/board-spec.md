@@ -36,6 +36,7 @@ One key per line; the value is the rest of the line, trimmed; no nesting, no mul
 | `status` | yes | One of the vocabulary below. |
 | `depends_on` | no | Comma-separated ids of cards that must be accepted first. |
 | `blocked` | when `status: blocked` | `decision: ...`, `dependency: ...` or `external: ...` — kind, colon, short reason. |
+| `kind`, `size`, `goal`, `by_mandate` | no | Mandate keys (roadctl 0.8.0), see [Project mandate](#project-mandate-boardmandatemd): kind, size S/M/L, a goal id, the hash of the mandate that took the card. |
 | `approved` | before work starts | A record of an approval **given elsewhere**: `<by>, <date>, scope=<scopes>[, source=<ref>]`. Scopes: `analysis`, `implementation`, `external` and `auto`, joined with `+`. `source` points to where the owner gave it (a commit, a message id, a document). |
 | `accepted` | when `status: done` | `<by>, <date>` of the owner's acceptance. |
 | `as_of` | yes | Date the status was last checked **against reality** (code, tests, evidence), not the date the file was last touched. |
@@ -101,7 +102,7 @@ Errors block a git commit when a pre-commit check runs; warnings never block. A 
 | 3 | `status` is in the vocabulary (after `status_map`) | error |
 | 4 | `blocked` present exactly when `status: blocked` | error |
 | 5 | `depends_on` ids exist | error |
-| 6 | `doing` has `approved` with scope `implementation` | error |
+| 6 | `doing` has `approved` with scope `implementation`, or (roadctl 0.8.0) a `by_mandate` equal to the hash of the approved L3 or L4 mandate now | error |
 | 7 | `review` and `done`: every criterion is `[x]` with an Evidence line naming its id, or `[~]` with a reason | error |
 | 8 | `done` has `accepted` | error |
 | 9 | `BOARD.md` equals the regenerated board | error |
@@ -127,6 +128,7 @@ Errors block a git commit when a pre-commit check runs; warnings never block. A 
 | 29 | A routine's `agent` is not in the registry (only checked when a registry exists) | warning |
 | 30 | A roadctl module gives a reason why a routine would not run (for example a hold); the module may make it an error or silent | warning |
 | 31 | A roadctl module refuses to START a queued card that passed every other check (for example outside the project's mandate) | warning |
+| 33 | The mandate file is malformed (unknown level, kinds, max_size, merge, budget; a bad goal line; the reserved external key) or changed after approval; an unapproved L3 or L4 mandate, a card whose `goal` is not in the mandate (warning) | error / warning |
 
 ## `BOARD.md`
 
@@ -158,6 +160,14 @@ The owner decides what goes to unattended work and what stays personal. **Defaul
 - `queue`: an ordered list of card ids.
 
 A card may be started unattended only when the board is enabled, the agent is allowed, the card is in `queue`, its `approved` scope includes `auto`, it is `ready`, every `depends_on` is `done` and it has no delegation. Of the cards that qualify, only the **first in queue order** is offered, one per board at a time. A card without `auto` is personal work: an agent does it only with the owner. The owner's words in the current conversation are the only way to turn any of this on; an agent never does it on its own initiative. By hand: add `+auto` to the `scope=` of the card's `approved` line (a card without an approval first needs the owner's approval record with its `source`), edit the `autonomy` object of `config.json`, and add a Log line for a change of a card.
+
+## Project mandate (`board/mandate.md`)
+
+One optional file per board holds the limits inside which an agent takes `ready` cards without `approved`, `auto` and the queue. **Nothing is autonomous until the owner approved the mandate**; the card path (`approved`, `auto`, `autonomy.queue`) is level **L2** and is unchanged. Levels: L1 routines, L2 cards approved one by one, L3 the mandate (the agent works in its own branch), L4 the same plus merging into the main branch inside the repository. External systems are closed at every level.
+
+Header (flat `key: value`): `mandate: 1` (format version), `level` (L1 to L4), `kinds` (comma-separated: `fix`, `feature`, `docs`, `tests`, `refactor`, `research`), `max_size` (S, M, L), `merge` (`branch` or `main`, main needs L4), `budget` (`cards_per_day=N, runs_per_week=N`), `approved` (`<by>, <date>`) and `approved_hash` (the content hash of the whole file, written by `roadctl mandate approve`; both are outside the hash). Sections: `## Goals` (`- G1 (priority 1): text`, stable ids, explicit and unique priorities), `## Forbidden`, `## Tell the owner` (extra reasons; the floor is in the code). Any other header key is an error; the key that would open external systems is reserved and refused until the end of the pilot. Any edit of the file, `## Goals` included, takes the approval away.
+
+Card keys (all optional): `kind` and `size` (S: one bounded, clear result; M: one goal across several components; L: composite work, split before it runs unattended; a small size is not safety), `goal` (an id from `## Goals`) and `by_mandate` (the hash of the approved mandate that took the card; written by `roadctl delegate`, believed only while it equals that hash). A card is admitted when its kind and size are inside the mandate, it is ready with every dependency done, it has no delegation, its Plan or Delegation carries filled lines `Environment:`, `Checks:`, `Allowed changes:` and `Stop conditions:` (a template placeholder does not count), and the budget is not used. Rule 6 below accepts a current `by_mandate` instead of `approved`. The mandate is an agreement checked at START, `delegate` and lint, not a sandbox. Format: roadctl 0.8.0, a board with a mandate sets `requires: 0.8.0`. Commands and the full rules: [roadctl.md](roadctl.md#project-mandate-and-levels-l1-to-l4); the interview that makes a mandate (`grill-me`, `grill-with-docs`, or the same questions asked by the agent) is described there and in the skill.
 
 ## Recurring routines
 

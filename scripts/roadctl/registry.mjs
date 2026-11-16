@@ -41,6 +41,9 @@
 //   routine-on           (P5.15) { board, id, text, env, api } -> { header: { key: 'value' } } called by `routine on` after the approval and `enabled` are set and before the file is written: the module's own header keys
 //                        are set on the routine; a key the module did not declare in its own `routineKeys` (or a value that is not one line) makes `routine on` fail and change nothing; `text` is the routine text with LF line ends. P5.19 (the `allow:` profile) uses it too
 //   routine-lint         (P5.15) { board, routine, env, api } -> { findings: [{ level: 'warning'|'error', text }] } extra `lint` findings of one routine that do not stop it (rule 32; `routine-reasons` is for what stops it)
+//   approval-basis       (P5.33) { board, card, mode: 'start'|'delegate'|'work', env, api } -> { ok: true, rank, header?: { key: 'value' }, log?: 'text' } | { ok: false, reasons: ['text'] } | {} another basis than `approved` for a card (the project mandate):
+//                        `tick` START offers the admitted ready card with the lowest rank; `delegate` on a card without `approved` needs it, writes `header` (only keys the module declared in `headerKeys`) and the Log line `log`; lint rule 6 accepts a `doing` card that has it (mode 'work')
+//   board-lint           (P5.33) { board, env, api } -> { findings: [{ level: 'warning'|'error', file?, text }] } extra `lint` findings of the board as a whole (rule 33)
 //   pause-state          { env, api } -> { paused: { since, by, reason, until }, line } while the machine is paused, else {} (`tick` stops before any lock, pull or limits gate and exits 6; `status` and `routine list` show the line)
 //
 // `tickKinds` (P5.28): { KIND: { prompt, text? } } with KIND like RESUME (capital letters, not a core kind, appended to the order of kinds). Items of that kind come from
@@ -59,7 +62,7 @@ const KIND_RE = /^[A-Z][A-Z_]*$/;
 const EFFECTS = ['read', 'write', 'git'];
 const STRING_FIELDS = ['summary', 'purpose', 'changes', 'exits'];
 const ARRAY_FIELDS = ['usage', 'flags', 'examples'];
-export const HOOK_NAMES = ['tick-before', 'tick-ledger', 'routine-done-before', 'routine-done-after', 'claim-after', 'report-before', 'report-after', 'pause-state', 'routine-reasons', 'tick-items', 'start-admit', 'dep-satisfied', 'routine-on', 'routine-lint']; // the last four of P5.28, then routine-on and routine-lint (P5.15)
+export const HOOK_NAMES = ['tick-before', 'tick-ledger', 'routine-done-before', 'routine-done-after', 'claim-after', 'report-before', 'report-after', 'pause-state', 'routine-reasons', 'tick-items', 'start-admit', 'dep-satisfied', 'routine-on', 'routine-lint', 'approval-basis', 'board-lint']; // the last four of P5.28, then routine-on and routine-lint (P5.15), approval-basis and board-lint (P5.33)
 
 function fail(mod, msg) {
   throw new Error(`roadctl module ${mod}: ${msg}`);

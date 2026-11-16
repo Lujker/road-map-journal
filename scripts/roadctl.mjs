@@ -61,7 +61,7 @@ try {
 }
 const xdgDir = STATE?.xdgDir ?? ((env, name, fallback) => (env[name]?.trim() ? env[name].trim() : path.join(os.homedir(), ...fallback))); // seam (P5.28): lone-copy fallback
 
-export const VERSION = '0.7.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.8.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -322,7 +322,7 @@ export function boardRequires(config, version = VERSION) {
   for (const [v, name] of REQUIRES_MODULE) if (compareVersions(req, v) >= 0 && !MODULE_REG.modules.includes(name)) return `board requires the module ${name} (roadctl ${v}, scripts/roadctl/), which this copy does not have; install the whole roadctl folder`;
   return null;
 }
-const REQUIRES_MODULE = [['0.6.0', 'approval-hash']]; // [version, module]: a board that requires that version or newer needs the module loaded, else the board is refused
+const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate']]; // [version, module]: a board that requires that version or newer needs the module loaded, else the board is refused
 
 const statusOf = (board, card) => {
   const s = card.header.status ?? '';
@@ -624,6 +624,35 @@ function depMet(board, card, id, byId) {
   return MODULE_REG.callHook('dep-satisfied', { board, card, by: dc, status, env: process.env, api: moduleApi() }).some((h) => h.value?.satisfied === true);
 }
 
+/**
+ * seam (P5.33): `approval-basis`: another basis than `approved` for a card (the project mandate). { ok: true, rank, header, log } from the first module that admits the card,
+ * else { ok: false, reasons }. mode: 'start' (tick), 'delegate' (`delegate`), 'work' (lint rule 6: a card already taken). The header keys are only those the module declared.
+ */
+function approvalBasis(board, card, mode) {
+  const reasons = [];
+  for (const h of MODULE_REG.callHook('approval-basis', { board, card, mode, env: process.env, api: moduleApi() })) {
+    const v = h.value;
+    if (v?.ok === true) {
+      const header = Object.entries(v.header ?? {}).filter(([k, x]) => MODULE_REG.headerKeys.has(k) && typeof x === 'string' && !/[\r\n]/.test(x));
+      return { ok: true, rank: Number.isFinite(v.rank) ? v.rank : Number.MAX_SAFE_INTEGER, header, log: typeof v.log === 'string' ? v.log : null };
+    }
+    if (v?.ok === false) reasons.push(...(Array.isArray(v.reasons) ? v.reasons : []).map((r) => sanitizeText(String(r), 160)));
+  }
+  return { ok: false, reasons };
+}
+
+/** The ready card the mandate admits first (lowest rank, then id), or null. Without a module that answers `approval-basis` nothing is asked. */
+function mandateStart(board) {
+  if (!MODULE_REG.hooks?.['approval-basis']?.length) return null;
+  const found = [];
+  for (const c of board.cards) {
+    if (!c.header.id || statusOf(board, c) !== 'ready') continue;
+    const b = approvalBasis(board, c, 'start');
+    if (b.ok) found.push({ id: c.header.id, title: c.header.title, rank: b.rank });
+  }
+  return found.sort((a, b) => a.rank - b.rank || naturalCompare(a.id, b.id))[0] ?? null;
+}
+
 /** The card `agent` would START on this board now (the first eligible queued card), or null. This is the only source of START items. */
 export function autonomyStart(board, agent, reg = null) {
   const au = autonomyOf(board);
@@ -867,7 +896,7 @@ export function lint(board, opts = {}) {
     if (h.blocked && !BLOCK_KINDS.has(h.blocked.split(':')[0].trim())) add('error', 4, n, 'blocked must start with decision:, dependency: or external:');
     if (st === 'doing') {
       doing.push(c);
-      if (!scopesOf(h.approved).includes('implementation')) add('error', 6, n, 'doing needs approved with scope=implementation');
+      if (!scopesOf(h.approved).includes('implementation') && !approvalBasis(board, c, 'work').ok) add('error', 6, n, 'doing needs approved with scope=implementation'); // seam (P5.33): or a current by_mandate
       if (h.as_of && (Date.parse(today()) - Date.parse(h.as_of)) / 864e5 > limitOf(board, 'doing_stale_days', 14)) add('warning', 12, n, `as_of ${h.as_of} is stale`);
       const last = c.log.at(-1);
       if (h.as_of && last && last.date < h.as_of) add('warning', 14, n, `as_of ${h.as_of} is newer than the last Log entry ${last.date}`);
@@ -895,6 +924,7 @@ export function lint(board, opts = {}) {
     else if (CLOSED.has(statusOf(board, qc))) add('warning', 23, 'config.json', `autonomy.queue lists ${q}, which is ${statusOf(board, qc)}`);
   }
   if (!au.errors.length) for (const r of autonomyRows(board, au)) for (const m of r.module_reasons ?? []) add('warning', 31, 'config.json', `autonomy.queue: ${r.id} would not start: ${m.text} (module ${m.module})`); // seam (P5.28): the same refusal tick and autonomy show
+  for (const h of MODULE_REG.callHook('board-lint', { board, env: process.env, api: moduleApi() })) for (const x of Array.isArray(h.value?.findings) ? h.value.findings : []) if (['warning', 'error'].includes(x?.level) && typeof x.text === 'string') add(x.level, 33, typeof x.file === 'string' ? sanitize(x.file, 80) : '-', `${sanitizeText(x.text, 200)} (module ${h.module})`); // seam (P5.33): findings about the board as a whole, such as the mandate
   const routineIds = new Map();
   let reg = null;
   if (board.routines?.length) {
@@ -1514,7 +1544,11 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
   const c = findCard(board, id);
   const st = statusOf(board, c);
   const reasons = [];
-  if (!scopesOf(c.header.approved).length) reasons.push('the card has no approved record; the owner approves before work is delegated');
+  let basis = null;
+  if (!scopesOf(c.header.approved).length) {
+    basis = approvalBasis(board, c, 'delegate'); // seam (P5.33): a card without approved may be taken by the mandate
+    if (!basis.ok) reasons.push('the card has no approved record; the owner approves before work is delegated', ...basis.reasons);
+  }
   if (CLOSED.has(st)) reasons.push(`the card is ${st}`);
   if ('delegate' in c.header || 'claim' in c.header) reasons.push('a delegation is already active on this card (one at a time); accept or return it first');
   for (const [v, what] of [[to, '--to'], [by, '--by']]) {
@@ -1527,8 +1561,10 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
   if (reasons.length) return refuse(...reasons);
   let t = ensureDelegationSection(readNorm(c));
   t = setHeader(t, 'delegate', formatDelegate(d));
+  for (const [k, v] of basis?.header ?? []) t = setHeader(t, k, v);
   writeCard(c, t);
   appendLog(board, id, `DELEGATED to ${d.to} (host ${d.host}, criteria ${d.criteria === 'all' ? 'all' : d.criteria.join(',')}, accept ${d.accept})`, { author: by });
+  if (basis?.log) appendLog(board, id, basis.log, { author: by });
   return { ok: true, delegate: d };
 }
 
@@ -2708,6 +2744,10 @@ export function tickItems(project, board, agent, reg = null) {
   if (allowed) {
     const start = autonomyStart(board, agent, reg); // nothing starts unattended unless the owner turned autonomy on, queued the card and gave it the auto scope
     if (start) items.push(mk('START', start, false));
+    else {
+      const m = mandateStart(board); // seam (P5.33): a ready card inside the approved mandate, without approved, auto and the queue
+      if (m) items.push({ ...mk('START', m, false), basis: 'mandate' });
+    }
     const taken = new Set(items.filter((i) => i.kind === 'TAKE').map((i) => i.id));
     for (const r of rows) if (r.effective === 'expired' && !taken.has(r.id)) items.push({ ...mk('STALE', r), ...(r.claim?.workdir && workdirDirty(r.claim.workdir) ? { workdir_dirty: true } : {}) }); // an expired claim this agent can take is listed as TAKE only; workdir_dirty: its working directory is on this machine and has uncommitted changes
   }
@@ -2791,7 +2831,8 @@ export function tickPrompt(t) {
   ];
   if (has('TAKE')) L.push(`TAKE   roadctl claim <id> --as ${A}; do what the card's Delegation section allows; roadctl report <id> --as ${A} "changed, ran, left" (or the fields the owner reads: --did "what was done" [--problem "transient|permanent|unknown: key: text"] [--ask "what you need from the owner"])`); // seam (P5.13)
   if (has('ACCEPT')) L.push(`ACCEPT roadctl show <id> --log 10; verify; roadctl accept <id> --as ${A} or roadctl return <id> --as ${A} "what to fix"; roadctl save`);
-  if (has('START')) L.push(`START  the owner put it in the autonomous queue (auto); roadctl show <id>; do it within the approved scope, or roadctl delegate <id> --to worker --by ${A} [--criteria a2,a3] [--accept reviewer]; roadctl save`);
+  if (t.items.some((i) => i.kind === 'START' && i.basis !== 'mandate')) L.push(`START  the owner put it in the autonomous queue (auto); roadctl show <id>; do it within the approved scope, or roadctl delegate <id> --to worker --by ${A} [--criteria a2,a3] [--accept reviewer]; roadctl save`);
+  if (t.items.some((i) => i.kind === 'START' && i.basis === 'mandate')) L.push(`START  (basis: mandate) the owner approved the project mandate; roadctl mandate show; take the card ONLY with roadctl delegate <id> --to worker --by ${A} (it records by_mandate), never by editing its status; stay inside the kinds, size, merge and Forbidden of the mandate; tell the owner when: an owner-only command is refused, you were about to do something forbidden, the same card failed twice in a row, or a question is irreversible; roadctl save`);
   if (has('STALE')) L.push(`STALE  roadctl show <id>; if you delegated it: roadctl undelegate <id> --by ${A} "lease expired"; roadctl save; otherwise tell the owner${t.items.some((i) => i.workdir_dirty) ? '; for an item marked (workdir dirty) the last holder left uncommitted changes in its working directory: do not hand the card on before they are reconciled, tell the owner' : ''}`);
   if (has('RUN')) {
     L.push(`RUN    a recurring routine the owner approved for you; run it with ITS model and environment (below); if you are not that model, start a session or subagent with it (for example the agent's launch note in the registry) and give it this task; it follows the routine file: Steps, May write, Escalate, nothing else; write the board only as May write allows (roadctl log, roadctl delegate, a question for the owner); external writes only if its approved scope has external; hand over as Escalate says; finish with roadctl routine done <id> --as ${A} --result ok|escalated|failed "summary" (it publishes the routine file itself); the owner reads a summary built from fields, so prefer: --did "what was done" (1 to 3 times) [--problem "transient|permanent|unknown: key: text"] [--ask "what you need from the owner"] [--decision "..."] [--not-checked "..."] instead of "summary"`); // seam (P5.13): the prompt names the summary fields
@@ -3965,7 +4006,7 @@ function parse(argv) {
   const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--run', '--workdir', '--hours', '--routine', '--kinds']);
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
   const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
-  const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7
+  const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile', '--hash']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7; --hash: P5.33
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { o.rest = argv.slice(i + 1); break; } // P5.2: what follows `--` is a command line for `supervise`, not flags

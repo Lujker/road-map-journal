@@ -49,7 +49,7 @@ export function tickJsonProblems(j) {
     const base = { kind: (v) => TICK_KINDS.includes(v), project: isStr, id: isStr, title: (v) => typeof v === 'string' };
     const kind = item?.kind;
     if (kind === 'RUN') shape(item, at, { ...base, routine: isObj }, {}, problems);
-    else if (kind === 'START') shape(item, at, base, {}, problems);
+    else if (kind === 'START') shape(item, at, base, { basis: (v) => v === 'mandate' }, problems); // P5.33: basis mandate = admitted by the project mandate, not by the queue
     else shape(item, at, { ...base, delegate: isObj }, kind === 'STALE' ? { workdir_dirty: (v) => v === true } : {}, problems);
     if (!isObj(item)) return;
     if (kind === 'RUN' && isObj(item.routine)) shape(item.routine, `${at}.routine`, { agent: isStr, model: isStr, env: isStr, every: isStr, file: isStr, last_run: strOrNull }, { attempt: (v) => Number.isInteger(v) && v >= 2, recover: (v) => typeof v === 'string' && v.length > 0 }, problems); // attempt (0.3.0, P5.1): only after a crashed or failed run of the routine

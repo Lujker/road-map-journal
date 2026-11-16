@@ -27,7 +27,7 @@ const AUTO_APPROVED = 'approved: owner, 2026-11-11, scope=implementation+auto, s
 
 const FIXTURE = `export default {
   name: 'fixture-seams',
-  headerKeys: ['rule_ok', 'by_mandate'],
+  headerKeys: ['rule_ok', 'fx_scope'],
   routineKeys: ['hold'],
   cardSections: ['Questions'],
   routineSections: ['Checks'],
@@ -36,7 +36,7 @@ const FIXTURE = `export default {
   hooks: {
     'routine-reasons'({ routine }) { return routine.header.hold ? { reasons: ['on hold: ' + routine.header.hold] } : {}; },
     'tick-items'({ env }) { return env.FIXTURE_RESUME ? { items: [{ kind: 'RESUME', id: env.FIXTURE_RESUME, title: 'answered by the owner' }] } : {}; },
-    'start-admit'({ card }) { return card.header.by_mandate === 'no' ? { admit: false, reason: 'outside the mandate' } : {}; },
+    'start-admit'({ card }) { return card.header.fx_scope === 'no' ? { admit: false, reason: 'outside the mandate' } : {}; },
     'dep-satisfied'({ by }) { return by.header.rule_ok === 'yes' ? { satisfied: true } : {}; },
   },
 };
@@ -126,12 +126,12 @@ test('P5.28 a2: a module declares a routine key, a card key and sections; unknow
   const r = rig();
   r.routine();
   r.edit('routines/mr-status.md', (x) => `${x.replace('id: mr-status', 'id: mr-status\nhold: x')}\n## Checks\n\n- one\n`);
-  r.edit(r.cardFile('W-6'), (x) => `${x.replace('id: W-6', 'id: W-6\nby_mandate: yes\nfuture_key: 1')}\n## Questions\n\n- q1\n\n## Unheard\n\n- x\n`);
+  r.edit(r.cardFile('W-6'), (x) => `${x.replace('id: W-6', 'id: W-6\nfx_scope: yes\nfuture_key: 1')}\n## Questions\n\n- q1\n\n## Unheard\n\n- x\n`);
   const plain = lintOf(r, SELF).map((x) => x.msg).join('\n');
-  for (const s of ['hold', 'by_mandate', 'Questions', 'Checks', 'future_key', 'Unheard']) assert.match(plain, new RegExp(s), `${s}: reported without the module`);
+  for (const s of ['hold', 'fx_scope', 'Questions', 'Checks', 'future_key', 'Unheard']) assert.match(plain, new RegExp(s), `${s}: reported without the module`);
   const withMod = lintOf(r, WITH);
   const text = withMod.map((x) => x.msg).join('\n');
-  for (const s of ['by_mandate', 'Questions', 'Checks']) assert.doesNotMatch(text, new RegExp(`unknown[^\\n]*${s}`), `${s}: known with the module`);
+  for (const s of ['fx_scope', 'Questions', 'Checks']) assert.doesNotMatch(text, new RegExp(`unknown[^\\n]*${s}`), `${s}: known with the module`);
   assert.ok(withMod.some((x) => x.level === 'warning' && /future_key/.test(x.msg)), 'an unknown key is still a warning');
   assert.ok(withMod.some((x) => x.level === 'warning' && /Unheard/.test(x.msg)), 'an unknown section is still a warning');
   assert.ok(!withMod.some((x) => x.level === 'error' && /future_key|Unheard/.test(x.msg)));
@@ -174,7 +174,7 @@ test('P5.28 a3: a module adds a tick kind: item, text, prompt, --kinds, ledger c
 
 test('P5.28 a4: the owner flag is read from the command entry; help says so; "help = docs" checks it against the docs line', () => {
   const owners = Object.entries(rc.ALL_COMMANDS).filter(([, c]) => c.owner === true).map(([n]) => n).sort();
-  assert.deepEqual(owners, ['approve', 'auto', 'done', 'pause', 'queue', 'resume']);
+  assert.deepEqual(owners, ['approve', 'auto', 'done', 'mandate', 'pause', 'queue', 'resume']);
   assert.match(rc.helpFor('approve'), /^Owner only: /m);
   assert.doesNotMatch(rc.helpFor('status'), /Owner only: /);
   assert.deepEqual(helpDocsProblems(rc.ALL_COMMANDS, { overview: rc.helpOverview(), docs: DOCS }), []);
@@ -222,7 +222,7 @@ test('P5.28 a9: a module START refusal and a module state that meets depends_on 
   }
   // START refusal: the same queued card, the module says it is outside the mandate
   const s = rig();
-  s.queueW5('\nby_mandate: no');
+  s.queueW5('\nfx_scope: no');
   s.edit(s.cardFile('W-2'), (x) => x.replace('id: W-2', 'id: W-2\nrule_ok: yes'));
   assert.deepEqual(kindsOf(s.tick(SELF, ['--kinds', 'start']).stdout), [], 'without the module: deps still open');
   assert.deepEqual(kindsOf(s.tick(WITH, ['--kinds', 'start']).stdout), [], 'refused by the module');

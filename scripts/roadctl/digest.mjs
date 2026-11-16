@@ -12,6 +12,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { changedAfterApproval } from './mandate.mjs';
 import { readPause, pauseLine } from './pause.mjs';
 import { parseRunTrailer } from './run-ledger.mjs';
 import { LOCK_STALE_MS, acquireLock } from './state.mjs';
@@ -240,6 +241,17 @@ function immediate({ boards, refused, env, api, now, name, dry, warn }) {
       }
     }
     for (const key of Object.keys(active)) if (key.startsWith('@requires/') && !refused.has(key.slice(10))) delete active[key];
+    // P5.33: an approved mandate edited after approval is a problem at once, told once per episode, forgotten when it is approved again
+    for (const b of boards) {
+      const key = `@mandate/${projectOf(b)}`;
+      const why = changedAfterApproval(b, api);
+      if (!why) delete active[key];
+      else if (!active[key]?.changed) {
+        active[key] = { changed: { kind: 'mandate', text: why, since: now } };
+        blocks.push(`mandate: ${projectOf(b)}: ${why}`);
+        size += blocks.at(-1).length + 1;
+      }
+    }
     const tooOld = (ev) => now - ev.time > OLD_MS || (first && now - ev.time > FIRST_USE_MS);
     for (const ev of events) {
       if (mine.seen[ev.sig] !== undefined) continue;

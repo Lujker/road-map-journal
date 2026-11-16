@@ -9,6 +9,7 @@ Not sure where to start? `roadctl help` prints an overview grouped by task (what
 ```text
 roadctl lint [--json]             check invariants; exit 1 on errors
 roadctl lint --all                lint every known board (central workspace and the user list)
+roadctl mandate [show|check] [--json] | approve --by NAME [--hash H]   the project mandate (owner only to approve)
 roadctl where [path]              print the board found for the current (or the given) directory; when none, list the known boards
 roadctl boards [list] [--json]    the known boards; boards add [dir] | boards remove <dir|name> keep the user list
 roadctl version                   print the roadctl version
@@ -71,7 +72,7 @@ roadctl instructions-uninstall --claude --codex [--apply]
       [--claude-home DIR] [--codex-home DIR] [--hermes-home DIR] [--node PATH] [--helper PATH]
 ```
 
-Owner-only commands: `approve`, `auto`, `queue`, `done`, `pause`, `resume`. An agent runs them only on the owner's explicit words in the current conversation; `roadctl help <command>` says so, and `roadctl help unattended` prints what an agent may do without the owner. Help topics (`roadctl help <topic>`): `unattended`; modules may add more.
+Owner-only commands: `approve`, `auto`, `queue`, `done`, `pause`, `resume`, `mandate` (its subcommands show and check only read; approving is the owner's, in person). An agent runs them only on the owner's explicit words in the current conversation; `roadctl help <command>` says so, and `roadctl help unattended` prints what an agent may do without the owner. Help topics (`roadctl help <topic>`): `unattended`; modules may add more.
 
 Global flags: `--board <dir>` (default: search upwards for `board/config.json`, then the known boards, see [Finding the board](#finding-the-board)), `--project NAME` (a known board by project or `match` name), `--workspace DIR` (or `ROADCTL_WORKSPACE`), `--date YYYY-MM-DD`. Exit codes: 0 ok, 1 findings or refusal, 2 usage error, 3 limits unknown (only `limits --check`).
 
@@ -217,6 +218,47 @@ The first card of the queue that satisfies this is the only one offered per boar
 
 **Lint.** Rule 21 (error): the `autonomy` section is malformed (not an object, `enabled` not a boolean, `agents` not agent names, `queue` not card ids or with a repeated id); the board is then treated as OFF. Rule 22 (error): a queued id is not a card. Rule 23 (warning): a queued card is done or dropped. Rule 24 (warning): an approval has a scope token that is not `analysis`, `implementation`, `external` or `auto`. An `auto` scope without an approval cannot exist (it is part of the approval).
 
+### Project mandate and levels (L1 to L4)
+
+The card path above (`approve`, `auto`, the queue, the board switch) is one card at a time. The **mandate** is one file for the whole board, `board/mandate.md`, that the owner approves once as a whole; inside its limits an agent takes `ready` cards without `approved`, `auto` and the queue. **Nothing is autonomous until the owner approved the mandate** (or gave the card away with the commands above); an agent never writes `approved_hash` into a mandate and never raises its level.
+
+Levels: **L1** routines only. **L2** cards the owner approved one by one, as before (the mandate takes nothing; every rule above is unchanged). **L3** the mandate: the agent plans, does and (with the rule of P5.35) accepts in its own branch. **L4** the same plus merging into the main branch and releases inside the repository. External systems stay closed at every level: the key that would open them is reserved and `lint` refuses it until the end of the pilot.
+
+The file (a flat header like a card, then sections):
+
+```text
+---
+mandate: 1                          format version
+level: L3                           L1 | L2 | L3 | L4
+kinds: fix, docs, tests             fix feature docs tests refactor research
+max_size: M                         S | M | L
+merge: branch                       branch | main (main needs L4)
+budget: cards_per_day=2, runs_per_week=10
+approved: Owner, 2026-11-16         written by roadctl mandate approve
+approved_hash: sha256-v1:...        ... with the content hash
+---
+## Goals
+- G1 (priority 1): finish stage 2   stable id, explicit priority (no two goals share an id or a priority)
+## Forbidden
+- pushing to main
+## Tell the owner
+- the build is red for a day
+```
+
+- **Approval is by content hash** (the helper of P5.15, the same normalisation): any edit of the file, `## Goals` included, takes the approval away until the owner runs `roadctl mandate approve --by NAME --hash H` with the hash that `roadctl mandate show` printed. The `approved` record and `approved_hash` are outside the hash. The owner or a separate session edits the mandate; only the owner approves. `mandate approve` refuses in an unattended run (`ROADCTL_UNATTENDED` or `ROADCTL_RUN_ID` set), without `--by`, when `--hash` is not the hash of the file now, and on a board whose `requires` is below 0.8.0; it writes one line to `owner-commands.jsonl` of the machine state directory (the audit of P5.3 reads it).
+- **Card keys** `kind` (one of the mandate kinds), `size` (S, M or L) and `goal` (an id from `## Goals`) are optional and set by the author or the planner (P5.34). A card without `size` or `kind` is not taken by the mandate; a `goal` that is not in `## Goals` is not taken either.
+- **`tick`**: at L3 or L4 with an approved, unchanged mandate, `START` also offers a `ready` card inside the limits (kind, size, goal, dependencies done, no delegation, the Plan lines below, the budget) without `approved`, `auto` and queue; the item has `"basis": "mandate"` in `--json`. One card per board; the order is the priority of the card's goal, then the card number (a card without a goal comes last). At L2 and below, with no mandate, with an unapproved or changed one, nothing is taken by it and `tick` is as before.
+- **Taking a card**: the agent takes a START by mandate only with `roadctl delegate <id> --to ROLE --by AGENT`; delegate records `by_mandate: <hash>` in the card header and a Log line `approved by mandate <hash>` (a proposal writes nothing; the key is written only when the card is actually taken). `by_mandate` is not an `approved` record and not an owner command, and it is believed only while it equals the hash of the approved mandate now: a self-declared value, a changed or withdrawn mandate, or a re-approved one (the old hash) does not admit the card, so a card taken earlier is taken again with `delegate` after the mandate changes. `approve` and `done` stay owner commands. `lint` rule 6 accepts a `doing` card that has a current `by_mandate` instead of `approved`.
+- **Budget**: `cards_per_day` (distinct cards taken today) and `runs_per_week` (takes in the last seven days, a card taken twice is two runs), counted from the Log lines `approved by mandate`; a new hash does not reset it. Tokens and money come with P5.20.
+- **`roadctl mandate [show|check] [--json]`** reads: level, limits, hash, `approved` / `CHANGED after approval` / `not approved`, the extra and the built-in reasons to tell the owner, what `tick` would START now and why each other ready card is not admitted. `check` exits 1 when the mandate changed after approval or is malformed. `--json` has the fields checked by `scripts/testkit/mandate-schema.mjs`. It changes nothing.
+- **Tell the owner**: the floor is in the code and cannot be removed by editing `## Tell the owner`: an owner-only command was refused, an attempt at something forbidden, the same card failed twice in a row, a question about something irreversible. The section only adds reasons.
+- **Lint**: rule 33 (error): the mandate is malformed (unknown `level`, `kinds`, `max_size`, `merge`, `budget` missing at L3 and L4, a goal line that is not `- G1 (priority 1): text`, a repeated goal id or priority, the reserved external key, `merge: main` below L4, `requires` below 0.8.0) or it **changed after approval**; (warning) an unapproved L3 or L4 mandate, a card whose `goal` is not in `## Goals`. `roadctl digest` tells a changed mandate at once, as a problem, once per episode.
+- **What is checked and what is agreed.** `roadctl` itself checks the admission at START and `delegate` (level, kind, size, goal, budget, dependencies, hash) and `lint`. `## Forbidden`, the way of merging and the stop conditions go into the launch prompt and are checked afterwards from the report and the audit: that is an agreement, not a sandbox. An agent that can write to git can in theory rewrite the mandate together with its approval; the protection is that `mandate approve` refuses an unattended run, the audit line, the echo to the channel (P5.26, P5.32), the hash comparison at every `tick`, and `lint` and the digest (changed after approval is a problem at once). A git branch and the ban on external systems are not a sandbox either.
+- **Making or changing a mandate is an interview.** The agent (or the owner with `/grill-me`, or `/grill-with-docs` when the mandate must match a codebase) runs a grilling interview: numbered rounds, a recommendation with each question. If neither skill is installed the agent offers to install it (the owner's decision); if the owner declines, the agent asks the same interview itself. The result goes into the mandate and into a Log line of the card or note that records it; the owner approves the hash.
+- **Stage boundary.** The limit of two ready milestones without the owner's decision belongs with P5.35 (stage 3): the field is agreed with it, the gate is not wired in until P5.35 lands, and until then an autonomous L3 is a training L3 on a release candidate, not a finished autonomous L3. At stage 2 the early live check is L2 with the planner of P5.34; the main path is checked without a model.
+
+**Size (the `size` of a card, the rubric the agent uses).** S: one bounded, clear result whose implementation and check are known. M: one goal across several components; the agent says why it cannot be split. L: composite work; before it runs unattended it is split into results that can each be checked. When the scope or the consequences are unclear, the card is a proposal or a bounded research task, not an arbitrary S. This is an instruction for the agent, not a measure of complexity by the number of criteria, and a small change is not the same as a safe one: size never makes a card safe. To be admitted by the mandate a card also needs its environment (or role), its checks, its allowed effects and its stop conditions written in its Plan or Delegation section as lines `Environment:`, `Checks:`, `Allowed changes:` and `Stop conditions:`; an empty line or a template placeholder ("(files the worker may change)", TBD, -) does not count. That the lines are filled in does not prove that the card is safe.
+
 ## Scheduled orchestrator (tick)
 
 A scheduled orchestrator works in two steps. Step 1 costs no tokens: `roadctl tick --as AGENT` looks at the boards, asks the limits gate and answers with a decision and an exit code. Step 2 starts a model only when step 1 says there is work and the owner's reserve allows it. Any scheduler can do this (cron, a systemd timer, Windows Task Scheduler, Hermes cron): `roadctl tick --as X --prompt > p.txt && <launch the agent with p.txt>`.
@@ -227,7 +269,7 @@ A scheduled orchestrator works in two steps. Step 1 costs no tokens: `roadctl ti
 | --- | --- |
 | `TAKE` | an open delegation, or one whose lease ran out, that AGENT may claim (the rule of `tasks --for`, and the delegating agent must be in the registry, as `claim` checks) |
 | `ACCEPT` | a `reported` delegation that AGENT may accept (`accept=by` and AGENT is `by`; `reviewer` with `can_accept`; a named agent). Never for scripts |
-| `START` | orchestrators the board allows, from a board whose **autonomy is on** (see [Autonomous or personal work](#autonomous-or-personal-work)): the first card of `autonomy.queue` that is `ready`, has `auto` in its `approved` scope, has every `depends_on` done and no delegation, so it could be started or delegated. At most one per board. Without autonomy there is no `START` at all; ready and plainly approved cards are never listed: ready is not permission, and a plain approval means work with the owner |
+| `START` | orchestrators the board allows, from a board whose **autonomy is on** (see [Autonomous or personal work](#autonomous-or-personal-work)): the first card of `autonomy.queue` that is `ready`, has `auto` in its `approved` scope, has every `depends_on` done and no delegation, so it could be started or delegated. At most one per board. Without autonomy and without an approved mandate there is no `START` at all (a START by the project mandate has `"basis": "mandate"`, see [Project mandate and levels](#project-mandate-and-levels-l1-to-l4)); ready and plainly approved cards are never listed: ready is not permission, and a plain approval means work with the owner |
 | `RUN` | a recurring routine that is due and allowed to run (see [Recurring routines](#recurring-routines)), offered to **the routine's own `agent` only** (exact name), no matter its roles. Printed as `RUN project/id title` |
 | `STALE` | orchestrators only (and only the listed ones when the board's `autonomy.agents` is not empty, whether or not autonomy is on): a `claimed` delegation whose lease expired; the delegating agent may `undelegate` it. A card the agent can take itself is listed as `TAKE` only. When the expired claim named a working directory (`claim --workdir`) that exists on this machine and has uncommitted changes, the line ends with ` (workdir dirty)` |
 
