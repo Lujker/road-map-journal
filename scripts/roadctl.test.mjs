@@ -3105,7 +3105,7 @@ test('the shipped routine examples parse and lint clean, are marked as examples,
   const root = project();
   const dir = path.join(here, '..', 'examples', 'routines');
   const files = fs.readdirSync(dir).filter((f) => f.endsWith('.md'));
-  assert.deepEqual(files, ['server-watch.md', 'status-collection.md']);
+  assert.deepEqual(files, ['server-watch.md', 'status-collection.md', 'watchdog.md']);
   fs.mkdirSync(path.join(root, 'board', 'routines'));
   for (const f of files) {
     const text = fs.readFileSync(path.join(dir, f), 'utf8');
