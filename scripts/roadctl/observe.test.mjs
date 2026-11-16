@@ -195,3 +195,89 @@ test('P5.6: more than three problems are not dropped: two are told, the rest is 
   assert.deepEqual(Object.keys(snap), ['p-a', 'p-b', 'p-c', 'p-d', 'p-e']);
   assert.equal(snap['p-e'].since, T0, 'a problem keeps the time it was first seen');
 });
+
+// ---------------------------------------------------------------- a7: the snapshot is local; the board gets a commit only when the set changes
+
+const nowAt = (m) => clock(shift(180 + m));
+const head = (r) => fs.readFileSync(r.routineFile(), 'utf8');
+
+test('P5.6 a7: with --heartbeat an unchanged set is not a board commit; tick here is not due, digest is not OVERDUE; a change publishes; the heartbeat publishes', FAKES_SKIP, () => {
+  const r = rig();
+  r.routine(ME);
+  const hb = ['--heartbeat', '24h'];
+  const facts = { problems: [], did: 'nodes 7/7, requests open 1' };
+  assert.equal(r.observe('mr-status', facts, ME, nowAt(0), hb).status, 0); // first run: always published
+  const first = head(r);
+  assert.match(first, /^last_run: /m);
+  const runs = (s) => (s.match(/RUN ok/g) ?? []).length;
+  assert.equal(runs(first), 1);
+  // 2h later and 4h later: unchanged, so the routine file does not change
+  const q = r.observe('mr-status', facts, ME, nowAt(120), hb);
+  assert.equal(q.status, 0, q.stderr);
+  assert.match(q.stdout, /kept in machine state only/);
+  assert.equal(head(r), first, 'no change of the routine file');
+  assert.equal(r.observe('mr-status', facts, ME, nowAt(240), hb).status, 0);
+  assert.equal(head(r), first);
+  // tick on this machine reads the local last_run: not due 1h after the quiet run, due after 2h
+  const tick = (m) => r.run(['tick', '--as', ME, '--no-pull', '--routine', 'mr-status', '--kinds', 'run'], nowAt(m));
+  assert.equal(tick(240 + 60).status, 4, 'not due: the quiet run counts');
+  assert.match(tick(240 + 130).stdout, /RUN my-app\/mr-status/);
+  // digest on this machine: a quiet watchdog 4h after the git last_run (every 2h, so 2x every is 4h) is not OVERDUE
+  const day = r.digest(['--daily'], nowAt(240 + 30));
+  assert.match(day.stdout, /my-app\/mr-status/, 'the daily overview has the routine line');
+  assert.doesNotMatch(day.stdout, /ПРОСРОЧЕНА|OVERDUE/);
+  assert.match(r.digest(['--daily'], nowAt(240 + 400)).stdout, /ПРОСРОЧЕНА|OVERDUE/, 'a watchdog that really stopped is still overdue');
+  // a change of the confirmed set publishes
+  const bad = { problems: [{ key: 'disk-full', text: '/var is full' }], did: 'nodes 6/7' };
+  assert.equal(r.observe('mr-status', bad, ME, nowAt(250), hb).status, 0);
+  assert.equal(runs(head(r)), 2);
+  assert.match(head(r), /problem: unknown: disk-full/);
+  // the same problem again: quiet
+  const before = head(r);
+  assert.equal(r.observe('mr-status', bad, ME, nowAt(260), hb).status, 0);
+  assert.equal(head(r), before);
+  // the heartbeat: the git last_run is older than 24h, so even an unchanged set is published
+  assert.equal(r.observe('mr-status', bad, ME, nowAt(250 + 25 * 60), hb).status, 0);
+  assert.equal(runs(head(r)), 3);
+  // without --heartbeat every run is published (the safe default: another machine sees the run)
+  assert.equal(r.observe('mr-status', bad, ME, nowAt(250 + 25 * 60 + 5)).status, 0);
+  assert.equal(runs(head(r)), 4);
+});
+
+test('P5.6 a7: a failed run is always published and a quiet run after it publishes again; the run ledger gets the quiet run', FAKES_SKIP, () => {
+  const r = rig();
+  r.routine(ME);
+  const hb = ['--heartbeat', '24h'];
+  const facts = { problems: [], did: 'nodes 7/7' };
+  assert.equal(r.observe('mr-status', facts, ME, nowAt(0), hb).status, 0);
+  assert.equal(r.run(['routine', 'observe', 'mr-status', '--as', ME, ...hb], nowAt(10), 'not json').status, 1);
+  assert.match(head(r), /last_result: failed/);
+  // the git header says failed: an unchanged set must publish the recovery, not hide it
+  assert.equal(r.observe('mr-status', facts, ME, nowAt(20), hb).status, 0);
+  assert.match(head(r), /last_result: ok/);
+  assert.equal(r.observe('mr-status', facts, ME, nowAt(30), hb).status, 0); // quiet now
+  const ours = JSON.parse(r.run(['runs', '--json']).stdout).filter((x) => x.kind === 'routine' && x.id === 'mr-status');
+  assert.equal(ours.length, 4, 'every observation is in the local run ledger, published or not');
+  assert.ok(ours.every((x) => x.outcome === 'ok' || x.outcome === 'failed'));
+  assert.equal(r.run(['routine', 'observe', 'mr-status', '--as', ME, '--heartbeat', 'soon'], {}, '{"problems":[]}').status, 2);
+});
+
+// ---------------------------------------------------------------- a10: a watchdog with model none gets RUN without the limits gate
+
+test('P5.6 a10: a routine with model none and a script agent: tick --as <script> --routine ID gives RUN, not blocked-unknown; a model routine still depends on limits', FAKES_SKIP, () => {
+  const r = rig();
+  const SCRIPT_AGENT = 'cron:watchdog@home-wsl';
+  r.ok(['routine', 'new', 'wd', 'Watch servers', '--agent', SCRIPT_AGENT, '--model', 'none', '--env', 'laptop', '--every', '30m']);
+  r.ok(['routine', 'on', 'wd', '--by', OWNER, '--source', 'chat 2026-11-12']);
+  r.ok(['autonomy', 'routines', 'on', '--by', OWNER]);
+  const before = r.calls().length;
+  const t = r.run(['tick', '--as', SCRIPT_AGENT, '--no-pull', '--routine', 'wd']);
+  assert.equal(t.status, 0, `${t.stderr}${t.stdout}`);
+  assert.match(t.stdout, /^tick cron:watchdog@home-wsl: work$/m);
+  assert.match(t.stdout, /^RUN my-app\/wd /m);
+  assert.equal(r.calls().length, before, 'no limits probe, no model');
+  // the same script with a model routine is still gated: its provider is unknown here
+  r.ok(['routine', 'new', 'wd2', 'With a model', '--agent', SCRIPT_AGENT, '--model', 'haiku', '--env', 'laptop', '--every', '30m']);
+  r.ok(['routine', 'on', 'wd2', '--by', OWNER, '--source', 'chat 2026-11-12']);
+  assert.equal(r.run(['tick', '--as', SCRIPT_AGENT, '--no-pull', '--routine', 'wd2']).status, 3);
+});

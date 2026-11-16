@@ -2920,6 +2920,38 @@ test('routine done publishes only the routine file: pushed from clone b, seen in
   assert.equal(run(p.b, ['routine', 'done', 'mr-status', '--as', CODEX, '--result', 'ok', 'x']).status, 1);
 });
 
+test('P5.6 a11: routine observe publishes like routine done: only the routine file, and a conflict (owner switched it off on the server) is applied again on the server file', () => {
+  const p = pair();
+  const env = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0, XDG_STATE_HOME: path.join(p.base, 'state') };
+  const run = (w, args, input = '', e = {}) => p.run(w, args, input, { ...env, ...e });
+  const rel = 'projects/my-app/board/routines/mr-status.md';
+  assert.equal(run(p.a, ['routine', 'new', 'mr-status', RTITLE, '--agent', ME, '--model', 'none', '--env', RENV, '--every', '2h']).status, 0);
+  assert.equal(run(p.a, ['routine', 'on', 'mr-status', '--by', 'Lujker', '--source', 'chat']).status, 0);
+  assert.equal(run(p.a, ['autonomy', 'routines', 'on', '--by', 'Lujker']).status, 0);
+  assert.equal(out(run(p.a, ['save', '--json'])).status, 'pushed');
+  assert.equal(out(run(p.b, ['pull', '--json'])).status, 'pulled');
+  fs.writeFileSync(path.join(p.b, 'projects', 'my-app', 'stray.txt'), 'x'); // not swept into the run
+  const facts = JSON.stringify({ problems: [{ key: 'disk-full', text: '/var is full' }], did: 'nodes 6/7, requests open 1' });
+  const r = run(p.b, ['routine', 'observe', 'mr-status', '--as', ME, '--json'], facts);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(out(r).status, 'recorded');
+  assert.match(p.serverLog()[0], /^board my-app: routine mr-status run by claude-code@home-wsl$/);
+  assert.deepEqual(g(p.server, 'show', '--name-only', '--format=', 'main').split('\n'), [rel], 'only that file');
+  assert.match(g(p.server, 'show', `main:${rel}`), /RUN ok: did: nodes 6\/7, requests open 1 \| problem: unknown: disk-full: \/var is full/);
+  // conflict: clone a switches the routine off and pushes; clone b, not pulled, observes again on the old state
+  assert.equal(out(run(p.a, ['pull', '--json'])).status, 'pulled');
+  assert.equal(run(p.a, ['routine', 'off', 'mr-status', '--by', 'Lujker']).status, 0);
+  assert.equal(out(run(p.a, ['save', '--json'])).status, 'pushed');
+  const c = run(p.b, ['routine', 'observe', 'mr-status', '--as', ME, '--json'], JSON.stringify({ problems: [], did: 'nodes 7/7' }), { ROADCTL_NOW: '2026-11-10T13:00:00Z' });
+  assert.equal(c.status, 0, c.stdout + c.stderr);
+  assert.equal(out(c).status, 'recorded');
+  const t = g(p.server, 'show', `main:${rel}`);
+  assert.match(t, /^enabled: false$/m, 'the owner\'s switch-off from the server is kept');
+  assert.match(t, /^last_run: 2026-11-10T13:00:00Z$/m);
+  assert.match(t, /RUN ok: did: nodes 7\/7/);
+  assert.match(t, /\[Lujker\] OFF$/m);
+});
+
 test('routine list and show: every field, due or not due and why a routine would not run (missing field, not approved, disabled, board switch off); --all covers every board; reads only', LSKIP, () => {
   const c = central();
   const other = path.join(c.ws, 'projects', 'second', 'board');

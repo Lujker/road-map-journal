@@ -32,7 +32,7 @@
 //   roadctl claim <id> --as AGENT [--lease 2h] [--workdir DIR]   take an open delegation (git decides a race); report/accept/return finish it
 //   roadctl tick --as AGENT [--all] [--no-pull] [--json] [--prompt] [--routine ID] [--kinds take,accept,start,stale,run]   model-free check for a scheduled orchestrator; exit 0 work, 4 idle, 1 reserve, 3 limits unknown, 5 busy, 6 paused
 //   roadctl tick --ledger [--as A] [-n 20]   the last runs of tick (read-only)
-//   roadctl routine list [--all] [--json] | show <id> | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"] | on|off <id> --by NAME | done <id> --as A --result ok|escalated|failed "summary" | observe <id> --as A [--confirm-after N]   recurring routines
+//   roadctl routine list [--all] [--json] | show <id> | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"] | on|off <id> --by NAME | done <id> --as A --result ok|escalated|failed "summary" | observe <id> --as A [--confirm-after N] [--heartbeat DUR]   recurring routines
 //   roadctl autonomy routines on|off --by NAME   the board switch for routines (owner only; independent of card autonomy)
 //   roadctl agents-install --claude [--apply] ; agents-uninstall   Claude Code subagents road-worker and road-reviewer
 //   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | pre-commit | pre-commit-all
@@ -3009,7 +3009,8 @@ export async function tickCommand(flags, args, io, env = process.env) {
     }
     if (filter?.routine && !loaded.some((b) => (b.board.routines ?? []).some((r) => r.header.id === filter.routine))) io.err(`roadctl tick: warning: no routine ${sanitize(filter.routine, 60)} on the boards looked at\n`);
     let limits;
-    if (items.length) limits = await tickLimits(agent, reg, env);
+    if (items.length && items.every((i) => i.kind === 'RUN' && i.routine?.model === 'none')) limits = { provider: null, state: 'not-applicable' }; // P5.6 a10: a watchdog script uses no model, so there is no subscription to limit
+    else if (items.length) limits = await tickLimits(agent, reg, env);
     else {
       let provider = null;
       try {
@@ -3258,6 +3259,13 @@ function moduleRoutineReasons(board, r, ms, env, facts, reasons) {
   return out;
 }
 
+/** The later of the routine's git last_run and the last quiet observation of this machine (observe --heartbeat); a bad git value is left for lint. */
+function localLastRun(board, id, gitRun, env) {
+  if (gitRun && !ISO_RE.test(gitRun)) return gitRun;
+  const seen = readObserveState(env).routines[`${path.basename(board.project)}/${id}`]?.last_observed;
+  return seen && ISO_RE.test(seen) && (!gitRun || Date.parse(seen) > Date.parse(gitRun)) ? seen : gitRun;
+}
+
 export function routineRows(board, ms = nowMs(), env = process.env) {
   const sw = autonomyOf(board).routines;
   const count = new Map();
@@ -3280,13 +3288,14 @@ export function routineRows(board, ms = nowMs(), env = process.env) {
     if (h.hours && !withinHours(h.hours, ms)) reasons.push('outside hours');
     const every = parseEvery(h.every);
     let due = false;
+    const lastRun = localLastRun(board, h.id, h.last_run, env); // P5.6 a7: a quiet observation keeps its last_run in machine state
     if (!every.error) {
-      if (!h.last_run) due = true;
-      else if (ISO_RE.test(h.last_run)) due = ms >= Date.parse(h.last_run) + every.ms;
+      if (!lastRun) due = true;
+      else if (ISO_RE.test(lastRun)) due = ms >= Date.parse(lastRun) + every.ms;
     }
     const extra = moduleRoutineReasons(board, r, ms, env, { id: h.id ?? null, agent: h.agent ?? null, model: h.model ?? null, env: h.env ?? null, enabled, approved: scopesOf(h.approved), due }, reasons); // seam (P5.28): after the core reasons
     for (const x of extra) reasons.push(x.text);
-    return { ...(extra.length ? { module_reasons: extra } : {}), id: h.id ?? null, title: h.title ?? '', enabled, every: h.every ?? null, ...(h.hours ? { hours: h.hours } : {}), agent: h.agent ?? null, model: h.model ?? null, env: h.env ?? null, approved: scopesOf(h.approved), last_run: h.last_run ?? null, last_result: h.last_result ?? null, due, run_now: reasons.length === 0 && due, reasons, file: `routines/${r.name}` };
+    return { ...(extra.length ? { module_reasons: extra } : {}), id: h.id ?? null, title: h.title ?? '', enabled, every: h.every ?? null, ...(h.hours ? { hours: h.hours } : {}), agent: h.agent ?? null, model: h.model ?? null, env: h.env ?? null, approved: scopesOf(h.approved), last_run: lastRun ?? null, last_result: h.last_result ?? null, due, run_now: reasons.length === 0 && due, reasons, file: `routines/${r.name}` };
   });
 }
 
@@ -3434,7 +3443,7 @@ function applyRoutineDone(r, as, result, text, date = today()) {
  * The routine's own agent records a run: last_run (now), last_result and a Log line; then ONLY that file is committed and pushed, like `report`.
  * Statuses: recorded (pushed), recorded-local (offline, no remote or no git), refused, lost (the file is gone on the server), error.
  */
-export function routineDone(board, id, { as, result, text, timeout = netTimeout() }) {
+export function routineDone(board, id, { as, result, text, timeout = netTimeout(), quiet = false }) {
   const e = checkAgent(as, '--as');
   if (e) return { status: 'refused', message: e };
   if (!ROUTINE_RESULTS.includes(result)) return { status: 'refused', message: `--result must be one of ${ROUTINE_RESULTS.join('|')}` };
@@ -3444,6 +3453,7 @@ export function routineDone(board, id, { as, result, text, timeout = netTimeout(
   if (miss.length) return { status: 'refused', message: `${id} has no ${miss.join(', ')}; a routine without agent, model and environment never runs` };
   if (r.header.agent !== as) return { status: 'refused', message: `only the routine's agent (${r.header.agent}) may record a run, not ${as}` };
   if (board.routines.filter((x) => x.header.id === id).length > 1) return { status: 'refused', message: `${id} is a duplicate routine id; run roadctl lint` };
+  if (quiet) return { id, status: 'recorded-local', quiet: true, message: 'the problem set is unchanged: the run is kept in machine state only (no board commit)' }; // P5.6 a7: the caller (observe) keeps last_run locally
   const ctx = syncContext(board);
   const remote = ctx && gitx(['remote'], ctx.root).out;
   const rel = ctx ? path.relative(ctx.root, real(r.file)).split(path.sep).join('/') : null;
@@ -3504,18 +3514,18 @@ export function showRoutine(board, id, { log = 5 } = {}) {
 /** The board switch: `roadctl autonomy routines on|off`. */
 export const setRoutinesSwitch = (board, on) => writeAutonomy(board, { routines: on });
 
-const ROUTINE_USAGE = 'usage: roadctl routine list [--all] [--json] | show <id> [--json] | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00"] | on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME | launch <id> [--json] | done <id> --as AGENT --result ok|escalated|failed "summary" | observe <id> --as AGENT [--confirm-after N] (reads {"problems":[{"key":"...","text":"..."}],"did":"..."} on stdin)';
+const ROUTINE_USAGE = 'usage: roadctl routine list [--all] [--json] | show <id> [--json] | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00"] | on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME | launch <id> [--json] | done <id> --as AGENT --result ok|escalated|failed "summary" | observe <id> --as AGENT [--confirm-after N] [--heartbeat DUR] (reads {"problems":[{"key":"...","text":"..."}],"did":"..."} on stdin)';
 
 /**
  * The whole of `routine done` including the module hooks (routine-done-before may refuse or replace the text, routine-done-after sees the result).
  * Used by `roadctl routine done` and, through the module api, by the supervisor (P5.2), so a result the supervisor records passes the same hooks
  * (the run ledger, and later the approval check of P5.15) and is refused the same way. Returns { r (the routineDone result), after (the hook values) }.
  */
-export function routineDoneWithHooks(board, id, { as, result, text, flags = {}, env = process.env, io = { err: (s) => process.stderr.write(s) }, source }) {
+export function routineDoneWithHooks(board, id, { as, result, text, flags = {}, env = process.env, io = { err: (s) => process.stderr.write(s) }, source, quiet = false }) {
   const hookCtx = { board, id, as, result, text, flags, env, api: moduleApi(), ...(source === 'supervisor' ? { source } : {}) }; // source: an argument of the call, not read from the environment, so no process can claim to be the supervisor
   const before = MODULE_REG.callHook('routine-done-before', hookCtx, io); // seam (P5.1): run id, duration and host in the Log line; may refuse
   const refusal = before.find((h) => h.value?.refuse)?.value.refuse;
-  const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, id, { as, result, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? text });
+  const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, id, { as, result, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? text, quiet });
   const after = MODULE_REG.callHook('routine-done-after', { ...hookCtx, done: r }, io, before);
   return { r, after };
 }
@@ -3553,7 +3563,7 @@ function writeObserveState(env, state) {
  * in the machine state directory, next to ticks.jsonl and digest.state.json). Input that is not JSON or not the right shape is recorded as a failed
  * run through the same publish path (--problem "transient: observe-input: ..."), not a refusal; the caller exits 1.
  */
-export function routineObserve(board, id, { as, input, env = process.env, io = { err: (s) => process.stderr.write(s) }, confirmAfter = 1 }) {
+export function routineObserve(board, id, { as, input, env = process.env, io = { err: (s) => process.stderr.write(s) }, confirmAfter = 1, heartbeatMs = null }) {
   const e = checkAgent(as, '--as');
   if (e) return { r: { status: 'refused', message: e }, after: [], exit: 1 };
   const r = findRoutine(board, id);
@@ -3611,9 +3621,14 @@ export function routineObserve(board, id, { as, input, env = process.env, io = {
   // a run summary keeps three --problem fields: the rest is one stable `more` field, so nothing is dropped silently; the snapshot keeps them all
   const fields = published.length > 3 ? [...published.slice(0, 2), { key: 'more', text: `${published.length - 2} more problems: ${published.slice(2).map((p) => p.key).join(', ')}` }] : published;
   const did = typeof data.did === 'string' && data.did.trim() ? sanitizeText(data.did, 120) : (published.length ? `checked; ${published.length} problem(s)` : 'checked');
-  const res = routineDoneWithHooks(board, id, { as, result: 'ok', text: did, flags: { did: [did], problem: fields.map((p) => `unknown: ${p.key}: ${sanitizeText(p.text, 160)}`) }, env, io });
+  // a7: an unchanged confirmed set is not a board commit. With --heartbeat the git last_run may lag by up to that long (tick and digest on this machine read
+  // the local last_observed, see routineRows); a failed or never-published routine, or a set that changed, always publishes. Without --heartbeat every run publishes.
+  const sig = JSON.stringify(published.map((p) => [p.key, p.text]).sort());
+  const gitRun = Date.parse(r.header.last_run ?? '');
+  const quiet = heartbeatMs !== null && state.routines[skey]?.sig === sig && r.header.last_result === 'ok' && Number.isFinite(gitRun) && nowMs() - gitRun < heartbeatMs;
+  const res = routineDoneWithHooks(board, id, { as, result: 'ok', text: did, flags: { did: [did], problem: fields.map((p) => `unknown: ${p.key}: ${sanitizeText(p.text, 160)}`) }, env, io, quiet });
   if (['recorded', 'recorded-local'].includes(res.r.status)) {
-    state.routines[skey] = { v: 1, problems: next };
+    state.routines[skey] = { v: 1, problems: next, sig, last_observed: now };
     try {
       writeObserveState(env, state);
     } catch {
@@ -3699,7 +3714,13 @@ export function routineCommand(flags, args, io, env = process.env) {
     const n = Object.hasOwn(flags, 'confirm-after') ? Number(flags['confirm-after']) : 1;
     if (!Number.isInteger(n) || n < 1) throw new Error('usage: --confirm-after N: N is a whole number of observations, 1 or more (default 1)');
     const input = (() => { try { return fs.readFileSync(0, 'utf8'); } catch { return ''; } })();
-    const { r, after, exit } = routineObserve(board, args[2], { as: str('as'), input, env, io, confirmAfter: n });
+    let heartbeatMs = null;
+    if (Object.hasOwn(flags, 'heartbeat')) {
+      const hb = parseEvery(str('heartbeat'));
+      if (hb.error) throw new Error(`usage: --heartbeat DURATION like 12h: ${hb.error}`);
+      heartbeatMs = hb.ms;
+    }
+    const { r, after, exit } = routineObserve(board, args[2], { as: str('as'), input, env, io, confirmAfter: n, heartbeatMs });
     const ok = ['recorded', 'recorded-local'].includes(r.status);
     if (flags.json) out(JSON.stringify(r, null, 2));
     else if (ok) { out(`roadctl routine observe: ${r.status} — ${r.message}`); for (const h of after) for (const l of h.value?.print ?? []) out(l); } // seam (P5.13): the summary for the owner
@@ -3914,7 +3935,7 @@ export const COMMANDS = {
   routine: {
     group: 'Delegate', effect: 'git', owner: { sub: ['on', 'off', 'resume', 'promote'] }, summary: 'recurring routines (list, show, launch read; new, on, off write; done, observe git)',
     purpose: 'Recurring, mostly mechanical project tasks (collect merge request, issue or message state, watch servers) in board/routines/<id>.md. Each has an executor the owner names when creating it: agent, model and env are REQUIRED; a routine without any of them never runs. A routine runs only when the board switch autonomy.routines is on (roadctl autonomy routines on), the routine is enabled, approved, due (no last_run, or now is at least last_run + every) and inside its optional hours window (header hours: days and times, local time or tz=ZONE; outside it list says "outside hours"); roadctl tick --as AGENT then offers it as RUN to that agent only. list shows every routine with its run state and why it would not run now (--all: every board); show prints one routine. new creates a routine from a template, switched off and not approved. on and off are the owner\'s switch: on records the approval (default scope read+board, --source required) and, on a board that requires roadctl 0.6.0, a hash of the routine\'s content (approved_hash): a routine edited afterwards (Steps, agent, every, scope, ...) is "changed after approval" and does not run until the owner runs on again (notify, enabled, last_* and the Log are outside the hash); on refuses without agent, model and env; only when the owner told you to. done is for the routine\'s own agent: sets last_run and last_result, appends a Log line (up to 1500 characters, the last 50 lines are kept) and commits and pushes ONLY that file, like report (offline it stays local; a conflict is applied again on the server file). The routine text is the owner\'s instruction within the approved scope (default: read external systems, write the board); hand over with roadctl delegate or a question for the owner, as its Escalate section says. observe is the model-free close for a watchdog script (agent of the `script` role, `model: none`): it reads JSON facts on stdin, records the run through the same publish path as done, and hands the problem keys to digest (one message per key; the snapshot observe.state.json is local machine state).',
-    usage: ['roadctl routine list [--all] [--json]', 'roadctl routine show <id> [--json]', 'roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]', 'roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF]   (only when the owner told you to)', 'roadctl routine off <id> --by NAME   (only when the owner told you to)', 'roadctl routine launch <id> [--json]   (read only: the argv, stdin and timeout to start the agent; docs/roadctl.md, Launch description)', 'roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary" [--json]', 'roadctl routine observe <id> --as AGENT [--confirm-after N] [--json]   (stdin: {"problems":[{"key":"...","text":"..."}],"did":"..."}; the model-free watchdog run; a problem is confirmed, and one is gone, after N observations in a row, default 1)'],
+    usage: ['roadctl routine list [--all] [--json]', 'roadctl routine show <id> [--json]', 'roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]', 'roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF]   (only when the owner told you to)', 'roadctl routine off <id> --by NAME   (only when the owner told you to)', 'roadctl routine launch <id> [--json]   (read only: the argv, stdin and timeout to start the agent; docs/roadctl.md, Launch description)', 'roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary" [--json]', 'roadctl routine observe <id> --as AGENT [--confirm-after N] [--heartbeat DUR] [--json]   (stdin: {"problems":[{"key":"...","text":"..."}],"did":"..."}; the model-free watchdog run; a problem is confirmed, and one is gone, after N observations in a row, default 1)'],
     flags: [ALL('list routines of'), ['--agent A / --model M / --env E', 'new: the executor (an agent name like claude-code@work-notebook, a model like claude-haiku-5-5, an environment like Work-notebook-wsl); all three are required, ask the owner, never guess'], ['--every SPAN', 'new: how often it is due: 30m, 2h, 1d (at least 5m)'], ['--hours H', 'new: the time window in which it may run: DAYS HH:MM-HH:MM[ tz=ZONE], for example "mon-fri 09:00-19:00" or "daily 08:00-23:00 tz=Europe/Moscow" (default: any time; local time of this machine without tz)'], ['--by NAME', 'on, off: the owner who decided'], ['--scope S', 'on: read+board (default) or read+board+external'], ['--source REF', 'on: where the owner said so (required when no approval is recorded yet)'], ['--as AGENT', 'done, observe: the routine\'s own agent'], ['--result R', 'done: ok, escalated or failed'], J],
     examples: ['roadctl routine list', 'roadctl routine new mr-status "Collect MR and issue status" --agent claude-code@work-notebook --model claude-haiku-5-5 --env Work-notebook-wsl --every 2h', 'roadctl routine on mr-status --by Lujker --source "chat 2026-11-12"', 'roadctl routine done mr-status --as claude-code@work-notebook --result ok "3 cards updated, nothing to hand over"'],
     changes: 'list, show, launch: nothing. new: creates board/routines/<id>.md. on, off: the enabled (and approved) header and one Log line of that routine file (not committed: run roadctl save). done and observe: the last_run, last_result headers and one Log line of that file, then a git commit and push of that file only (needs the network; offline keeps the commit local); observe also keeps observe.state.json in the machine state directory.', exits: '0 ok (done: recorded or recorded-local; observe: the same); 1 refused (on: missing agent, model or env; done, observe: not the routine\'s agent) or failed; 2 usage error, missing agent/model/env on new, unknown routine or no board found',
@@ -4128,7 +4149,7 @@ export function helpFor(name) {
 
 function parse(argv) {
   const o = { _: [], flags: {} };
-  const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--run', '--workdir', '--hours', '--routine', '--kinds', '--confirm-after']);
+  const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--run', '--workdir', '--hours', '--routine', '--kinds', '--confirm-after', '--heartbeat']);
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
   const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
   const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile', '--hash', '--since', '--accept-from']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7; --hash: P5.33; --since, --accept-from: P5.27
