@@ -23,7 +23,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { HASH_KEY, approvalHash } from './approval-hash.mjs';
-import { ownerCommandsFile } from './digest.mjs';
 
 export const MANDATE_REQUIRES = '0.8.0';
 export const MANDATE_FILE = 'mandate.md';
@@ -39,7 +38,6 @@ const DAY = 864e5;
 const clean = (s, n = 100) => String(s ?? '').replace(/[\u0000-\u001f\u007f`<>]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, n); // like roadctl's sanitize, but `_` stays: key names such as max_size are read in these lines
 
 const statusOf = (board, card) => board.config.status_map?.[card.header.status ?? ''] ?? card.header.status ?? '';
-const unattended = (env) => Boolean((env.ROADCTL_UNATTENDED ?? '').trim() && env.ROADCTL_UNATTENDED !== '0') || Boolean((env.ROADCTL_RUN_ID ?? '').trim());
 
 /** The mandate of a board as data, or null when the board has no mandate file. Never throws on content. */
 export function readMandate(board, api) {
@@ -190,16 +188,8 @@ function boardOf(ctx) {
   return ctx.api.loadBoard(dir);
 }
 
-function audit(env, row) {
-  try {
-    const f = ownerCommandsFile(env);
-    fs.mkdirSync(path.dirname(f), { recursive: true });
-    fs.appendFileSync(f, `${JSON.stringify(row)}\n`);
-  } catch { /* the audit line is best effort: the approval itself is in the file */ }
-}
-
 function mandateCommand(ctx) {
-  const { flags, args, out, io, env, api } = ctx;
+  const { flags, args, out, io, api } = ctx;
   const sub = args[1] ?? 'show';
   if (args.length > 2 || !['show', 'check', 'approve'].includes(sub)) throw new Error(USAGE);
   const board = boardOf(ctx);
@@ -210,9 +200,7 @@ function mandateCommand(ctx) {
     return sub === 'check' && d.exists && (d.state === 'changed' || d.problems.length) ? 1 : 0;
   }
   if (typeof flags.by !== 'string' || !flags.by.trim()) throw new Error(`${USAGE}; --by NAME is required`);
-  const row = { time: new Date(api.nowMs(env)).toISOString(), command: 'mandate approve', target: path.basename(board.project), by: clean(flags.by, 40) };
-  const refuse = (why) => { audit(env, { ...row, outcome: 'refused' }); io.err(`roadctl mandate: refused: ${why}\n`); return 1; };
-  if (unattended(env)) return refuse('an unattended run (ROADCTL_UNATTENDED or ROADCTL_RUN_ID) never approves a mandate; only the owner does, in person');
+  const refuse = (why) => { io.err(`roadctl mandate: refused: ${why}\n`); return 1; }; // an unattended run never gets here: the owner gate (owner-gate.mjs) refuses it and writes the audit line
   const m = readMandate(board, api);
   if (!m) return refuse(`no board/${MANDATE_FILE}`);
   if (m.problems.length) return refuse(`the mandate is malformed: ${m.problems.join('; ')}`);
@@ -223,7 +211,7 @@ function mandateCommand(ctx) {
   t = set(set(t, 'approved', `${clean(flags.by, 40)}, ${api.today()}`), HASH_KEY, m.hash);
   if (approvalHash(t) !== m.hash) return refuse('internal: the approval line changed the hash'); // the record is outside the hash by construction
   fs.writeFileSync(m.file, t);
-  audit(env, { ...row, outcome: 'ok', hash: m.hash });
+  if (ctx.audit) ctx.audit.hash = m.hash;
   out(`mandate approved by ${clean(flags.by, 40)}: ${m.hash} (level ${m.level}). Not committed: run roadctl save`);
   return 0;
 }
@@ -258,6 +246,7 @@ export default {
     mandate: {
       group: 'Owner only',
       owner: true,
+      ownerReads: ['show', 'check', ''], // P5.3: the owner gate refuses `approve` unattended and audits it; show and check only read
       hidden: true, // the overview is at its 70-line cap; `roadctl help mandate`, `roadctl help autonomy` and docs/roadctl.md name it
       effect: 'write',
       summary: 'the project mandate: show it, check it, approve it (owner only)',

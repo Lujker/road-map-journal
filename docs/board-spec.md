@@ -128,7 +128,7 @@ Errors block a git commit when a pre-commit check runs; warnings never block. A 
 | 29 | A routine's `agent` is not in the registry (only checked when a registry exists) | warning |
 | 30 | A roadctl module gives a reason why a routine would not run (for example a hold); the module may make it an error or silent | warning |
 | 31 | A roadctl module refuses to START a queued card that passed every other check (for example outside the project's mandate) | warning |
-| 33 | The mandate file is malformed (unknown level, kinds, max_size, merge, budget; a bad goal line; the reserved external key) or changed after approval; an unapproved L3 or L4 mandate, a card whose `goal` is not in the mandate (warning) | error / warning |
+| 33 | The mandate file is malformed (unknown level, kinds, max_size, merge, budget; a bad goal line; the reserved external key) or changed after approval; an unapproved L3 or L4 mandate, a card whose `goal` is not in the mandate (warning); a routine file with a broad permission rule (roadctl 0.9.0): `Bash(roadctl:*)`, a whole MCP server, a bare `Bash` (error), `Bash(git:*)`, `Write` or `Edit` without a path (warning) | error / warning |
 
 ## `BOARD.md`
 

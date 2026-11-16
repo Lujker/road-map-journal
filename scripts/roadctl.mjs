@@ -61,7 +61,7 @@ try {
 }
 const xdgDir = STATE?.xdgDir ?? ((env, name, fallback) => (env[name]?.trim() ? env[name].trim() : path.join(os.homedir(), ...fallback))); // seam (P5.28): lone-copy fallback
 
-export const VERSION = '0.8.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.9.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -3630,7 +3630,7 @@ export const COMMANDS = {
     changes: 'Nothing.', exits: EXIT_RW,
   },
   limits: {
-    group: 'Look', effect: 'read', summary: 'provider limits and the owner\'s reserve (claude probe: one tiny request)',
+    group: 'Look', effect: 'read', owner: { flags: ['confirm'] }, summary: 'provider limits and the owner\'s reserve (claude probe: one tiny request)',
     purpose: 'Remaining subscription limits per provider (five-hour and weekly windows) against the reserve that must stay for the owner (default 10% weekly, 15% five-hour; registry limits.reserve and providers.<id>.reserve). Codex is read from codex app-server without a model; the Claude probe sends one tiny request to a light model, so results are cached for 10 minutes (--fresh bypasses). --check gives a decision for scripts: allowed only while every known window has MORE than the reserve left; an unknown limit is never allowed. --confirm lets the owner allow an unknown provider for a while; it never overrides a known reserve breach.',
     usage: ['roadctl limits [--provider P] [--fresh] [--json]', 'roadctl limits --check PROVIDER-OR-AGENT [--fresh] [--json]', 'roadctl limits --confirm PROVIDER --by NAME [--for 2h]   (only when the owner told you to)'],
     flags: [['--provider P', 'only this provider (default: every provider, built-in claude and codex plus the registry\'s)'], ['--fresh', 'ignore the cache and probe again (the claude probe costs one tiny request)'], ['--check X', 'a provider id or an agent name from the registry; decides whether an automatic start may go on'], ['--confirm P', 'owner only: record that the owner allows provider P while its limits are unknown'], ['--by NAME', 'the owner who confirms (required with --confirm)'], ['--for SPAN', 'how long the confirmation holds: 30m, 2h, 1d (default 2h, at most 7d)'], J],
@@ -3646,7 +3646,7 @@ export const COMMANDS = {
     changes: 'No card. It pulls (unless --no-pull), writes the limits cache, a lock file and one line per run in $XDG_STATE_HOME/road-map-journal/ticks.jsonl (not printed). Starts no model.', exits: '0 work (a model may be started); 4 idle; 1 reserve reached; 3 limits unknown; 5 another tick of this agent is running; 6 paused (roadctl pause: nothing is started); 2 usage error',
   },
   autonomy: {
-    group: 'Look', effect: 'read', summary: 'what may start unattended; on|off is owner only',
+    group: 'Look', effect: 'read', owner: { sub: ['on', 'off', 'routines'] }, summary: 'what may start unattended; on|off is owner only',
     purpose: 'Per board: whether autonomous work is on, which agents may start work, the queue in order with each card\'s status, auto mark and why it is not eligible now (not auto, not ready, deps open, delegated, done), auto cards outside the queue, and which card each allowed orchestrator would get now. Nothing is autonomous by default: the owner turns it on for a board, queues cards and gives each the auto approval scope. autonomy on|off changes the board\'s config.json: only when the owner told you to. The same page lists the recurring routines with their run state; their own switch is autonomy routines on|off (key autonomy.routines, default off, independent of the card autonomy).',
     usage: ['roadctl autonomy [--all] [--json]', 'roadctl autonomy on|off [--agents a,b|any] [--by NAME]   (only when the owner told you to)', 'roadctl autonomy routines on|off --by NAME   (the board switch for recurring routines; only when the owner told you to)'],
     flags: [ALL('show'), ['--agents a,b', 'with on|off: only these agents may start work from this board ("any": every orchestrator)'], ['--by NAME', 'the owner who decided (shown in the answer; required with routines on|off)'], J],
@@ -3790,7 +3790,7 @@ export const COMMANDS = {
     changes: 'The delegate and claim headers and one Log line of that card (not committed: run roadctl save).', exits: '0 ok; 1 refused; 2 usage error, unknown card or no board found',
   },
   routine: {
-    group: 'Delegate', effect: 'git', summary: 'recurring routines (list, show, launch read; new, on, off write; done git)',
+    group: 'Delegate', effect: 'git', owner: { sub: ['on', 'off', 'resume', 'promote'] }, summary: 'recurring routines (list, show, launch read; new, on, off write; done git)',
     purpose: 'Recurring, mostly mechanical project tasks (collect merge request, issue or message state, watch servers) in board/routines/<id>.md. Each has an executor the owner names when creating it: agent, model and env are REQUIRED; a routine without any of them never runs. A routine runs only when the board switch autonomy.routines is on (roadctl autonomy routines on), the routine is enabled, approved, due (no last_run, or now is at least last_run + every) and inside its optional hours window (header hours: days and times, local time or tz=ZONE; outside it list says "outside hours"); roadctl tick --as AGENT then offers it as RUN to that agent only. list shows every routine with its run state and why it would not run now (--all: every board); show prints one routine. new creates a routine from a template, switched off and not approved. on and off are the owner\'s switch: on records the approval (default scope read+board, --source required) and, on a board that requires roadctl 0.6.0, a hash of the routine\'s content (approved_hash): a routine edited afterwards (Steps, agent, every, scope, ...) is "changed after approval" and does not run until the owner runs on again (notify, enabled, last_* and the Log are outside the hash); on refuses without agent, model and env; only when the owner told you to. done is for the routine\'s own agent: sets last_run and last_result, appends a Log line (up to 1500 characters, the last 50 lines are kept) and commits and pushes ONLY that file, like report (offline it stays local; a conflict is applied again on the server file). The routine text is the owner\'s instruction within the approved scope (default: read external systems, write the board); hand over with roadctl delegate or a question for the owner, as its Escalate section says.',
     usage: ['roadctl routine list [--all] [--json]', 'roadctl routine show <id> [--json]', 'roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]', 'roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF]   (only when the owner told you to)', 'roadctl routine off <id> --by NAME   (only when the owner told you to)', 'roadctl routine launch <id> [--json]   (read only: the argv, stdin and timeout to start the agent; docs/roadctl.md, Launch description)', 'roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary" [--json]'],
     flags: [ALL('list routines of'), ['--agent A / --model M / --env E', 'new: the executor (an agent name like claude-code@work-notebook, a model like claude-haiku-5-5, an environment like Work-notebook-wsl); all three are required, ask the owner, never guess'], ['--every SPAN', 'new: how often it is due: 30m, 2h, 1d (at least 5m)'], ['--hours H', 'new: the time window in which it may run: DAYS HH:MM-HH:MM[ tz=ZONE], for example "mon-fri 09:00-19:00" or "daily 08:00-23:00 tz=Europe/Moscow" (default: any time; local time of this machine without tz)'], ['--by NAME', 'on, off: the owner who decided'], ['--scope S', 'on: read+board (default) or read+board+external'], ['--source REF', 'on: where the owner said so (required when no approval is recorded yet)'], ['--as AGENT', 'done: the routine\'s own agent'], ['--result R', 'done: ok, escalated or failed'], J],
@@ -3814,7 +3814,7 @@ export const COMMANDS = {
     changes: 'The approved header and one Log line of that card. Not committed: run roadctl save.', exits: '0 ok (also when nothing had to change); 1 refused (closed card, scope only auto); 2 missing --by, missing --source for a new approval, unknown card or no board found',
   },
   queue: {
-    group: 'Owner only', effect: 'write', owner: true, summary: 'the autonomous queue (list reads; changes are owner only)',
+    group: 'Owner only', effect: 'write', owner: true, ownerReads: ['list', ''], summary: 'the autonomous queue (list reads; changes are owner only)',
     purpose: 'The ordered list of card ids the board may start unattended (autonomy.queue in board/config.json). list shows it with the reason a card is not eligible now. add, remove and move change it and only the owner decides that. Only the first eligible card is offered, one at a time.',
     usage: ['roadctl queue [list] [--json]', 'roadctl queue add <id> [--at N]   (only when the owner told you to)', 'roadctl queue remove <id>', 'roadctl queue move <id> --at N'],
     flags: [['--at N', 'position, counting from 1 (add: default last)'], J],
@@ -3838,7 +3838,7 @@ export const COMMANDS = {
     changes: 'Nothing by default; with autosync (board config or ROADCTL_AUTOSYNC=1) session-start pulls and stop saves.', exits: '0 ok; 1 pre-commit / pre-commit-all blocked by lint errors; 2 error',
   },
   'hook-install': {
-    group: 'Setup', effect: 'write', summary: 'install hooks for Claude, Codex, Hermes or git',
+    group: 'Setup', effect: 'write', owner: { flags: ['apply'] }, summary: 'install hooks for Claude, Codex, Hermes or git',
     purpose: 'Add the roadctl hooks to a host\'s config. Dry run by default: prints what it would write.',
     usage: ['roadctl hook-install --claude [--user] | --codex | --hermes | --git [--all] [--apply]'],
     flags: [['--claude [--user]', 'Claude Code settings: project-local, or with --user your user-level settings'], ['--codex / --hermes', 'user-level Codex hooks.json / Hermes config.yaml'], ['--git [--all]', 'a pre-commit hook (--all: lint every board of the workspace)'], ['--apply', 'really write (a backup is made); without it nothing is written'], ['--claude-home/--codex-home/--hermes-home DIR, --node PATH', 'override locations']],
@@ -3846,7 +3846,7 @@ export const COMMANDS = {
     changes: 'With --apply: the chosen host config file (backup first). Without: nothing.', exits: '0 ok; 2 no target chosen or error',
   },
   'hook-uninstall': {
-    group: 'Setup', effect: 'write', summary: 'remove those hooks again',
+    group: 'Setup', effect: 'write', owner: { flags: ['apply'] }, summary: 'remove those hooks again',
     purpose: 'Remove the roadctl hooks from a host\'s config. Dry run by default.',
     usage: ['roadctl hook-uninstall --claude [--user] | --codex | --hermes | --git [--all] [--apply]'],
     flags: [['(same as hook-install)', '']],
@@ -3854,7 +3854,7 @@ export const COMMANDS = {
     changes: 'With --apply: the chosen host config file (backup first). Without: nothing.', exits: '0 ok; 2 no target chosen or error',
   },
   'instructions-install': {
-    group: 'Setup', effect: 'write', summary: 'add the instruction block for agents',
+    group: 'Setup', effect: 'write', owner: { flags: ['apply'] }, summary: 'add the instruction block for agents',
     purpose: 'Add or refresh the managed road-map-journal block in ~/.claude/CLAUDE.md and/or ~/.codex/AGENTS.md. Dry run by default; a symlinked target is not edited.',
     usage: ['roadctl instructions-install --claude --codex [--workspace DIR] [--apply]'],
     flags: [['--claude / --codex', 'which instruction file(s)'], ['--workspace DIR', 'workspace path written into the block'], ['--apply', 'really write (a backup is made)'], ['--claude-home/--codex-home DIR, --helper PATH', 'override locations']],
@@ -3862,7 +3862,7 @@ export const COMMANDS = {
     changes: 'With --apply: the instruction file(s), only inside the managed block (backup first). Without: nothing.', exits: '0 ok; 2 no target chosen or error',
   },
   'instructions-uninstall': {
-    group: 'Setup', effect: 'write', summary: 'remove the instruction block',
+    group: 'Setup', effect: 'write', owner: { flags: ['apply'] }, summary: 'remove the instruction block',
     purpose: 'Remove the managed road-map-journal block from the instruction file(s). Dry run by default.',
     usage: ['roadctl instructions-uninstall --claude --codex [--apply]'],
     flags: [['(same as instructions-install)', '']],
@@ -3870,7 +3870,7 @@ export const COMMANDS = {
     changes: 'With --apply: the instruction file(s), only inside the managed block (backup first). Without: nothing.', exits: '0 ok; 2 no target chosen or error',
   },
   'agents-install': {
-    group: 'Setup', effect: 'write', summary: 'install Claude Code subagents road-worker, road-reviewer',
+    group: 'Setup', effect: 'write', owner: { flags: ['apply'] }, summary: 'install Claude Code subagents road-worker, road-reviewer',
     purpose: 'Write road-worker.md and road-reviewer.md into ~/.claude/agents (Claude Code subagents for delegated cards; the model comes from the registry roles, default sonnet). Dry run by default; a backup is made before overwriting; other files there are never touched.',
     usage: ['roadctl agents-install --claude [--apply] [--claude-home DIR] [--helper PATH]'],
     flags: [['--claude', 'the target host'], ['--apply', 'really write (a backup is made)'], ['--claude-home DIR, --helper PATH', 'override locations']],
@@ -3878,7 +3878,7 @@ export const COMMANDS = {
     changes: 'With --apply: the two agent files (backup first). Without: nothing.', exits: '0 ok; 2 no target chosen or error',
   },
   'agents-uninstall': {
-    group: 'Setup', effect: 'write', summary: 'remove those subagents again',
+    group: 'Setup', effect: 'write', owner: { flags: ['apply'] }, summary: 'remove those subagents again',
     purpose: 'Remove road-worker.md and road-reviewer.md written by agents-install (only files that carry the roadctl marker). Dry run by default.',
     usage: ['roadctl agents-uninstall --claude [--apply] [--claude-home DIR]'],
     flags: [['(same as agents-install)', '']],
@@ -3886,7 +3886,7 @@ export const COMMANDS = {
     changes: 'With --apply: removes the two files (backup first). Without: nothing.', exits: '0 ok; 2 no target chosen or error',
   },
   boards: {
-    group: 'Setup', effect: 'write', summary: 'the user list of boards (no central workspace needed)',
+    group: 'Setup', effect: 'write', owner: { sub: ['add', 'remove'] }, summary: 'the user list of boards (no central workspace needed)',
     purpose: 'Known boards: those of the central workspace plus the user list in ${XDG_CONFIG_HOME:-~/.config}/road-map-journal/boards (one absolute board directory per line, # comments). Everything that looks at all boards (--all, --project, where, finding a board by folder name or "match" name) uses both, without duplicates. add records a board (default: the one found from here), remove forgets one by directory or project name, list shows them.',
     usage: ['roadctl boards [list] [--json]', 'roadctl boards add [dir]', 'roadctl boards remove <dir|name>'],
     flags: [J],
@@ -3921,6 +3921,9 @@ export const HELP_TOPICS = {
       'A scheduled run starts from `roadctl tick`: it offers only what the owner already allowed (TAKE, ACCEPT, START, STALE, RUN and kinds of modules)',
       'and refuses on a paused machine (exit 6), at the owner\'s limits reserve (exit 1) or when the limits are unknown (exit 3).',
       'External writes (publish, spend, send) need a scope the owner approved; a card or routine without it never writes outside.',
+      'In an unattended run (ROADCTL_UNATTENDED set, or ROADCTL_RUN_ID, which supervise sets) an owner call is refused with exit 1, and every owner call, refused or not, is one line in owner-commands.jsonl that the digest tells the owner.',
+      'On a board with an L3 or L4 mandate an unattended card command (claim, delegate, report, review, accept, return, undelegate) on a card outside the mandate is refused the same way.',
+      'This is a gate by agreement, not a sandbox: it makes crossing the line visible and refused for a well-behaved process.',
       'See docs/roadctl.md: "Autonomous or personal work", "Recurring routines", "Pause and resume".',
     ],
   },
@@ -3993,7 +3996,7 @@ export function helpFor(name) {
   if (topic) return [`roadctl help ${name}: ${topic.summary}`, '', ...topic.text].join('\n');
   const c = Object.hasOwn(ALL_COMMANDS, name) ? ALL_COMMANDS[name] : null;
   if (!c) return null;
-  const L = [`roadctl ${name} [${c.effect}]: ${c.summary}`, '', ...(c.owner ? ['Owner only: run it only on the owner\'s explicit words in the current conversation (roadctl help unattended).', ''] : []), ...wrap(c.purpose, ''), '', 'Usage:', ...c.usage.map((u) => `  ${u}`), '']; // seam (P5.28): owner flag
+  const L = [`roadctl ${name} [${c.effect}]: ${c.summary}`, '', ...(c.owner ? [`Owner only${c.owner === true ? '' : ` (${[...(c.owner.sub ?? []).map((x) => x || 'without a subcommand'), ...(c.owner.flags ?? []).map((x) => `--${x}`)].join(', ')})`}: run it only on the owner\'s explicit words in the current conversation; an unattended run (ROADCTL_UNATTENDED or ROADCTL_RUN_ID) is refused with exit 1 (roadctl help unattended).`, ''] : []), ...wrap(c.purpose, ''), '', 'Usage:', ...c.usage.map((u) => `  ${u}`), '']; // seam (P5.28): owner flag
   if (c.flags.length) L.push('Flags:', ...c.flags.map(([f, d]) => (!d ? `  ${f}` : f.length <= 20 ? `  ${f.padEnd(21)}${wrap(d, ' '.repeat(23)).join('\n').slice(23)}` : `  ${f}\n${wrap(d, '      ').join('\n')}`)), '');
   L.push('Examples:', ...c.examples.map((e) => `  ${e}`), '', `Changes: ${c.changes}`, `Exit codes: ${c.exits}`, '', 'Global flags: --board DIR, --project NAME, --workspace DIR, --date YYYY-MM-DD (see roadctl help).');
   return L.join('\n');
@@ -4019,7 +4022,27 @@ function parse(argv) {
   return o;
 }
 
+/** seam (P5.3): the owner gate and its audit around every command (scripts/roadctl/owner-gate.mjs); without that folder a command runs as before. */
 export async function main(argv, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }) {
+  const { _: args, flags } = parse(argv);
+  const cmd = args[0];
+  const board = () => { // best effort: the gate asks for it only for a card command or a target-less owner call
+    try {
+      const dir = findBoard(process.cwd(), typeof flags.project === 'string' ? boardByProject(flags.project) : typeof flags.board === 'string' ? flags.board : undefined);
+      return dir ? loadBoard(dir) : null;
+    } catch {
+      return null;
+    }
+  };
+  const gate = cmd && !flags.help && !args.includes('-h') && Object.hasOwn(ALL_COMMANDS, cmd) ? MODULE_REG.ownerGate?.(ALL_COMMANDS[cmd], { cmd, args, flags, env: process.env, api: moduleApi(), board }) : null;
+  if (gate?.refused) return io.err(`roadctl ${cmd}: refused: ${gate.refused}\n`), 1;
+  const extra = {}; // what a command adds to its audit line (mandate approve: the hash)
+  const code = await mainRun(argv, io, extra);
+  gate?.record?.(code, extra);
+  return code;
+}
+
+async function mainRun(argv, io, audit) {
   const { _: args, flags, rest } = parse(argv);
   const cmd = args[0];
   if (flags.date) process.env.ROADCTL_DATE = flags.date;
@@ -4044,7 +4067,7 @@ export async function main(argv, io = { out: (s) => process.stdout.write(s), err
       if (flags.project === true) throw new Error('usage: --project NAME');
       flags.board = boardByProject(flags.project); // a known board by project name or "match" name
     }
-    if (Object.hasOwn(MODULE_REG.commands, cmd)) return await MODULE_REG.commands[cmd].run({ flags, args, rest: rest ?? [], io, out, env: process.env, api: moduleApi(), modules: MODULE_REG.modules }); // module command (seam)
+    if (Object.hasOwn(MODULE_REG.commands, cmd)) return await MODULE_REG.commands[cmd].run({ flags, args, rest: rest ?? [], io, out, env: process.env, api: moduleApi(), modules: MODULE_REG.modules, audit }); // module command (seam)
     if (cmd === 'instructions-install' || cmd === 'instructions-uninstall') {
       out(installInstructions({ claude: Boolean(flags.claude), codex: Boolean(flags.codex), apply: Boolean(flags.apply), uninstall: cmd === 'instructions-uninstall', claudeHome: flags['claude-home'], codexHome: flags['codex-home'], workspace: flags.workspace, helper: flags.helper }));
       return 0;

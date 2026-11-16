@@ -52,6 +52,8 @@
 // scripts/testkit/tick-schema.mjs knows no module kind unless the test passes it (a kind changes `tick --json`: schema and docs change with the module that adds it).
 //
 // A command entry may carry `owner: true` (P5.28): a command only the owner's explicit words may run; `help <name>` says so and the test "help = docs" checks the list in docs/roadctl.md.
+// P5.3: `owner: true` with `ownerReads: ['show', '']` leaves the calls whose first word is listed ('' = none) to everyone; `owner: { sub: ['approve'], flags: ['confirm'] }` marks only some calls (the first word is in `sub`, or one of the flags is given). Every owner call is
+// audited and, in an unattended run, refused with exit code 1 (owner-gate.mjs; the list of owner commands is these entries, there is no other).
 //
 // Node standard library only, no side effects at import.
 
@@ -99,7 +101,8 @@ export function buildRegistry(modules, { builtin = {}, groups = [], knownKeys = 
       for (const f of STRING_FIELDS) if (typeof c[f] !== 'string' || !c[f]) fail(label, `command ${cmd}: help field ${f} is missing`);
       for (const f of ARRAY_FIELDS) if (!Array.isArray(c[f])) fail(label, `command ${cmd}: help field ${f} must be an array`);
       if (!c.usage.length || !c.examples.length) fail(label, `command ${cmd}: usage and examples must not be empty`);
-      if (c.owner !== undefined && typeof c.owner !== 'boolean') fail(label, `command ${cmd}: owner must be true or false`);
+      if (c.ownerReads !== undefined && !(c.owner === true && Array.isArray(c.ownerReads) && c.ownerReads.every((x) => typeof x === 'string'))) fail(label, `command ${cmd}: ownerReads is a list of first words that only read, and needs owner: true`);
+      if (c.owner !== undefined && typeof c.owner !== 'boolean' && !(c.owner && typeof c.owner === 'object' && [c.owner.sub, c.owner.flags].every((l) => l === undefined || (Array.isArray(l) && l.every((x) => typeof x === 'string'))))) fail(label, `command ${cmd}: owner must be true or false (or { sub: [...], flags: [...] } for some calls)`);
       commands[cmd] = c;
     }
     for (const k of m.headerKeys ?? []) {

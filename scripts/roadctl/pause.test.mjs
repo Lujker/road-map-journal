@@ -342,7 +342,7 @@ test('P5.5 pause is local machine state: no board file, no card, no git object c
   const before = tree(r.ws).filter((l) => !l.startsWith('.git/'));
   const status = () => execFileSync('git', ['-C', r.ws, 'status', '--porcelain'], { encoding: 'utf8' });
   r.ok(['pause', '--reason', 'x']);
-  assert.deepEqual(fs.readdirSync(r.sd), ['pause.json'], 'only the pause file');
+  assert.deepEqual(fs.readdirSync(r.sd).sort(), ['owner-commands.jsonl', 'pause.json'], 'only the pause file and (P5.3) the owner audit line of pause')
   r.tick();
   r.ok(['status']);
   r.ok(['resume']);

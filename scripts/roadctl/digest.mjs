@@ -12,7 +12,8 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
-import { changedAfterApproval } from './mandate.mjs';
+import { changedAfterApproval, readMandate } from './mandate.mjs';
+import { bridgeSetting } from './owner-gate.mjs';
 import { readPause, pauseLine } from './pause.mjs';
 import { parseRunTrailer } from './run-ledger.mjs';
 import { LOCK_STALE_MS, acquireLock } from './state.mjs';
@@ -147,6 +148,24 @@ export function readOwnerCommands(env, sinceMs, untilMs) {
   return readJsonl(ownerCommandsFile(env)).filter((r) => typeof r.command === 'string' && Number.isFinite(Date.parse(r.time)) && Date.parse(r.time) >= sinceMs && Date.parse(r.time) <= untilMs);
 }
 
+/** What owner commands left in git, which every machine shares: approve and auto (the card's `approved`), done (`accepted`), routine on and off (its Log), mandate approve. Dated, no time: from `sinceDay` on. */
+function gitOwnerCommands(boards, api, sinceDay) {
+  const out = [];
+  const dated = (s) => { const [by, date] = String(s ?? '').split(',').map((x) => x.trim()); return /^\d{4}-\d\d-\d\d$/.test(date ?? '') && date >= sinceDay ? by : null; };
+  for (const b of boards) {
+    for (const c of b.cards ?? []) {
+      for (const [key, command] of [['approved', 'approve'], ['accepted', 'done']]) {
+        const by = dated(c.header[key]);
+        if (by !== null && c.header.id) out.push({ command, target: c.header.id, by, outcome: 'ok' });
+      }
+    }
+    for (const r of b.routines ?? []) for (const l of r.log ?? []) if (/^(ON|OFF)\b/.test(l.text) && l.date >= sinceDay && r.header.id) out.push({ command: `routine ${l.text.slice(0, 3).trim().toLowerCase()}`, target: r.header.id, by: l.author, outcome: 'ok' });
+    const m = readMandate(b, api);
+    if (m?.approved && dated(`${m.approved.by}, ${m.approved.date}`) !== null) out.push({ command: 'mandate approve', target: projectOf(b), by: m.approved.by, outcome: 'ok' });
+  }
+  return out;
+}
+
 const DAILY = {
   en: { head: 'roadctl daily overview', ago: 'ago', every: 'every', overdue: 'OVERDUE', last: 'last run', never: 'never run', blocked: 'not running', off: 'routines are switched off (board switch)', machine: 'this machine, last 24h', crashed: 'crashed', skipped: 'skipped', owner: 'owner commands, last 24h', more: 'more', tasks: 'tasks reported, last 24h', none: 'no enabled routines', orch: 'orchestrator', by: 'by' },
   ru: { head: 'суточная сводка roadctl', ago: 'назад', every: 'каждые', overdue: 'ПРОСРОЧЕНА', last: 'последний запуск', never: 'ещё не запускалась', blocked: 'не запускается', off: 'рутины выключены (переключатель доски)', machine: 'эта машина, 24 ч', crashed: 'оборвано', skipped: 'пропущено', owner: 'команды владельца за 24 ч', more: 'ещё', tasks: 'отчёты по поручениям за 24 ч', none: 'нет включённых рутин', orch: 'оркестратор', by: 'от' },
@@ -251,6 +270,16 @@ function immediate({ boards, refused, env, api, now, name, dry, warn }) {
         blocks.push(`mandate: ${projectOf(b)}: ${why}`);
         size += blocks.at(-1).length + 1;
       }
+    }
+    // P5.3: an owner command refused in an unattended run, and (a local setting, a bridge is connected) one that did not come through the bridge: at once, once each
+    const bridge = bridgeSetting(env);
+    for (const r of readOwnerCommands(env, 0, now)) {
+      const why = r.outcome === 'refused' && r.unattended === true ? 'refused in an unattended run' : bridge && r.via !== bridge ? `not through the bridge ${bridge} (via ${r.via ?? 'unknown'})` : null;
+      const sig = `owner|${r.time}|${r.command}|${r.target}`;
+      if (!why || mine.seen[sig] !== undefined || now - Date.parse(r.time) > OLD_MS || (first && now - Date.parse(r.time) > FIRST_USE_MS)) continue;
+      const text = `owner command ${cleanText(r.command, 30)}${r.target ? ` ${cleanText(r.target, 30)}` : ''}${r.by ? ` by ${cleanText(r.by, 40)}` : ''}: ${why}${r.run_id ? `, run ${cleanText(r.run_id, 40)}` : ''}${r.reason && !/^an unattended run/.test(r.reason) ? ` (${cleanText(r.reason, 120)})` : ''}`;
+      if (!push([text], sig)) { cut++; continue; }
+      shown.push({ sig, kind: 'owner', target: r.target ?? '-', outcome: r.outcome, agent: r.by ?? null, run_id: r.run_id ?? null, host: null, fields: { did: [], decisions: [], problems: [{ key: 'owner-command', kind: 'permanent', text }], needs_owner: null, not_checked: null } });
     }
     const tooOld = (ev) => now - ev.time > OLD_MS || (first && now - ev.time > FIRST_USE_MS);
     for (const ev of events) {
@@ -439,7 +468,9 @@ function daily({ boards, refused, env, api, now, language }) {
   const reported = events.filter((e) => e.kind === 'task' && e.date >= day);
   if (reported.length) lines.push(`${w.tasks}: ${reported.length} (${reported.slice(0, 4).map((e) => `${e.project}/${e.id}`).join(', ')}${reported.length > 4 ? ', …' : ''})`);
   // what the owner's commands did (the audit of P5.3 writes owner-commands.jsonl; no file, no line)
-  const cmds = readOwnerCommands(env, since, now);
+  const local = readOwnerCommands(env, since, now);
+  const have = new Set(local.map((c) => `${c.command}|${c.target}`));
+  const cmds = [...local, ...gitOwnerCommands(boards, api, day).filter((c) => !have.has(`${c.command}|${c.target}`))]; // P5.3: this machine's audit (refusals too) plus every machine's git trace
   if (cmds.length) lines.push(`${w.owner}: ${cmds.length} (${cmds.slice(0, 3).map((c) => `${cleanText(c.command, 30)}${c.target ? ` ${cleanText(c.target, 30)}` : ''}${c.by ? ` ${w.by} ${cleanText(c.by, 40)}` : ''}${c.outcome && c.outcome !== 'ok' ? ` ${cleanText(c.outcome, 20)}` : ''}`).join('; ')}${cmds.length > 3 ? `; +${cmds.length - 3}` : ''})`);
   if (!lines.length) lines.push(`${w.head}: ${w.none}`);
   else lines.unshift(`${w.head} ${isoAt(now).slice(0, 10)}`);

@@ -266,7 +266,7 @@ test('P5.13 a5: a routine that has not run for twice its every inside its hours 
   assert.match(outside.digest(['--daily'], clock('2026-11-11T09:00:00Z')), /OVERDUE/, 'inside the window again, still not run: overdue');
   // a switched-off routine has no line; a board switch that is off is one line
   outside.ok(['routine', 'off', 'mr-status', '--by', 'Owner']);
-  assert.doesNotMatch(outside.digest(['--daily'], clock('2026-11-11T09:00:00Z')), /mr-status/);
+  assert.doesNotMatch(outside.digest(['--daily'], clock('2026-11-11T09:00:00Z')).split('\n').filter((l) => !l.startsWith('owner commands')).join('\n'), /mr-status/); // P5.3: `routine off` is itself on the owner-commands line
   // never run: its own words, not overdue
   const fresh = rig();
   fresh.routine();
@@ -340,7 +340,8 @@ test('P5.13 a7: run done of the duty orchestrator and report of a delegated task
 test('P5.13 a8: the daily overview has a line about the owner\'s commands of the last 24 hours (the audit file is written by P5.3; this reads it)', FAKES_SKIP, () => {
   const r = rig();
   r.routine();
-  assert.doesNotMatch(r.digest(['--daily']), /owner commands/, 'no audit file, no line');
+  fs.rmSync(path.join(r.paths.dir, 'owner-commands.jsonl'), { force: true }); // P5.3: `routine on` of the setup is audited now
+  assert.match(r.digest(['--daily']), /^owner commands, last 24h: 2 \(approve W-3 by владелец; routine on mr-status by Owner\)$/m, 'no audit file: only what git shows (P5.3)');
   fs.mkdirSync(path.dirname(r.paths.dir + '/x'), { recursive: true });
   const rows = [
     { time: shift(-30), command: 'approve', target: 'P5.1', by: 'claude-code@home-wsl', outcome: 'ok' },
@@ -350,7 +351,7 @@ test('P5.13 a8: the daily overview has a line about the owner\'s commands of the
   ];
   fs.writeFileSync(path.join(r.paths.dir, 'owner-commands.jsonl'), `${rows.map((x) => JSON.stringify(x)).join('\n')}\nbroken line\n`);
   const d = r.digest(['--daily']);
-  assert.match(d, /^owner commands, last 24h: 2 \(approve P5\.1 by claude-code@home-wsl; routine on mr-status by hermes@home-host refused\)$/m);
+  assert.match(d, /^owner commands, last 24h: 3 \(approve P5\.1 by claude-code@home-wsl; routine on mr-status by hermes@home-host refused; approve W-3 by владелец\)$/m);
 });
 
 test('P5.13 + P5.5: the daily overview names an active pause of this machine (one line), nothing for no pause or an expired one', FAKES_SKIP, () => {
@@ -461,7 +462,7 @@ test('P5.13: usage and the state name are checked; the digest never writes the b
   r.digest(['--daily'], r.at(6));
   assert.equal(fs.readFileSync(r.routineFile(), 'utf8'), mid, 'digest changes no board file');
   assert.notEqual(before, mid);
-  assert.deepEqual(fs.readdirSync(r.paths.dir).filter((f) => !f.startsWith('runs.jsonl') && !f.startsWith('ticks')).sort(), ['digest.state.json'], 'only the delivery state is new (and no lock is left)');
+  assert.deepEqual(fs.readdirSync(r.paths.dir).filter((f) => !f.startsWith('runs.jsonl') && !f.startsWith('ticks')).sort(), ['digest.state.json', 'owner-commands.jsonl'], 'only the delivery state and (P5.3) the owner audit of `routine on` are new, no lock is left');
   // the state is never inside a git work tree is not needed: it holds keys and times only, but a broken file is started over
   fs.writeFileSync(path.join(r.paths.dir, 'digest.state.json'), '{not json');
   assert.doesNotThrow(() => r.digest([], r.at(7)));
