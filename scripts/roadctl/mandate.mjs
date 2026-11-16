@@ -26,6 +26,7 @@ import path from 'node:path';
 import { HASH_KEY, approvalHash } from './approval-hash.mjs';
 
 export const MANDATE_REQUIRES = '0.8.0';
+export const PLAN_REQUIRES = '0.11.0'; // plan_max_cards (P5.34)
 export const MANDATE_FILE = 'mandate.md';
 export const LEVELS = ['L1', 'L2', 'L3', 'L4'];
 export const KINDS = ['fix', 'feature', 'docs', 'tests', 'refactor', 'research'];
@@ -103,6 +104,8 @@ export function readMandate(board, api) {
   const state = !stored ? 'unapproved' : stored === hash ? 'approved' : 'changed';
   const raised = (api.compareVersions(board.config?.requires ?? '0', MANDATE_REQUIRES) ?? -1) >= 0; // an unreadable `requires` is null: the board is refused anyway
   if (!raised) problems.push(`the board must require roadctl ${MANDATE_REQUIRES} (config.json "requires"); until then the mandate takes nothing`);
+  // always-on: an older copy on another machine reads plan_max_cards as malformed (alerts, lint errors that block save); requires makes it refuse the board cleanly instead
+  if (header.plan_max_cards !== undefined && (api.compareVersions(board.config?.requires ?? '0', PLAN_REQUIRES) ?? -1) < 0) problems.push(`plan_max_cards needs the board to require roadctl ${PLAN_REQUIRES} (config.json "requires"), so older copies on other machines refuse the board instead of reading the mandate as malformed`);
   const approvedBy = (header.approved ?? '').split(',').map((x) => x.trim());
   return { file, header, level, gated, kinds, max_size: header.max_size ?? null, plan_max_cards: header.plan_max_cards === undefined ? null : Number(header.plan_max_cards), merge: header.merge ?? 'branch', budget, goals, forbidden: bullets('Forbidden'), tell_extra: bullets('Tell the owner'), hash, state, problems, approved: header.approved ? { by: approvedBy[0], date: approvedBy[1] ?? null } : null };
 }

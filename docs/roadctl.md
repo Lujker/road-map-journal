@@ -236,7 +236,7 @@ kinds: fix, docs, tests             fix feature docs tests refactor research
 max_size: M                         S | M | L
 merge: branch                       branch | main (main needs L4)
 budget: cards_per_day=2, runs_per_week=10
-plan_max_cards: 5                   optional (0.11.0): the most cards one plan may propose (default 5)
+plan_max_cards: 5                   optional (0.11.0): the most cards one plan may propose (default 5); a board that sets it requires 0.11.0
 approved: Owner, 2026-11-16         written by roadctl mandate approve
 approved_hash: sha256-v1:...        ... with the content hash
 ---

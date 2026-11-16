@@ -16,11 +16,11 @@ const MANDATE = (o = {}) => `---\nmandate: 1\nlevel: ${o.level ?? 'L3'}\nkinds: 
 const CARD = (id, title) => `---\nid: ${id}\ntitle: ${title}\nstatus: ready\nas_of: 2026-11-10\n---\n\n## Goal\nx\n\n## Acceptance\n- [ ] a1: it works\n`;
 const good = (key, over = {}) => ({ key, title: `Task ${key}`, goal: 'do it', criteria: [{ id: 'a1', text: `works ${key}`, check: 'test: node --test x' }], kind: 'fix', size: 'S', env: 'Local', role: 'worker', effects: 'scripts/ only', stop_conditions: 'stop on a red test', roadmap: 'P5.34', mandate_goal: 'G1', ...over });
 
-function rig({ mandate, cards = {}, reg } = {}) {
+function rig({ mandate, cards = {}, reg, requires = '0.8.0' } = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-plan-'));
   const board = path.join(dir, 'ws', 'projects', 'app', 'board');
   fs.mkdirSync(path.join(board, 'cards'), { recursive: true });
-  fs.writeFileSync(path.join(board, 'config.json'), JSON.stringify({ board_version: 1, title: 'App', status_map: {}, requires: '0.8.0' }));
+  fs.writeFileSync(path.join(board, 'config.json'), JSON.stringify({ board_version: 1, title: 'App', status_map: {}, requires }));
   for (const [id, t] of Object.entries(cards)) fs.writeFileSync(path.join(board, 'cards', `${id}.md`), CARD(id, t));
   const approve = (t) => `${t.replace(/\n---\n/, `\napproved: Owner, 2026-11-10\n${HASH_KEY}: ${approvalHash(t)}\n---\n`)}`;
   if (mandate) fs.writeFileSync(path.join(board, 'mandate.md'), mandate.approved === false ? mandate.text : approve(mandate.text));
@@ -37,7 +37,8 @@ function rig({ mandate, cards = {}, reg } = {}) {
     return r;
   };
   const json = (plan) => { const r = check(plan, ['--json']); return { status: r.status, ...JSON.parse(r.stdout) }; };
-  return { check, json, board };
+  const mandateCheck = () => spawnSync(process.execPath, [SELF, 'mandate', 'check', '--board', board], { cwd: dir, encoding: 'utf8', env });
+  return { check, json, board, mandateCheck };
 }
 const L3 = { text: MANDATE() };
 const codes = (r, i = 0) => r.cards[i].reasons.map((x) => x.code);
@@ -137,4 +138,13 @@ test('P5.34 a11: read only: no write, no start; the command is a help-documented
   const help = spawnSync(process.execPath, [SELF, 'help', 'plan'], { encoding: 'utf8' });
   assert.match(help.stdout, /\[read\]|read/);
   assert.equal(spawnSync(process.execPath, [SELF, 'plan', 'apply', 'x'], { encoding: 'utf8' }).status, 2);
+});
+
+test('P5.34: a mandate with plan_max_cards needs requires 0.11.0, so an older copy on another always-on machine refuses the board instead of reading the mandate as malformed', () => {
+  const m = { text: MANDATE({ extra: 'plan_max_cards: 3\n' }) };
+  const low = rig({ mandate: m }).mandateCheck();
+  assert.match(`${low.stdout}${low.stderr}`, /plan_max_cards needs the board to require roadctl 0\.11\.0/);
+  const ok = rig({ mandate: m, requires: '0.11.0' }).mandateCheck();
+  assert.doesNotMatch(`${ok.stdout}${ok.stderr}`, /plan_max_cards needs/);
+  assert.equal(rig({ mandate: m, requires: '0.11.0' }).json({ plan: 1, cards: [good('c1')] }).cards[0].result, 'in-mandate');
 });
