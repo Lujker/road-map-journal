@@ -459,7 +459,7 @@ export function loadRegistry(env = process.env) {
   }
   const obj = (x) => x && typeof x === 'object' && !Array.isArray(x);
   if (!obj(r) || (r.agents !== undefined && !obj(r.agents)) || (r.roles !== undefined && !obj(r.roles))) throw new Error(`registry ${p} must be an object with "roles" and "agents" objects`);
-  for (const k of ['limits', 'providers']) if (r[k] !== undefined && !obj(r[k])) throw new Error(`registry ${p}: "${k}" must be an object`);
+  for (const k of ['limits', 'providers', 'environments', 'preference']) if (r[k] !== undefined && !obj(r[k])) throw new Error(`registry ${p}: "${k}" must be an object`); // environments, preference (P5.23): checked in detail by scripts/roadctl/environment.mjs
   const pct = (x) => typeof x === 'number' && x >= 0 && x <= 100;
   const checkReserve = (res, where) => {
     if (res === undefined) return;
@@ -471,7 +471,7 @@ export function loadRegistry(env = process.env) {
     if (!obj(pv)) throw new Error(`registry ${p}: provider ${id} must be an object`);
     checkReserve(pv.reserve, `providers.${id}.reserve`);
   }
-  return { path: p, version: r.version ?? 1, roles: r.roles ?? {}, agents: r.agents ?? {}, limits: r.limits ?? {}, providers: r.providers ?? {} };
+  return { path: p, version: r.version ?? 1, roles: r.roles ?? {}, agents: r.agents ?? {}, limits: r.limits ?? {}, providers: r.providers ?? {}, environments: r.environments ?? {}, preference: r.preference ?? {} };
 }
 
 const scriptName = (a) => /^(cron|script):/.test(a);
@@ -2765,7 +2765,8 @@ const moduleItemText = (i) => { // seam (P5.28): a module kind may give its own 
     return `${i.kind} ${i.project}/${i.id} ${i.title}`;
   }
 };
-const itemText = (i) => MODULE_REG.tickKinds[i.kind]?.text ? moduleItemText(i) : `${i.kind} ${i.project}/${i.id} ${i.title}${i.workdir_dirty ? ' (workdir dirty)' : ''}${i.routine?.attempt > 1 ? ` (attempt ${i.routine.attempt})` : ''}${i.routine?.recover ? ` (recover: ${sanitize(i.routine.recover, 80)})` : ''}`; // recover (P5.2): a supervised run of this routine died and nobody has recorded it yet, so the text changes once and a monitor starts the supervisor, which recovers it; attempt (P5.1): only after a crashed or failed run of the same routine, so the text of a stuck routine changes once
+const accessText = (a, env) => (a ? ` (env ${sanitize(env ?? '-', 40)}, ${a.placement}: ${a.via === 'ssh' ? `ssh ${sanitize(a.ssh ?? '-', 60)}${a.mcp ? `, mcp ${a.mcp.map((x) => sanitize(x, 30)).join('+')} declared` : ''}` : a.via === 'local' ? 'on this machine' : 'NO PATH FROM THIS MACHINE'})` : ''); // P5.23
+const itemText = (i) => MODULE_REG.tickKinds[i.kind]?.text ? moduleItemText(i) : `${i.kind} ${i.project}/${i.id} ${i.title}${i.workdir_dirty ? ' (workdir dirty)' : ''}${i.routine?.attempt > 1 ? ` (attempt ${i.routine.attempt})` : ''}${i.routine?.recover ? ` (recover: ${sanitize(i.routine.recover, 80)})` : ''}${accessText(i.routine?.access ?? i.delegate?.access, i.routine?.env ?? i.delegate?.env)}`; // recover (P5.2): a supervised run of this routine died and nobody has recorded it yet, so the text changes once and a monitor starts the supervisor, which recovers it; attempt (P5.1): only after a crashed or failed run of the same routine, so the text of a stuck routine changes once
 
 const sortTickItems = (items) => items.sort((a, b) => naturalCompare(a.project, b.project) || naturalCompare(a.id, b.id) || TICK_KINDS.indexOf(a.kind) - TICK_KINDS.indexOf(b.kind));
 
@@ -3002,7 +3003,10 @@ export async function tickCommand(flags, args, io, env = process.env) {
     // P5.14: a board that requires a newer roadctl gives no item of any kind; the reason is a `requires:` line in `sync` (text and JSON)
     const refused = loaded.map((b) => [b, boardRequires(b.board.config)]).filter(([, why]) => why).map(([b, why]) => `requires: ${sanitize(b.name, 40)}: ${why}`);
     const items = sortTickItems(loaded.filter((b) => !boardRequires(b.board.config)).flatMap((b) => tickItems(b.name, b.board, agent, reg)).filter((i) => applyTickFilter(filter, i)));
-    for (const h of MODULE_REG.callHook('tick-before', { agent, env, filter, items, boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])), api: moduleApi() }, io)) for (const [k, extra] of Object.entries(h.value?.run ?? {})) Object.assign(items.find((i) => i.kind === 'RUN' && `${i.project}/${i.id}` === k)?.routine ?? {}, extra); // seam (P5.1): crashed runs by time threshold, `attempt` of a RUN item
+    for (const h of MODULE_REG.callHook('tick-before', { agent, env, filter, items, boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])), api: moduleApi() }, io)) { // seam (P5.1): crashed runs by time threshold, `attempt` of a RUN item
+      for (const [k, extra] of Object.entries(h.value?.run ?? {})) Object.assign(items.find((i) => i.kind === 'RUN' && `${i.project}/${i.id}` === k)?.routine ?? {}, extra);
+      for (const [k, extra] of Object.entries(h.value?.take ?? {})) Object.assign(items.find((i) => i.kind === 'TAKE' && `${i.project}/${i.id}` === k)?.delegate ?? {}, extra); // P5.23: `env` and `access` of a TAKE item
+    }
     if (filter?.routine && !loaded.some((b) => (b.board.routines ?? []).some((r) => r.header.id === filter.routine))) io.err(`roadctl tick: warning: no routine ${sanitize(filter.routine, 60)} on the boards looked at\n`);
     let limits;
     if (items.length) limits = await tickLimits(agent, reg, env);
@@ -3489,10 +3493,12 @@ export function showRoutine(board, id, { log = 5 } = {}) {
   const r = findRoutine(board, id);
   const row = routineRows(board).find((x) => x.file === `routines/${r.name}`);
   const o = [`# ${r.header.id ?? '?'} — ${r.header.title ?? ''}`, ...Object.entries(r.header).filter(([k]) => k !== 'id' && k !== 'title').map(([k, v]) => `${k}: ${v}`), ''];
-  o.push(`state: ${row.reasons.length ? `would not run: ${row.reasons.join('; ')}` : 'allowed to run'} | ${row.due ? 'due' : 'not due'}`, '');
+  o.push(`state: ${row.reasons.length ? `would not run: ${row.reasons.join('; ')}` : 'allowed to run'} | ${row.due ? 'due' : 'not due'}`);
+  const extra = MODULE_REG.callHook('routine-show', { board, routine: { file: `routines/${r.name}`, header: { ...r.header } }, env: process.env, api: moduleApi() }).flatMap((h) => (Array.isArray(h.value?.lines) ? h.value.lines.filter((l) => typeof l === 'string').map((l) => sanitize(l, 200)) : [])); // seam (P5.23): the environment and the way to it
+  o.push(...extra, '');
   for (const s of ['Goal', 'Steps', 'May write', 'Escalate']) if (r.sections[s]) o.push(`## ${s}`, r.sections[s].trim(), '');
   o.push('## Log (latest)', ...r.log.slice(-log).map((e) => `- ${e.date} [${e.author}] ${e.text}`));
-  return { text: o.join('\n'), json: { header: r.header, sections: r.sections, state: row, log: r.log.slice(-log) } };
+  return { text: o.join('\n'), json: { header: r.header, sections: r.sections, state: row, ...(extra.length ? { environment: extra } : {}), log: r.log.slice(-log) } };
 }
 
 /** The board switch: `roadctl autonomy routines on|off`. */
@@ -3944,7 +3950,7 @@ TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
 const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint,
-  boardRequires, compareVersions, nowMs, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks }); // P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
+  boardRequires, compareVersions, nowMs, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
   const lines = [];

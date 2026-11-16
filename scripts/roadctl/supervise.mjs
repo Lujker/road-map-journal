@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { timeoutMs } from './run-ledger.mjs';
+import { environmentGate } from './environment.mjs';
 import { pauseLine, readPause } from './pause.mjs';
 import { acquireLock } from './state.mjs';
 import { appendLine, beginRun, cleanText, DEFAULT_TIMEOUT_MS, isoAt, ledgerPaths, nowMs, readRuns, recordSkip, runKey, summaryFields, usable, withLedgerLock } from './run-store.mjs';
@@ -389,8 +390,14 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
   const side = lock.file + SIDE;
   if (!reconcileOrphans(ctx, bdir, dir, t, a.as, now)) { const text = `the record of an earlier run that died could not be saved (the ledger or supervise.state.json is not writable); nothing starts (${key})`; return { code: EXIT.failed, text, unsavedStop: text }; }
   fs.rmSync(side, { force: true });
-  const refuse = recheck(ctx, t, bdir ? api.loadBoard(bdir) : null, dir, now); // the board is read again: it may have changed since `tick`
+  const board = bdir ? api.loadBoard(bdir) : null; // the board is read again: it may have changed since `tick`
+  const refuse = recheck(ctx, t, board, dir, now);
   if (refuse) return refuse;
+  const unreachable = environmentGate(api, env, board, t, a.as); // P5.23: ssh to a remote-access environment before the model starts
+  if (unreachable) {
+    recordSkip(env, { kind: t.kind, project: t.project, id: t.id, agent: a.as, reason: 'unreachable', now, version: api.VERSION });
+    return { code: EXIT.notStarted, text: `skipped: unreachable: ${unreachable}` };
+  }
   const deadlineMs = now + t.timeout;
   // shortcut: beginRun (P5.1) marks an open run of another executor that is past its deadline as crashed and begins ours, so an executor that is still alive can run beside the command; closing it needs a liveness proof for runs nobody supervises, when P5.4 (HOLD) or P5.21 provides one
   const begin = beginRun(env, { kind: t.kind, project: t.project, id: t.id, agent: a.as, model: t.model, source: 'supervisor', anchor: t.anchor, deadlineMs, now, version: api.VERSION });

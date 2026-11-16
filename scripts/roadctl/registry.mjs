@@ -26,7 +26,7 @@
 // for that name and returns [{ module, value }] (a hook that throws is a warning on stderr and gives no value, it never stops the command).
 // A function of an `...-after` hook gets `ctx.prior`: what the same module returned from the paired `...-before` call. What the caller does
 // with the values is part of the seam and documented in docs/developing-roadctl.md:
-//   tick-before          { agent, env, filter, items, boardDirs, api } -> { run: { 'project/id': { attempt } } } extra fields of a RUN item's `routine`
+//   tick-before          { agent, env, filter, items, boardDirs, api } -> { run: { 'project/id': { attempt } }, take: { 'project/id': { env, access } } } extra fields of a RUN item's `routine` and of a TAKE item's `delegate` (P5.23)
 //   tick-ledger          { env, entry }  -> { handled: true } when the module wrote the ticks.jsonl line itself (otherwise roadctl appends it)
 //   routine-done-before  { board, id, as, result, text, flags, env, api } -> { text } replaces the summary, { refuse } refuses the run
 //   routine-done-after   { board, id, as, result, text, flags, env, api, done, prior }  (done is what routineDone returned) -> { print: [lines] } printed after the usual line
@@ -43,6 +43,7 @@
 //   routine-lint         (P5.15) { board, routine, env, api } -> { findings: [{ level: 'warning'|'error', text }] } extra `lint` findings of one routine that do not stop it (rule 32; `routine-reasons` is for what stops it)
 //   approval-basis       (P5.33) { board, card, mode: 'start'|'delegate'|'work', env, api } -> { ok: true, rank, header?: { key: 'value' }, log?: 'text' } | { ok: false, reasons: ['text'] } | {} another basis than `approved` for a card (the project mandate):
 //                        `tick` START offers the admitted ready card with the lowest rank; `delegate` on a card without `approved` needs it, writes `header` (only keys the module declared in `headerKeys`) and the Log line `log`; lint rule 6 accepts a `doing` card that has it (mode 'work')
+//   routine-show         (P5.23) { board, routine, env, api } -> { lines: ['text'] } extra lines of `routine show` (the environment and the way to it); also `environment` in `routine show --json`
 //   board-lint           (P5.33) { board, env, api } -> { findings: [{ level: 'warning'|'error', file?, text }] } extra `lint` findings of the board as a whole (rule 33)
 //   pause-state          { env, api } -> { paused: { since, by, reason, until }, line } while the machine is paused, else {} (`tick` stops before any lock, pull or limits gate and exits 6; `status` and `routine list` show the line)
 //
@@ -64,7 +65,7 @@ const KIND_RE = /^[A-Z][A-Z_]*$/;
 const EFFECTS = ['read', 'write', 'git'];
 const STRING_FIELDS = ['summary', 'purpose', 'changes', 'exits'];
 const ARRAY_FIELDS = ['usage', 'flags', 'examples'];
-export const HOOK_NAMES = ['tick-before', 'tick-ledger', 'routine-done-before', 'routine-done-after', 'claim-after', 'report-before', 'report-after', 'pause-state', 'routine-reasons', 'tick-items', 'start-admit', 'dep-satisfied', 'routine-on', 'routine-lint', 'approval-basis', 'board-lint']; // the last four of P5.28, then routine-on and routine-lint (P5.15), approval-basis and board-lint (P5.33)
+export const HOOK_NAMES = ['tick-before', 'tick-ledger', 'routine-done-before', 'routine-done-after', 'claim-after', 'report-before', 'report-after', 'pause-state', 'routine-reasons', 'tick-items', 'start-admit', 'dep-satisfied', 'routine-on', 'routine-lint', 'approval-basis', 'board-lint', 'routine-show']; // the last four of P5.28, then routine-on and routine-lint (P5.15), approval-basis and board-lint (P5.33)
 
 function fail(mod, msg) {
   throw new Error(`roadctl module ${mod}: ${msg}`);

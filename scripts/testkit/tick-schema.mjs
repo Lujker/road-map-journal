@@ -52,9 +52,9 @@ export function tickJsonProblems(j) {
     else if (kind === 'START') shape(item, at, base, { basis: (v) => v === 'mandate' }, problems); // P5.33: basis mandate = admitted by the project mandate, not by the queue
     else shape(item, at, { ...base, delegate: isObj }, kind === 'STALE' ? { workdir_dirty: (v) => v === true } : {}, problems);
     if (!isObj(item)) return;
-    if (kind === 'RUN' && isObj(item.routine)) shape(item.routine, `${at}.routine`, { agent: isStr, model: isStr, env: isStr, every: isStr, file: isStr, last_run: strOrNull }, { attempt: (v) => Number.isInteger(v) && v >= 2, recover: (v) => typeof v === 'string' && v.length > 0 }, problems); // attempt (0.3.0, P5.1): only after a crashed or failed run of the routine
+    if (kind === 'RUN' && isObj(item.routine)) shape(item.routine, `${at}.routine`, { agent: isStr, model: isStr, env: isStr, every: isStr, file: isStr, last_run: strOrNull }, { access: isObj, attempt: (v) => Number.isInteger(v) && v >= 2, recover: (v) => typeof v === 'string' && v.length > 0 }, problems); // attempt (0.3.0, P5.1): only after a crashed or failed run of the routine
     if (['TAKE', 'ACCEPT', 'STALE'].includes(kind) && isObj(item.delegate)) {
-      shape(item.delegate, `${at}.delegate`, { to: isStr, host: isStr, criteria: (v) => v === 'all' || (Array.isArray(v) && v.every(isStr)), by: isStr, accept: isStr, state: isStr }, { claim: isObj }, problems);
+      shape(item.delegate, `${at}.delegate`, { to: isStr, host: isStr, criteria: (v) => v === 'all' || (Array.isArray(v) && v.every(isStr)), by: isStr, accept: isStr, state: isStr }, { claim: isObj, env: isStr, access: isObj }, problems);
       if (isObj(item.delegate.claim)) shape(item.delegate.claim, `${at}.delegate.claim`, { agent: isStr, until: isStr }, { workdir: isStr }, problems);
     }
   });

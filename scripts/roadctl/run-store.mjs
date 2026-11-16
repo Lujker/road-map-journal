@@ -23,7 +23,7 @@ export const STATE_KEEP_MS = 30 * 86400e3;
 export const KINDS = ['routine', 'task', 'orchestrator'];
 export const SOURCES = ['agent', 'supervisor', 'tick'];
 export const OUTCOMES = ['started', 'ok', 'escalated', 'failed', 'timeout', 'aborted', 'crashed', 'skipped'];
-export const SKIP_REASONS = ['busy', 'limits', 'not-due', 'paused']; // paused (P5.5): the owner's local switch (roadctl pause)
+export const SKIP_REASONS = ['busy', 'limits', 'not-due', 'paused', 'unreachable']; // paused (P5.5): the owner's local switch (roadctl pause)
 export const PROBLEM_KINDS = ['transient', 'permanent', 'unknown'];
 /** Outcomes of a run that did not finish by itself: they count as attempts when the same routine is offered again. */
 export const BAD_OUTCOMES = new Set(['crashed', 'failed', 'timeout', 'aborted']);
@@ -400,7 +400,7 @@ const closeSkip = (p, s) => {
 };
 
 /**
- * A skipped run (reason busy | limits | not-due | paused), folded: the same skip of the same thing in a row is one record whose counter is kept in
+ * A skipped run (reason busy | limits | not-due | paused | unreachable), folded: the same skip of the same thing in a row is one record whose counter is kept in
  * ticks.state.json and written to runs.jsonl when the streak ends. p: { kind, project, id, agent, reason, now, version }.
  */
 export function recordSkip(env, p) {
