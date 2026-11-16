@@ -14,7 +14,8 @@ import mandate from './mandate.mjs';
 import ownerGateModule, { ownerGate } from './owner-gate.mjs';
 import stats from './stats.mjs';
 import environment from './environment.mjs';
+import plan from './plan.mjs';
 
-export const MODULES = [probe, doctor, runLedger, pause, digest, supervise, approvalHash, launch, mandate, ownerGateModule, stats, environment];
+export const MODULES = [probe, doctor, runLedger, pause, digest, supervise, approvalHash, launch, mandate, ownerGateModule, stats, environment, plan];
 
 export const buildModuleRegistry = (opts) => ({ ...buildRegistry(MODULES, opts), ownerGate }); // P5.3: main() asks ownerGate before every command

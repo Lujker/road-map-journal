@@ -9,6 +9,7 @@
 //   max_size: M                       S M L (the card's `size`)
 //   merge: branch                     branch | main (main needs L4)
 //   budget: cards_per_day=2, runs_per_week=10
+//   plan_max_cards: 5                 optional (0.11.0, P5.34): the most cards one plan may propose; `roadctl plan check` reads it
 //   approved: Owner, 2026-11-16       written by `roadctl mandate approve`, with approved_hash
 //   ---
 //   ## Goals        - G1 (priority 1): text      stable ids, explicit priority; a card's `goal` names one
@@ -31,7 +32,7 @@ export const KINDS = ['fix', 'feature', 'docs', 'tests', 'refactor', 'research']
 export const SIZES = ['S', 'M', 'L'];
 export const MERGES = ['branch', 'main'];
 export const TELL_OWNER_FLOOR = ['an owner-only command was refused', 'an attempt at something forbidden', 'the same card failed twice in a row', 'a question about something irreversible'];
-const KEYS = ['mandate', 'level', 'kinds', 'max_size', 'merge', 'budget', 'approved', HASH_KEY]; // any other key (the reserved `external` included) is a problem: unknown means closed
+const KEYS = ['mandate', 'level', 'kinds', 'max_size', 'merge', 'budget', 'plan_max_cards', 'approved', HASH_KEY]; // any other key (the reserved `external` included) is a problem: unknown means closed
 const LABELS = { Environment: ['Environment', 'Role'], Checks: ['Checks'], 'Allowed changes': ['Allowed changes', 'Effects'], 'Stop conditions': ['Stop conditions'] };
 const TAKEN_RE = /^approved by mandate (sha256-v1:[0-9a-f]{64})$/;
 const DAY = 864e5;
@@ -83,6 +84,7 @@ export function readMandate(board, api) {
     else budget[b[1]] = Number(b[2]);
   }
   if (gated && !(budget.cards_per_day && budget.runs_per_week)) problems.push('budget needs cards_per_day=N and runs_per_week=N at L3 and L4');
+  if (header.plan_max_cards !== undefined && !/^[1-9]\d{0,3}$/.test(header.plan_max_cards)) problems.push('plan_max_cards must be a whole number of at least 1 (the card limit of one plan, P5.34)');
   const goals = [];
   for (const line of (sections.Goals ?? '').split('\n')) {
     if (!line.startsWith('- ')) continue;
@@ -102,7 +104,7 @@ export function readMandate(board, api) {
   const raised = (api.compareVersions(board.config?.requires ?? '0', MANDATE_REQUIRES) ?? -1) >= 0; // an unreadable `requires` is null: the board is refused anyway
   if (!raised) problems.push(`the board must require roadctl ${MANDATE_REQUIRES} (config.json "requires"); until then the mandate takes nothing`);
   const approvedBy = (header.approved ?? '').split(',').map((x) => x.trim());
-  return { file, header, level, gated, kinds, max_size: header.max_size ?? null, merge: header.merge ?? 'branch', budget, goals, forbidden: bullets('Forbidden'), tell_extra: bullets('Tell the owner'), hash, state, problems, approved: header.approved ? { by: approvedBy[0], date: approvedBy[1] ?? null } : null };
+  return { file, header, level, gated, kinds, max_size: header.max_size ?? null, plan_max_cards: header.plan_max_cards === undefined ? null : Number(header.plan_max_cards), merge: header.merge ?? 'branch', budget, goals, forbidden: bullets('Forbidden'), tell_extra: bullets('Tell the owner'), hash, state, problems, approved: header.approved ? { by: approvedBy[0], date: approvedBy[1] ?? null } : null };
 }
 
 /** The mandate lets cards in at all: approved by the owner, unchanged, well formed, level L3 or L4. */
