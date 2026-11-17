@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawnSync } from 'node:child_process';
+import { execFileSync, spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -29,6 +29,16 @@ function project({ git = false } = {}) {
 }
 const load = (root) => rc.loadBoard(path.join(root, 'board'));
 const cli = (root, args, input = '', env = {}) => spawnSync(process.execPath, [SELF, ...args], { cwd: root, input, encoding: 'utf8', env: { ...process.env, ROADCTL_DATE: '2026-11-10', ...env } });
+const cliAsync = (root, args, input = '') => new Promise((resolve) => {
+  const p = spawn(process.execPath, [SELF, ...args], { cwd: root, env: { ...process.env, ROADCTL_DATE: '2026-11-10' } });
+  let out = '';
+  let err = '';
+  p.stdout.on('data', (d) => (out += d));
+  p.stderr.on('data', (d) => (err += d));
+  p.on('close', (code) => resolve({ status: code, stdout: out, stderr: err }));
+  p.stdin.write(input);
+  p.stdin.end();
+});
 const edit = (root, name, fn) => {
   const f = fs.readdirSync(path.join(root, 'board', 'cards')).find((x) => x.startsWith(name));
   const p = path.join(root, 'board', 'cards', f);
@@ -307,6 +317,51 @@ test('hermes pre_llm_call hook: brief on the first turn of a session, one remind
   assert.match(other.context, /roadctl brief/, 'a new session id gets the brief even without is_first_turn');
 });
 
+test('Hermes observer: real error payloads are observations, retained across retries and sessions', () => {
+  const root = project({ git: true });
+  const marker = () => fs.readdirSync(path.join(root, '.git')).filter((n) => n.startsWith('roadctl-hermes-limit-'));
+  const before = fs.readdirSync(path.join(root, 'board', 'cards')).map((n) => [n, fs.readFileSync(path.join(root, 'board', 'cards', n), 'utf8')]);
+  const error = (extra) => cli(root, ['hook', 'hermes-api-error'], JSON.stringify({ hook_event_name: 'api_request_error', cwd: root, session_id: 'secret-session', extra }));
+  const pre = (session_id) => cli(root, ['hook', 'hermes-pre-llm'], JSON.stringify({ hook_event_name: 'pre_llm_call', cwd: root, session_id, extra: {} }));
+  error({ status_code: 500, reason: 'server_error', retryable: false });
+  assert.equal(marker().length, 0);
+  pre('s1');
+  // turn_api_error.py dispatches before incrementing retry_count and before recovery.
+  for (const retry_count of [0, 1, 2]) error({ status_code: 429, reason: 'rate_limit', retryable: true, retry_count, max_retries: 3, provider: 'secret-provider', model: 'secret-model', error: { type: 'RateLimitError', message: 'secret-message' } });
+  assert.equal(marker().length, 1);
+  assert.equal(fs.readFileSync(path.join(root, '.git', marker()[0]), 'utf8'), '');
+  for (const sid of ['s1', 's2', 's3']) {
+    const context = JSON.parse(pre(sid).stdout).context;
+    assert.match(context, /was observed/);
+    assert.match(context, /fallback may have succeeded/);
+    assert.match(context, /not proof of a stop or a checkpoint/);
+    assert.doesNotMatch(context, /secret-/);
+  }
+  assert.equal(marker().length, 1, 'an emitted reminder is not an acknowledgement');
+  for (const [n, text] of before) assert.equal(fs.readFileSync(path.join(root, 'board', 'cards', n), 'utf8'), text);
+  assert.match(rc.hermesBlock('/opt/rc/roadctl.mjs', 'node'), /api_request_error:/);
+});
+
+test('Hermes observer: 402 may recover; independent boards in one git repo do not share markers', () => {
+  const root = project({ git: true });
+  const other = path.join(root, 'other-board');
+  fs.cpSync(path.join(root, 'board'), other, { recursive: true });
+  const call = (board, event, extra = {}) => cli(root, ['hook', event, '--board', board], JSON.stringify({ cwd: root, session_id: 's', extra }));
+  call(other, 'hermes-api-error', { status_code: 402, reason: 'billing', retryable: false });
+  assert.doesNotMatch(JSON.parse(call(path.join(root, 'board'), 'hermes-pre-llm').stdout).context, /was observed/);
+  assert.match(JSON.parse(call(other, 'hermes-pre-llm').stdout).context, /fallback may have succeeded/);
+});
+
+test('Hermes observer: concurrent failed attempts leave one empty sentinel and no card changes', async () => {
+  const root = project({ git: true });
+  const payload = JSON.stringify({ cwd: root, session_id: 's', extra: { status_code: 429, reason: 'rate_limit', retryable: true } });
+  const results = await Promise.all(Array.from({ length: 8 }, () => cliAsync(root, ['hook', 'hermes-api-error'], payload)));
+  for (const r of results) assert.equal(r.status, 0);
+  const names = fs.readdirSync(path.join(root, '.git')).filter((n) => n.startsWith('roadctl-hermes-limit-'));
+  assert.equal(names.length, 1);
+  assert.equal(fs.readFileSync(path.join(root, '.git', names[0]), 'utf8'), '');
+});
+
 test('codex hook install merges with existing hooks, is idempotent and uninstalls exactly', () => {
   const root = project({ git: true });
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'cx-'));
@@ -333,7 +388,7 @@ test('hermes config edit: append, idempotent, uninstall restores the exact text,
   const base = 'model:\n  default: x\n# a comment\nagent:\n  max_turns: 5\n';
   const opts = { self: '/opt/rc/roadctl.mjs', node: 'node' };
   const a = rc.editHermesConfig(base, { ...opts, uninstall: false });
-  assert.match(a.text, /# roadctl-managed begin\nhooks:\n  pre_llm_call:\n    - command: "node \/opt\/rc\/roadctl\.mjs hook hermes-pre-llm"\n      timeout: 10\n# roadctl-managed end\n$/);
+  assert.match(a.text, /# roadctl-managed begin\nhooks:\n  pre_llm_call:\n    - command: "node \/opt\/rc\/roadctl\.mjs hook hermes-pre-llm"\n      timeout: 10\n  api_request_error:\n    - command: "node \/opt\/rc\/roadctl\.mjs hook hermes-api-error"\n      timeout: 10\n# roadctl-managed end\n$/);
   assert.ok(a.text.startsWith(base));
   assert.equal(rc.editHermesConfig(a.text, { ...opts, uninstall: false }).text, a.text, 'idempotent');
   assert.equal(rc.editHermesConfig(a.text, { ...opts, uninstall: true }).text.trimEnd(), base.trimEnd());
@@ -1516,25 +1571,25 @@ test('limits: parsers for codex, claude stream-json and command output; boundary
   assert.throws(() => rc.parseCommandOutput('{"windows":[{"name":"five_hour","used_percent":101}]}'), /used_percent/);
   assert.deepEqual(rc.splitCommand('kimi --json "a b" \'c d\''), ['kimi', '--json', 'a b', 'c d']);
   const ev = (five, seven, reserve = rc.DEFAULT_RESERVE) => rc.evaluateLimits({ state: 'known', windows: [{ name: 'five_hour', used_percent: five }, { name: 'seven_day', used_percent: seven }] }, reserve).verdict;
-  assert.equal(ev(84.99, 0), 'allowed');
-  assert.equal(ev(85, 0), 'reserve', 'exactly the reserve left is NOT above the reserve');
+  assert.equal(ev(89.99, 0), 'allowed');
+  assert.equal(ev(90, 0), 'reserve', 'exactly the reserve left is NOT above the reserve');
   assert.equal(ev(0, 89.99), 'allowed');
   assert.equal(ev(0, 90), 'reserve');
   assert.equal(ev(85, 0, { five_hour: 5, seven_day: 10 }), 'allowed');
   assert.equal(rc.evaluateLimits({ state: 'unknown' }, rc.DEFAULT_RESERVE).verdict, 'unknown');
-  assert.deepEqual(rc.reserveFor(null, 'claude'), { seven_day: 10, five_hour: 15 });
+  assert.deepEqual(rc.reserveFor(null, 'claude'), { seven_day: 10, five_hour: 10 });
 });
 
-test('limits --check codex: JSON-RPC handshake, reserve boundaries 85/84 five-hour and 90/89 weekly, reset time in the message', LSKIP, () => {
+test('limits --check codex: JSON-RPC handshake, reserve boundaries 90/89 five-hour and 90/89 weekly, reset time in the message', LSKIP, () => {
   const sb = sandbox();
   const chk = (five, seven, extra = []) => lcli(sb, ['limits', '--check', 'codex', '--fresh', ...extra], { FAKE_5H: String(five), FAKE_7D: String(seven), FAKE_RESET: '1794409200' });
   const ok = chk(84, 89);
   assert.equal(ok.status, 0, ok.stderr);
-  assert.match(ok.stdout, /codex: allowed \(five_hour 84% used, 16% left, reserve 15%; seven_day 89% used, 11% left, reserve 10%\)/);
-  const five = chk(85, 0);
+  assert.match(ok.stdout, /codex: allowed \(five_hour 84% used, 16% left, reserve 10%; seven_day 89% used, 11% left, reserve 10%\)/);
+  const five = chk(90, 0);
   assert.equal(five.status, 1);
   assert.equal(five.stdout, '', 'a refusal goes to stderr');
-  assert.match(five.stderr, /reserve reached: five_hour has 15% left, the owner's reserve is 15%; resets at 2026-11-11T15:00:00Z/);
+  assert.match(five.stderr, /reserve reached: five_hour has 10% left, the owner's reserve is 10%; resets at 2026-11-11T15:00:00Z/);
   const week = chk(0, 90);
   assert.equal(week.status, 1);
   assert.match(week.stderr, /seven_day has 10% left, the owner's reserve is 10%; resets at 2026-11-12T15:00:00Z/);
@@ -1555,12 +1610,12 @@ test('limits --check claude: one tiny light-model request in an empty directory;
   const sb = sandbox();
   const r = lcli(sb, ['limits', '--check', 'claude', '--fresh'], { FAKE_U5: '0.84', FAKE_U7: '0.89' });
   assert.equal(r.status, 0, r.stderr);
-  assert.match(r.stdout, /claude: allowed \(five_hour 84% used, 16% left, reserve 15%; seven_day 89% used, 11% left, reserve 10%\)/, 'seven_day_opus is ignored');
+  assert.match(r.stdout, /claude: allowed \(five_hour 84% used, 16% left, reserve 10%; seven_day 89% used, 11% left, reserve 10%\)/, 'seven_day_opus is ignored');
   const call = sb.calls('claude');
   assert.equal(call.length, 1);
   assert.equal(call[0], 'claude "-p" "Reply with: ok" "--model" "claude-haiku-5-5" "--output-format" "stream-json" "--verbose" "--max-turns" "1" "--tools" ""');
   assert.deepEqual(sb.calls('cwd-entries'), ['cwd-entries 0'], 'run in an empty temp directory');
-  assert.equal(lcli(sb, ['limits', '--check', 'claude', '--fresh'], { FAKE_U5: '0.85' }).status, 1);
+  assert.equal(lcli(sb, ['limits', '--check', 'claude', '--fresh'], { FAKE_U5: '0.90' }).status, 1);
   // the owner lowers the reserve for everything, then for one provider
   const lower = regFile({ limits: { reserve: { five_hour: 5 } } });
   assert.equal(lcli(sb, ['limits', '--check', 'claude', '--fresh'], { FAKE_U5: '0.85', ROADCTL_REGISTRY: lower }).status, 0, 'registry limits.reserve');
@@ -1617,14 +1672,14 @@ test('limits: table lists every provider with windows, used, left, reserve, rese
   const lines = r.stdout.trimEnd().split('\n');
   assert.match(lines[0], /^provider +window +used +left +reserve +resets +state +measured_at +source$/);
   const row = (p, w) => lines.find((l) => l.startsWith(p) && l.includes(` ${w} `));
-  assert.match(row('claude', 'five_hour'), /50%\s+50%\s+15%\s+2100-01-01T00:00:00Z\s+known\s+2026-11-11T10:00:00Z\s+claude -p claude-haiku-5-5/);
+  assert.match(row('claude', 'five_hour'), /50%\s+50%\s+10%\s+2100-01-01T00:00:00Z\s+known\s+2026-11-11T10:00:00Z\s+claude -p claude-haiku-5-5/);
   assert.match(row('claude', 'seven_day'), /76%\s+24%\s+10%\s+2100-01-02T00:00:00Z/);
-  assert.match(row('codex', 'five_hour'), /30%\s+70%\s+15%.*known.*codex app-server/);
+  assert.match(row('codex', 'five_hour'), /30%\s+70%\s+10%.*known.*codex app-server/);
   assert.match(row('codex', 'seven_day'), /40%\s+60%\s+10%/);
   assert.match(lines.find((l) => l.startsWith('some-api')), /not-applicable/);
   const j = JSON.parse(lcli(sb, ['limits', '--json'], { ROADCTL_REGISTRY: reg }).stdout);
   assert.deepEqual(j.map((x) => x.provider).sort(), ['claude', 'codex', 'some-api']);
-  assert.deepEqual(j.find((x) => x.provider === 'codex').reserve, { seven_day: 10, five_hour: 15 });
+  assert.deepEqual(j.find((x) => x.provider === 'codex').reserve, { seven_day: 10, five_hour: 10 });
   const one = lcli(sb, ['limits', '--provider', 'codex']);
   assert.doesNotMatch(one.stdout, /claude/);
   const bad = lcli(sb, ['limits', '--provider', 'nope']);
@@ -1776,7 +1831,7 @@ test('limits: bad usage and bad registry are exit 2; sync --check is still a pla
 
 test('the shipped registry example has limits and providers that resolve', () => {
   const reg = rc.loadRegistry({ ROADCTL_REGISTRY: path.join(here, '..', 'examples', 'agents-registry.example.json') });
-  assert.deepEqual(rc.reserveFor(reg, 'claude'), { seven_day: 10, five_hour: 15 });
+  assert.deepEqual(rc.reserveFor(reg, 'claude'), { seven_day: 10, five_hour: 10 });
   assert.equal(reg.limits.cache_minutes, 10);
   const table = rc.providerTable(reg);
   assert.equal(table.claude.probe_model, 'claude-haiku-5-5');

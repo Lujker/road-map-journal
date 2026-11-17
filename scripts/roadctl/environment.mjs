@@ -190,6 +190,22 @@ async function candidatesCommand({ flags, out, io, env, api }) {
   for (const x of [need.env, need.role, ...need.needs.map((t) => t.replace(/^data:/, ''))]) if (x && !TOKEN_RE.test(x)) throw new Error(`${usage}; bad name ${clean(x, 40)}`);
   const bad = registryProblems(reg);
   if (bad.length) { io.err(`roadctl candidates: the registry has problems, nothing is chosen: ${bad.join('; ')}\n`); return 1; }
+  if (flags.multiagent) {
+    const checked = await selectCandidates(reg, need, { reach: async () => ({ state: 'reachable' }), limits: async () => ({ verdict: 'unknown', message: 'not checked' }) });
+    const preferences = checked.candidates.map((row) => {
+      const host = reg.agents?.[row.agent]?.host;
+      let provider = null;
+      try { provider = api.resolveTarget(row.agent, reg).provider; } catch { /* unknown provider */ }
+      const model = reg.roles?.[need.role]?.[host] ?? null;
+      if (!provider) row.reasons.push('provider is unspecified');
+      if (!model) row.reasons.push('model is unspecified for this role and host');
+      row.reasons.push('availability and limits not checked');
+      return { ...row, provider, model };
+    });
+    const r = { ...need, preferences, advisory: 'Static registry checks only; availability and limits are not checked. Harness must verify permissions, budget and routes before use. No launch or spending is authorized.' };
+    out(flags.json ? JSON.stringify(r, null, 2) : [`role: ${need.role ?? '-'}; env: ${need.env ?? '-'}; needs: ${need.needs.join(', ') || '-'}`, ...preferences.map((p) => `${p.order}. ${p.agent}: provider ${p.provider ?? 'unknown'}, model ${p.model ?? 'unspecified'}; ${p.eligible ? 'eligible' : `not eligible: ${p.reasons.join('; ')}`}`), r.advisory].join('\n'));
+    return 0;
+  }
   const r = await selectCandidates(reg, need, { reach: async (agent) => reachability(reg, machineOf(agent, reg), need.env, { env }), limits: limitsOf(api, reg, env) });
   out(flags.json ? JSON.stringify(r, null, 2) : textOfCandidates(r));
   return r.chosen ? 0 : 1;
@@ -303,8 +319,8 @@ export default {
     candidates: {
       group: 'Look', effect: 'read', hidden: true, summary: 'the ordered executors for a task and why the others are refused (read only)',
       purpose: 'One read-only choice of an executor for a card (its header keys `env`, `role`, `needs`; the role also from `delegate to=<role>`) or for the values given by flags. It walks the owner\'s list `preference.<role>` of the registry (the first is the main one, the rest the agreed reserve; without a list, every agent with the role) and shows for each: the owner\'s permission (not in the list: not a candidate), the role, the fitness confirmed by checks of similar tasks (`agents.NAME.fit.ROLE.confirmed`), the tools and data (`agents.NAME.tools`, `data`; an MCP server counts when declared in the agent or in the access path of the environment, ssh alone is not MCP), the access path to the environment, availability (`env check`), and the executor\'s own limits with its reserve (an unknown limit is a refusal, not a guess; a paid API needs an agreed `budget`). It never changes the environment, the rights, the data access or the budget, never learns and never picks a model by the size of the task. The first eligible agent is `chosen`; none means exit 1: no launch. A declared MCP path is not proof that the server works now.',
-      usage: ['roadctl candidates --card ID [--json]', 'roadctl candidates --env NAME [--role ROLE] [--needs a,b,data:x] [--json]'],
-      flags: [['--card ID', 'take env, role and needs from this card'], ['--env NAME', 'the environment the task works in'], ['--role ROLE', 'the role the task needs'], ['--needs LIST', 'comma-separated tools or MCP servers; data:NAME for data access'], ['--json', 'machine-readable output']],
+      usage: ['roadctl candidates --card ID [--multiagent] [--json]', 'roadctl candidates --env NAME [--role ROLE] [--needs a,b,data:x] [--multiagent] [--json]'],
+      flags: [['--card ID', 'take env, role and needs from this card'], ['--env NAME', 'the environment the task works in'], ['--role ROLE', 'the role the task needs'], ['--needs LIST', 'comma-separated tools or MCP servers; data:NAME for data access'], ['--multiagent', 'advisory: static checks only; no availability or limits probes, no executor chosen'], ['--json', 'machine-readable output']],
       examples: ['roadctl candidates --card P5.23', 'roadctl candidates --env Work-notebook-wsl --role worker --needs atom-services,data:atom --json'],
       changes: 'Nothing (it may start ssh with the harmless command true and ask the executor\'s limits, as `limits --check` does).', exits: '0 a candidate is chosen; 1 no candidate, or the registry has problems; 2 usage error, no registry, or no board or card',
       run: candidatesCommand,

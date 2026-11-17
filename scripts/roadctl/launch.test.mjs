@@ -175,6 +175,10 @@ test('P5.7 a3: --detach keeps the prompt: the detached supervisor inherits the s
   const end = wallClock() + 8000; // a detached process: real time
   while (wallClock() < end && !(fs.existsSync(got) && fs.readFileSync(got, 'utf8') === d.stdin)) await new Promise((x) => setTimeout(x, 50));
   assert.equal(fs.readFileSync(got, 'utf8'), d.stdin);
+  // The output can arrive before the detached supervisor finishes writing state.
+  const busy = () => fs.existsSync(r.state) && fs.readdirSync(r.state).some((f) => /^supervise-routine\..*\.mr-status\.lock(?:\.takeover)?$/.test(f));
+  while (wallClock() < end && busy()) await new Promise((x) => setTimeout(x, 50));
+  assert.equal(busy(), false, 'detached supervisor released its lock and guard before fixture cleanup');
 }));
 
 // ---------------------------------------------------------------- a4: no template, no launch

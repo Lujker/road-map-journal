@@ -35,7 +35,7 @@
 //   roadctl routine list [--all] [--json] | show <id> | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"] | on|off <id> --by NAME | done <id> --as A --result ok|escalated|failed "summary" | observe <id> --as A [--confirm-after N] [--heartbeat DUR]   recurring routines
 //   roadctl autonomy routines on|off --by NAME   the board switch for routines (owner only; independent of card autonomy)
 //   roadctl agents-install --claude [--apply] ; agents-uninstall   Claude Code subagents road-worker and road-reviewer
-//   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | pre-commit | pre-commit-all
+//   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | hermes-api-error | pre-commit | pre-commit-all
 //   roadctl hook-install --claude [--user]|--codex|--hermes|--git [--all] [--apply] ; hook-uninstall (same flags)
 //   roadctl instructions-install --claude --codex [--workspace DIR] [--apply] ; instructions-uninstall
 //
@@ -463,7 +463,7 @@ export function loadRegistry(env = process.env) {
   const pct = (x) => typeof x === 'number' && x >= 0 && x <= 100;
   const checkReserve = (res, where) => {
     if (res === undefined) return;
-    if (!obj(res) || Object.values(res).some((v) => !pct(v))) throw new Error(`registry ${p}: ${where} must be an object of percentages from 0 to 100, like {"seven_day": 10, "five_hour": 15}`);
+    if (!obj(res) || Object.values(res).some((v) => !pct(v))) throw new Error(`registry ${p}: ${where} must be an object of percentages from 0 to 100, like {"seven_day": 10, "five_hour": 10}`);
   };
   checkReserve(r.limits?.reserve, 'limits.reserve');
   if (r.limits?.cache_minutes !== undefined && !(typeof r.limits.cache_minutes === 'number' && r.limits.cache_minutes >= 0)) throw new Error(`registry ${p}: limits.cache_minutes must be a number of minutes (0 or more)`);
@@ -1026,10 +1026,10 @@ export function findCard(board, id) {
   return c;
 }
 
-export function appendLog(board, id, msg, { author = 'agent', commit, date = today(), loose = false } = {}) {
+export function appendLog(board, id, msg, { author = 'agent', commit, date = today(), loose = false, maxLength = loose ? 1500 : 400 } = {}) {
   const c = findCard(board, id);
   let t = readNorm(c);
-  const entry = `- ${date} [${author}] ${sanitizeText(msg, loose ? 1500 : 400)}${commit ? ` (commit ${sanitize(commit, 40)})` : ''}`;
+  const entry = `- ${date} [${author}] ${sanitizeText(msg, maxLength)}${commit ? ` (commit ${sanitize(commit, 40)})` : ''}`;
   if (/^## Log$/m.test(t)) {
     t = t.replace(/(^## Log\n)([\s\S]*?)(?=^## |\s*$(?![\s\S]))/m, (all, h, body) => `${h}${body.replace(/\n*$/, '\n')}${entry}\n\n`);
   } else if (/^## Handoff$/m.test(t)) {
@@ -1992,6 +1992,24 @@ function autosave(board, payload, doing) {
   }
 }
 
+// Hermes emits this before retry, credential rotation and fallback; even a 402 may recover.
+const limitSignal = (extra) => [429, 402].includes(extra?.status_code)
+  || ['rate_limit', 'billing', 'quota'].includes(extra?.reason);
+
+// Separate boards in the same repository must never share an observation.
+const limitMarkerPath = (board, payload) => path.join(stateDir(board, payload?.cwd || process.cwd()),
+  `roadctl-hermes-limit-${crypto.createHash('sha256').update(path.resolve(board.dir)).digest('hex')}`);
+
+function writeLimitMarker(board, payload) {
+  try {
+    // Only a fixed sentinel is stored: even provider/model/session fields can contain secrets.
+    fs.writeFileSync(limitMarkerPath(board, payload), '', { flag: 'wx', mode: 0o600 });
+  } catch { /* already present or unavailable: hooks remain non-blocking */ }
+}
+
+
+const limitReminder = 'A provider limit or billing error was observed; retry, rotation or fallback may have succeeded. This is not proof of a stop or a checkpoint. Reconcile actual state and in-flight actions; identify your own card before writing a handoff. Check the reserve before further work.';
+
 export function hookContext(event, payload, boardArg, host = 'claude') {
   const start = payload.cwd || process.cwd();
   const dir = findBoard(start, boardArg);
@@ -2021,9 +2039,15 @@ export function hookContext(event, payload, boardArg, host = 'claude') {
     const marker = path.join(stateDir(board, payload.cwd), 'roadctl-hermes-session');
     const first = payload.extra?.is_first_turn === true || (session && (!fs.existsSync(marker) || fs.readFileSync(marker, 'utf8') !== session));
     if (session) fs.writeFileSync(marker, session);
-    if (first) return { json: { context: [brief(board), hookSyncLine(board)].filter(Boolean).join('\n') } };
-    const text = stopReminder(board, { cwd: payload.cwd });
+    // shortcut: repeated reminders cannot confirm model receipt, add host acknowledgement before auto-clearing.
+    const lim = fs.existsSync(limitMarkerPath(board, payload)) ? limitReminder : null;
+    if (first) return { json: { context: [brief(board), lim, hookSyncLine(board)].filter(Boolean).join('\n') } };
+    const text = [lim, stopReminder(board, { cwd: payload.cwd })].filter(Boolean).join('\n');
     return text ? { json: { context: text } } : null;
+  }
+  if (event === 'hermes-api-error') {
+    if (limitSignal(payload.extra || {})) writeLimitMarker(board, payload);
+    return null;
   }
   return null;
 }
@@ -2135,8 +2159,9 @@ export const HERMES_BEGIN = '# roadctl-managed begin';
 export const HERMES_END = '# roadctl-managed end';
 
 export function hermesBlock(self = SELF, node = 'node') {
-  const cmd = `${shq(node)} ${shq(posix(self))} hook hermes-pre-llm`;
-  return `${HERMES_BEGIN}\nhooks:\n  pre_llm_call:\n    - command: ${JSON.stringify(cmd)}\n      timeout: 10\n${HERMES_END}\n`;
+  const pre = `${shq(node)} ${shq(posix(self))} hook hermes-pre-llm`;
+  const err = `${shq(node)} ${shq(posix(self))} hook hermes-api-error`;
+  return `${HERMES_BEGIN}\nhooks:\n  pre_llm_call:\n    - command: ${JSON.stringify(pre)}\n      timeout: 10\n  api_request_error:\n    - command: ${JSON.stringify(err)}\n      timeout: 10\n${HERMES_END}\n`;
 }
 
 export function hermesHomeDir(flag) {
@@ -2302,7 +2327,7 @@ export function installHooks(kind, project, { apply, uninstall, self = SELF, nod
 // {name: five_hour|seven_day|other, used_percent, resets_at}. The reserve is the percentage that must REMAIN for the owner:
 // a provider is allowed only while every known window has remaining > reserve. A probe that fails is "unknown", never "allowed".
 
-export const DEFAULT_RESERVE = { seven_day: 10, five_hour: 15 };
+export const DEFAULT_RESERVE = { seven_day: 10, five_hour: 10 };
 export const DEFAULT_CACHE_MINUTES = 10;
 const BUILTIN_PROVIDERS = {
   claude: { kind: 'subscription', probe: 'claude', probe_model: 'claude-haiku-5-5' },
@@ -3774,7 +3799,7 @@ export const COMMANDS = {
   },
   limits: {
     group: 'Look', effect: 'read', owner: { flags: ['confirm'] }, summary: 'provider limits and the owner\'s reserve (claude probe: one tiny request)',
-    purpose: 'Remaining subscription limits per provider (five-hour and weekly windows) against the reserve that must stay for the owner (default 10% weekly, 15% five-hour; registry limits.reserve and providers.<id>.reserve). Codex is read from codex app-server without a model; the Claude probe sends one tiny request to a light model, so results are cached for 10 minutes (--fresh bypasses). --check gives a decision for scripts: allowed only while every known window has MORE than the reserve left; an unknown limit is never allowed. --confirm lets the owner allow an unknown provider for a while; it never overrides a known reserve breach.',
+    purpose: 'Remaining subscription limits per provider (five-hour and weekly windows) against the reserve that must stay for the owner (default 10% in both the weekly and five-hour window; registry limits.reserve and providers.<id>.reserve). Codex is read from codex app-server without a model; the Claude probe sends one tiny request to a light model, so results are cached for 10 minutes (--fresh bypasses). --check gives a decision for scripts: allowed only while every known window has MORE than the reserve left; an unknown limit is never allowed. --confirm lets the owner allow an unknown provider for a while; it never overrides a known reserve breach.',
     usage: ['roadctl limits [--provider P] [--fresh] [--json]', 'roadctl limits --check PROVIDER-OR-AGENT [--fresh] [--json]', 'roadctl limits --confirm PROVIDER --by NAME [--for 2h]   (only when the owner told you to)'],
     flags: [['--provider P', 'only this provider (default: every provider, built-in claude and codex plus the registry\'s)'], ['--fresh', 'ignore the cache and probe again (the claude probe costs one tiny request)'], ['--check X', 'a provider id or an agent name from the registry; decides whether an automatic start may go on'], ['--confirm P', 'owner only: record that the owner allows provider P while its limits are unknown'], ['--by NAME', 'the owner who confirms (required with --confirm)'], ['--for SPAN', 'how long the confirmation holds: 30m, 2h, 1d (default 2h, at most 7d)'], J],
     examples: ['roadctl limits', 'roadctl limits --provider codex --fresh --json', 'roadctl limits --check claude-code@home-wsl && start-the-agent', 'roadctl limits --confirm kimi --by Lujker --for 2h'],
@@ -3975,10 +4000,10 @@ export const COMMANDS = {
   hook: {
     group: 'Setup', effect: 'read', summary: 'entry point for agent and git hooks',
     purpose: 'Called by Claude Code, Codex, Hermes and git hooks, not by hand. Reads a JSON payload on stdin and prints context for the agent; silent when there is no board. With autosync switched on, session-start may pull and stop may save.',
-    usage: ['roadctl hook <event> [--host claude|codex] [--board DIR]', 'events: session-start | pre-compact | stop | hermes-pre-llm | pre-commit | pre-commit-all'],
+    usage: ['roadctl hook <event> [--host claude|codex] [--board DIR]', 'events: session-start | pre-compact | stop | hermes-pre-llm | hermes-api-error | pre-commit | pre-commit-all'],
     flags: [['--host claude|codex', 'which host format to answer in (default: claude)']],
     examples: ['echo \'{"cwd":"."}\' | roadctl hook session-start', 'roadctl hook pre-commit'],
-    changes: 'Nothing by default; with autosync (board config or ROADCTL_AUTOSYNC=1) session-start pulls and stop saves.', exits: '0 ok; 1 pre-commit / pre-commit-all blocked by lint errors; 2 error',
+    changes: 'Hooks may write local reminder or Hermes observation markers; with autosync (board config or ROADCTL_AUTOSYNC=1) session-start pulls and stop saves.', exits: '0 ok; 1 pre-commit / pre-commit-all blocked by lint errors; 2 error',
   },
   'hook-install': {
     group: 'Setup', effect: 'write', owner: { flags: ['apply'] }, summary: 'install hooks for Claude, Codex, Hermes or git',
@@ -4086,8 +4111,8 @@ ROUTINE_SECTIONS.push(...MODULE_REG.routineSections);
 TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
-const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint,
-  boardRequires, compareVersions, nowMs, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
+const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
+  boardRequires, compareVersions, nowMs, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
   const lines = [];
@@ -4152,7 +4177,7 @@ function parse(argv) {
   const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--run', '--workdir', '--hours', '--routine', '--kinds', '--confirm-after', '--heartbeat']);
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
   const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
-  const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile', '--hash', '--since', '--accept-from']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7; --hash: P5.33; --since, --accept-from: P5.27
+  const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile', '--hash', '--since', '--accept-from', '--role', '--needs']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7; --hash: P5.33; --since, --accept-from: P5.27
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === '--') { o.rest = argv.slice(i + 1); break; } // P5.2: what follows `--` is a command line for `supervise`, not flags

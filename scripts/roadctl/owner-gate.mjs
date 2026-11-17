@@ -15,7 +15,7 @@ import { admission, readMandate } from './mandate.mjs';
 import { cleanText, nowMs } from './run-store.mjs';
 import { xdgDir } from './state.mjs';
 
-export const MANDATE_WRITES = ['claim', 'delegate', 'report', 'review', 'accept', 'return', 'undelegate'];
+export const MANDATE_WRITES = ['claim', 'delegate', 'report', 'review', 'accept', 'return', 'undelegate', 'checkpoint'];
 export const unattended = (env) => Boolean((env.ROADCTL_UNATTENDED ?? '').trim() && env.ROADCTL_UNATTENDED !== '0') || Boolean((env.ROADCTL_RUN_ID ?? '').trim());
 export const ownerGateFile = (env = process.env) => path.join(xdgDir(env, 'XDG_CONFIG_HOME', ['.config']), 'road-map-journal', 'owner-gate.json');
 

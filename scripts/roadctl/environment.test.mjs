@@ -107,6 +107,39 @@ test('P5.23 a6: env check says unreachable when ssh fails; supervise records ski
 
 // ---------------------------------------------------------------- candidates
 
+test('multiagent advisory is read-only and preserves role, needs and preference order', withRig((r) => {
+  const before = fs.readFileSync(path.join(r.dir, 'registry.json'), 'utf8');
+  const result = JSON.parse(r.ok(['candidates', '--env', 'Work-notebook', '--role', 'worker', '--needs', 'atom-services,data:atom', '--multiagent', '--json']).stdout);
+  assert.equal(result.role, 'worker');
+  assert.deepEqual(result.needs, ['atom-services', 'data:atom']);
+  assert.deepEqual(result.preferences.map((p) => p.agent), [ME, 'codex@home-wsl']);
+  assert.equal(result.preferences[0].provider, 'claude');
+  assert.equal(result.preferences[0].model, 'sonnet');
+  assert.equal(result.preferences[0].eligible, false);
+  assert.match(result.preferences[0].reasons.join(' '), /limits unknown/);
+  assert.equal(result.preferences[1].provider, 'codex');
+  assert.equal(result.preferences[1].model, 'gpt-5.5');
+  assert.match(result.preferences[1].reasons.join(' '), /fitness.*not confirmed/);
+  assert.match(result.advisory, /No launch or spending is authorized/);
+  assert.equal(fs.readFileSync(path.join(r.dir, 'registry.json'), 'utf8'), before);
+  assert.deepEqual(readCalls(r.log, 'ssh'), []);
+}, { ...REG, roles: { worker: { 'claude-code': 'sonnet', codex: 'gpt-5.5' } }, agents: { ...REG.agents, 'codex@home-wsl': { host: 'codex', roles: ['worker'] } }, preference: { worker: [ME, 'codex@home-wsl'] } }));
+
+test('multiagent reports real example registry mappings and rejects scripts and missing requirements without probes', () => {
+  const registry = JSON.parse(fs.readFileSync(path.join(scripts, '..', 'examples', 'agents-registry.example.json'), 'utf8'));
+  registry.preference = { worker: ['claude-code@home-wsl', 'codex@home-wsl', 'hermes@windows', 'cron:hermes-nightly@windows'] };
+  const r = rig(registry);
+  try {
+    const result = JSON.parse(r.ok(['candidates', '--env', 'anywhere', '--role', 'worker', '--needs', 'missing,data:secret', '--multiagent', '--json']).stdout);
+    assert.deepEqual(result.preferences.map(({ provider, model }) => [provider, model]), [['claude', 'sonnet'], ['codex', 'gpt-5.5'], ['kimi', null], [null, null]]);
+    assert.ok(result.preferences.every((p) => p.eligible === false && p.reasons.length));
+    assert.match(result.preferences[0].reasons.join(' '), /missing tool missing/);
+    assert.match(result.preferences[0].reasons.join(' '), /no access to data secret/);
+    assert.match(result.preferences[3].reasons.join(' '), /script is not an executor/);
+    assert.deepEqual(readCalls(r.log, 'ssh'), []);
+  } finally { r.cleanup(); }
+});
+
 const reach = (map = {}) => async (a) => map[a] ?? { state: 'reachable' };
 const lim = (map = {}) => async (a) => map[a] ?? { verdict: 'allowed', message: '' };
 const reg2 = (over = {}) => ({

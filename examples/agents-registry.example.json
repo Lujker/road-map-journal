@@ -6,7 +6,7 @@
     "reviewer": { "claude-code": "sonnet" }
   },
   "limits": {
-    "reserve": { "seven_day": 10, "five_hour": 15 },
+    "reserve": { "seven_day": 10, "five_hour": 10 },
     "cache_minutes": 10
   },
   "providers": {

@@ -29,6 +29,25 @@ const PLAN = '## Plan\n- Environment: local checkout, the agent\'s own branch\n-
 const card = (id, { status = 'ready', kind, size, goal, extra = '' } = {}) => `---\nid: ${id}\ntitle: Card ${id}\nstatus: ${status}\n${kind ? `kind: ${kind}\n` : ''}${size ? `size: ${size}\n` : ''}${goal ? `goal: ${goal}\n` : ''}${extra}as_of: 2026-11-10\n---\n\n## Goal\nDo ${id}.\n\n${PLAN}## Acceptance\n- [ ] a1: it works\n`;
 const MANDATE = (level = 'L3') => `---\nmandate: 1\nlevel: ${level}\nkinds: fix, docs\nmax_size: M\nmerge: branch\nbudget: cards_per_day=2, runs_per_week=10\n---\n\n## Goals\n- G1 (priority 1): finish stage 2\n\n## Forbidden\n- pushing to main\n`;
 
+test('checkpoint obeys L3 and L4 unattended mandate gate', () => {
+  for (const level of ['L3', 'L4']) {
+    const r = rig();
+    try {
+      fs.writeFileSync(r.mfile, MANDATE(level));
+      r.put('M-3', { status: 'doing', kind: 'feature', size: 'S', goal: 'G1' });
+      const run = () => spawnSync(process.execPath, [SELF, 'checkpoint', 'M-3', '--as', ME, '--board', r.board], { cwd: r.ws, encoding: 'utf8', input: JSON.stringify({ did: 'done', next: 'next', in_flight: 'none' }), env: { ...r.env, ROADCTL_UNATTENDED: '1' } });
+      const before = r.cardText('M-3');
+      const refused = run();
+      assert.equal(refused.status, 1, refused.stderr);
+      assert.match(refused.stderr, /outside the project mandate/);
+      assert.equal(r.cardText('M-3'), before);
+      r.put('M-3', { status: 'doing', kind: 'feature', size: 'S', goal: 'G1', extra: 'approved: Owner, 2026-11-10, scope=implementation\n' });
+      assert.equal(run().status, 0);
+      assert.match(r.cardText('M-3'), /checkpoint: did: done/);
+    } finally { fs.rmSync(r.dir, { recursive: true, force: true }); }
+  }
+});
+
 /** One machine: a workspace with one board (requires 0.8.0), cards M-1 .. M-5, a throwaway environment, a runner that sets it. */
 function machine(dir, ws, host = 'home') {
   const board = path.join(ws, 'projects', 'my-app', 'board');
