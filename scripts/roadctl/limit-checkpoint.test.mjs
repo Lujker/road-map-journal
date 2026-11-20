@@ -242,3 +242,35 @@ test('P5.43 a2: the margin above the reserve is 5 points by default and comes fr
     assert.equal(r.log().length, 1, 'the default margin 5: near');
   } finally { r.cleanup(); }
 });
+
+test('P5.43 x P5.41: a session named by a profile, a variant or an orchestrator/profile pair binds to the card its executor claimed (the claim stores the executor)', () => {
+  const r = rig({ claim: false });
+  try {
+    const reg = path.join(r.root, 'registry.json');
+    fs.writeFileSync(reg, JSON.stringify({ version: 1, roles: { worker: {} }, agents: { [ME]: { host: 'claude-code', roles: ['worker'] }, 'pi-worker@home-wsl': { host: 'pi', roles: ['worker'] } }, agent_profiles: { 'pi-developer': { executor: 'pi-worker@home-wsl', openbot: { name: 'pi-developer' }, openbot_variants: [{ name: 'pi-developer-small' }] }, 'claude-developer': { executor: ME } } }));
+    const over = { ROADCTL_REGISTRY: reg, ROADCTL_LIMIT_PROVIDER: 'claude' };
+    // the real path: delegate to the profile, claim under the profile with the work directory
+    assert.equal(r.cmd(['delegate', 'W-3', '--to', 'pi-developer', '--by', ME], over).status, 0);
+    const c = r.cmd(['claim', 'W-3', '--as', 'pi-developer', '--workdir', r.work], over);
+    assert.equal(c.status, 0, c.stderr + c.stdout);
+    assert.match(r.read(), /^claim: pi-worker@home-wsl at=/m, 'the claim names the executor');
+    r.cache({ left: 8 });
+    const before = r.read();
+    for (const [i, name] of ['pi-developer', 'pi-developer-small', 'openbot@home-wsl/pi-developer', 'pi-worker@home-wsl'].entries()) {
+      fs.writeFileSync(r.card, before);
+      const h = r.hook('stop', {}, { ...over, ROADCTL_AS: name });
+      assert.equal(h.status, 0, h.stderr);
+      assert.equal(r.read().includes('limit-checkpoint ep='), true, `${name}: bound to the card of its executor (${i})`);
+    }
+    // the command by hand with --as, and the new session after the reset
+    fs.writeFileSync(r.card, before);
+    assert.match(r.cmd(['limit-checkpoint', '--as', 'openbot@home-wsl/pi-developer', '--cwd', r.work], over).stdout, /^written: W-3 ep=/);
+    assert.match(JSON.parse(r.hook('session-start', {}, { ...over, ROADCTL_AS: 'pi-developer', ...clock(shift(300)) }).stdout).hookSpecificOutput.additionalContext, /Resume: card W-3/);
+    // another profile (another executor), and a name the registry does not know, are not bound
+    for (const other of ['claude-developer', 'nobody-developer']) {
+      fs.writeFileSync(r.card, before);
+      r.hook('stop', {}, { ...over, ROADCTL_AS: other });
+      assert.equal(r.read(), before, `${other}: not this card`);
+    }
+  } finally { r.cleanup(); }
+});
