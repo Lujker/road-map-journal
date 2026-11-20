@@ -38,7 +38,18 @@ export function validAnswer(q, value) {
 
 export function answerQuestion(question, answer, now) {
   if (!question || question.state !== 'waiting') fail('question already answered or not waiting', 'already-answered');
-  if (!instant(now) || !instant(question.created) || Date.parse(now) < Date.parse(question.created) || !validAnswer(question, answer)) fail('invalid answer');
+  if (!instant(now) || !instant(question.created) || Date.parse(now) < Date.parse(question.created)) fail('invalid answer');
+  if (question.kind === 'choice') {
+    if (!answer || typeof answer !== 'object' || Array.isArray(answer) || !Object.keys(answer).length) fail('invalid answer');
+    const ids = new Set(question.points.map((p) => p.id));
+    if (Object.keys(answer).some((k) => !ids.has(k) || !text(answer[k]))) fail('invalid answer');
+    if (Object.keys(answer).some((k) => Object.hasOwn(question.partial_answers ?? {}, k))) fail('point already answered', 'already-answered');
+    const combined = { ...question.partial_answers, ...answer };
+    if (Object.keys(combined).length !== ids.size) return { ...question, partial_answers: combined };
+    const { partial_answers: _, ...rest } = question;
+    return { ...rest, state: 'answered', answer: combined, answered: now };
+  }
+  if (!validAnswer(question, answer)) fail('invalid answer');
   return { ...question, state: 'answered', answer: structuredClone(answer), answered: now };
 }
 
@@ -58,7 +69,7 @@ export function readQuestions(section) {
   if (!Array.isArray(rows) || rows.length > 200 || new Set(rows.map((q) => q?.id)).size !== rows.length) fail('invalid Questions data');
   for (const q of rows) {
     if (!q || typeof q !== 'object' || Array.isArray(q) || !instant(q.created)) fail('invalid Questions data');
-    const allowed = ['id', 'kind', 'prompt', 'reason', 'points', 'blocking', 'created', 'state', 'recommended', 'undo_until', 'answer', 'answered', 'undo_comment', 'undone', 'agent', 'defer_until'];
+    const allowed = ['id', 'kind', 'prompt', 'reason', 'points', 'blocking', 'created', 'state', 'recommended', 'undo_until', 'answer', 'answered', 'undo_comment', 'undone', 'agent', 'defer_until', 'partial_answers'];
     if (Object.keys(q).some((k) => !allowed.includes(k))) fail('invalid Questions data');
     const blocking = q.reason !== 'reversible';
     const window = blocking ? new Date(Date.parse(q.created) + 1).toISOString() : q.undo_until;
@@ -69,9 +80,10 @@ export function readQuestions(section) {
     if (blocking) {
       if (!['waiting', 'answered'].includes(q.state) || q.undo_until !== undefined || q.undo_comment !== undefined || q.undone !== undefined) fail('invalid question state');
       if (q.state === 'waiting' && (q.answer !== undefined || q.answered !== undefined)) fail('invalid question state');
+      if (q.partial_answers !== undefined && (q.kind !== 'choice' || q.state !== 'waiting' || !q.partial_answers || typeof q.partial_answers !== 'object' || Array.isArray(q.partial_answers) || !Object.keys(q.partial_answers).length || Object.keys(q.partial_answers).length >= q.points.length || Object.keys(q.partial_answers).some((k) => !q.points.some((p) => p.id === k) || !text(q.partial_answers[k])))) fail('invalid partial answers');
       if (q.state === 'answered' && (!validAnswer(q, q.answer) || !instant(q.answered) || Date.parse(q.answered) < Date.parse(q.created))) fail('invalid answer');
     } else {
-      if (!['decided', 'undone'].includes(q.state) || q.answer !== undefined || q.answered !== undefined) fail('invalid decision state');
+      if (!['decided', 'undone'].includes(q.state) || q.answer !== undefined || q.answered !== undefined || q.partial_answers !== undefined) fail('invalid decision state');
       if (q.state === 'decided' && (q.undo_comment !== undefined || q.undone !== undefined)) fail('invalid decision state');
       if (q.state === 'undone' && (!text(q.undo_comment) || !instant(q.undone) || Date.parse(q.undone) < Date.parse(q.created) || Date.parse(q.undone) >= Date.parse(q.undo_until))) fail('invalid undo');
     }

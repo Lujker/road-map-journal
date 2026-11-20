@@ -81,7 +81,7 @@ export function ownerGate(entry, { cmd, args, flags, env, api, board }) {
     writeAudit(env, row('refused', { reason: cleanText(refusal, 200) }));
     return { refused: refusal };
   }
-  return { record: (code, extra = {}) => { if (code === 0 || code === 1) writeAudit(env, row(code === 0 ? 'ok' : 'refused', extra)); } };
+  return { record: (code, extra = {}) => { if (code !== 2) writeAudit(env, row(code === 0 ? 'ok' : 'refused', extra)); } };
 }
 
 // ---------------------------------------------------------------- lint: broad permission rules in routine files

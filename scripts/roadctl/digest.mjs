@@ -10,6 +10,7 @@
 // Delivery state (what was already shown, which problem keys are open) is local: `digest.state.json` in the state directory, moved only after the text
 // was printed (a delivery that fails afterwards loses the message: the daily overview is the safety net). Policy per routine: header `notify`.
 import crypto from 'node:crypto';
+import { ownerItems } from './owner-questions.mjs';
 import fs from 'node:fs';
 import path from 'node:path';
 import { changedAfterApproval, readMandate } from './mandate.mjs';
@@ -418,6 +419,11 @@ function daily({ boards, refused, env, api, now, language }) {
   for (const b of boards) {
     const project = projectOf(b);
     const bw = dailyWords(b.config?.language);
+    if ((api.compareVersions(b.config.requires, '0.13.0') ?? -1) >= 0) {
+      try {
+        for (const item of ownerItems(b, now)) if (['decision', 'proposed', 'milestone'].includes(item.type)) lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}${item.undoable ? ' (undo available)' : ''}`);
+      } catch { lines.push(`${project}: owner question data unreadable`); }
+    }
     const rows = api.routineRows(b, now);
     if (rows.length && rows.every((r) => r.reasons.includes('board switch off')) && rows.some((r) => r.enabled)) {
       lines.push(`${project}: ${bw.off}`);

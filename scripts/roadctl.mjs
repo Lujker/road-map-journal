@@ -4215,7 +4215,7 @@ TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
 const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
-  boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
+  boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
   const lines = [];

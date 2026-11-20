@@ -37,6 +37,8 @@ Unless the owner has authorized a broader scope, work on one item at a time and 
 
 When a decision is irreversible or outside the approved mandate or card, ask the owner and wait for that decision. For a reversible decision within the approved scope, follow the owner’s standing rules: where they permit it, record the recommended choice and continue, making the decision and how to reverse it visible. Ask as a confirmation, a list of points with options and room for a custom answer, or a free-text question, whichever fits. `--ask` on a run summary remains a summary field; it is not a structured question or an owner answer.
 
+On a board using `roadctl` owner questions, set the board’s `requires` to at least 0.13.0 before using the format. Use `roadctl ask` with structured JSON, checkpoint a claimed card and record the next daily overview as the undo deadline for a reversible recommendation. The owner uses `inbox`, `answer` and `undo`; the latter two are owner-only and refused unattended. `inbox defer` hides an item without resolving it. Read the exact input and limits in `roadctl help ask` and `docs/roadctl.md`; never put secrets in the board.
+
 For work that spans several items, agents or sessions, has a budget, or where the owner authorizes a track or continuous mode, read [Long-running work](references/long-running.md) first.
 
 ## Status and evidence

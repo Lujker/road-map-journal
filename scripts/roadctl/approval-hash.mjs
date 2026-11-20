@@ -19,6 +19,7 @@
 import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
+import { readQuestions } from './owner-questions-data.mjs';
 
 export const HASH_KEY = 'approved_hash';
 export const ID_KEY = 'approval_id'; // written by every `routine on` that writes a hash: unique per approval, so the digest can tell approvals apart without the (trimmed) Log
@@ -41,7 +42,11 @@ export function approvalHash(raw) {
   const sections = [['', norm(parts[0])]]; // in file order: moving a section is a change
   for (let i = 1; i < parts.length; i += 2) {
     const name = parts[i].trim();
-    if (name !== 'Log' && name !== 'Questions') sections.push([name, norm(parts[i + 1] ?? '')]);
+    if (name === 'Log') continue;
+    if (name === 'Questions') {
+      try { readQuestions(parts[i + 1] ?? ''); continue; } catch { /* Malformed question content remains covered by the approval. */ }
+    }
+    sections.push([name, norm(parts[i + 1] ?? '')]);
   }
   const body = JSON.stringify({ v: 1, header: Object.keys(header).filter((k) => !OUTSIDE_KEYS.includes(k)).sort().map((k) => [k, header[k]]), scope, sections });
   return PREFIX + crypto.createHash('sha256').update(body).digest('hex');
