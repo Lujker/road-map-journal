@@ -41,6 +41,8 @@ On a board using `roadctl` owner questions, set the board’s `requires` to at l
 
 For work that spans several items, agents or sessions, has a budget, or where the owner authorizes a track or continuous mode, read [Long-running work](references/long-running.md) first.
 
+When a card goes to another agent, give it with `roadctl handoff` instead of a hand-written assignment, work in a worktree per card (`roadctl worktree`), run tests under the shared lock (`roadctl lock`), and review by the rule in [Handing work over](references/handoff.md): return only for a violated criterion, a failing test or incompatibility, or a reproducible defect; the rest is a "later" list; two rounds at most.
+
 ## Status and evidence
 
 Use the project's status vocabulary. If none exists, suggest OPEN, IN PROGRESS, BLOCKED, PARTIAL, and DONE, with meanings agreed for the project. Record status according to the acceptance criteria and actual evidence, not intention or a delegate's unsupported claim. For PARTIAL, name what remains and any blocker. Keep affected status references consistent.
@@ -55,6 +57,7 @@ After an authorized edit, check the affected status, queue, links, and consisten
 - [Scenarios](references/scenarios.md) — concise examples of mode and scope choices.
 - [Long-running work](references/long-running.md) — tracks, checkpoints, handoff and recovery, pause and stop, acceptance, budgets, shared checkouts.
 - [Board projects](references/board.md) — working in a project whose plan is a card board.
+- [Handing work over](references/handoff.md) — the standard assignment (`roadctl handoff`), a worktree per card, the shared test lock, the review rule (blockers only, two rounds), savings (caveman in work, codegraph, rtk).
 - [Executors and the registry](references/executors.md) — building or reviewing the list of agents that may take delegated work, with the owner.
 - [Autonomous or personal work](references/autonomy.md) — the owner's decision which cards go to unattended work; how to act on «отдай в автономную работу», «оставь это мне».
 - [Recurring routines](references/routines.md) — regular mostly mechanical tasks with an executor the owner names (agent, model, environment: required); creating one, permissions, escalation, finishing a run; switching on and off only on the owner's words.
