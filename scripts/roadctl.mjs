@@ -3125,7 +3125,7 @@ export function boardsCommand(flags, args, io, env = process.env) {
 export const ROUTINE_RESULTS = ['ok', 'escalated', 'failed']; // last_result never grows (P5.4 a5): the detail lives in last_reason
 export const ROUTINE_SCOPES = ['read', 'board', 'external'];
 export const HOLD_AFTER = 3; // P5.4: K consecutive `failed` runs hold the routine until `routine resume`
-const ROUTINE_KEYS = new Set(['id', 'title', 'every', 'hours', 'enabled', 'agent', 'model', 'env', 'approved', 'last_run', 'last_result', 'last_reason', 'fails', 'hold', 'timeout', 'notify']); // notify (0.5.0, P5.13): problems|always|never; timeout (0.3.0, P5.1): after this long an unfinished run counts as crashed; last_reason/fails/hold (0.12.0, P5.4): the outcome detail, the consecutive-failure counter and the hold
+const ROUTINE_KEYS = new Set(['id', 'title', 'every', 'hours', 'enabled', 'agent', 'model', 'env', 'approved', 'last_run', 'last_result', 'last_reason', 'fails', 'hold', 'hold_id', 'timeout', 'notify']); // notify (0.5.0, P5.13): problems|always|never; timeout (0.3.0, P5.1): after this long an unfinished run counts as crashed; last_reason/fails/hold (0.12.0, P5.4): the outcome detail, the consecutive-failure counter and the hold
 const ROUTINE_SECTIONS = ['Goal', 'Steps', 'May write', 'Escalate', 'Log'];
 const MODEL_RE = /^[A-Za-z0-9][\w.:[\]-]*$/;
 const ENV_RE = /^[A-Za-z0-9][\w.:@-]*$/;
@@ -3485,17 +3485,27 @@ export function outcomePolicy(h, result, { source = null, outcome = null, reason
   return { fails: next, hold, lastReason };
 }
 
+export const OUTCOME_REQUIRES = '0.12.0'; // the first roadctl that writes last_reason, fails, hold and hold_id (P5.4)
+/** P5.4 rollout: the new outcome keys go into a routine file only when the board says `requires >= 0.12.0`, so a copy below 0.12.0 (which does not know a hold) is already refused by P5.14 before it can offer a RUN of a held routine. A board without `requires` keeps the old behaviour: last_run, last_result and the Log line only. */
+export const outcomeKeysOn = (board) => (compareVersions(board?.config?.requires ?? '', OUTCOME_REQUIRES) ?? -1) >= 0;
+
 function applyRoutineDone(r, as, result, text, opts = {}, date = today()) {
-  const h = r.header;
-  const policy = outcomePolicy(h, result, opts);
+  const { keys = false, ...policyOpts } = opts;
   let t = readNorm(r);
   t = setHeader(t, 'last_run', isoAt());
   t = setHeader(t, 'last_result', result);
-  t = setHeader(t, 'last_reason', policy.lastReason);
-  t = setHeader(t, 'fails', String(policy.fails));
-  if (policy.hold) t = setHeader(t, 'hold', policy.hold);
+  const policy = keys ? outcomePolicy(r.header, result, policyOpts) : null;
+  const newHold = Boolean(policy?.hold) && !r.header.hold;
+  if (policy) {
+    t = setHeader(t, 'last_reason', policy.lastReason);
+    t = setHeader(t, 'fails', String(policy.fails));
+    if (newHold) { // a new hold episode has its own id, so a later hold with the same text is told again (digest)
+      t = setHeader(t, 'hold', policy.hold);
+      t = setHeader(t, 'hold_id', crypto.randomBytes(6).toString('hex'));
+    }
+  }
   t = insertRoutineLog(t, `- ${date} [${as}] RUN ${result}: ${sanitizeText(text, 1500)}`);
-  if (policy.hold) t = insertRoutineLog(t, `- ${date} [${as}] HOLD: ${policy.hold}`);
+  if (newHold) t = insertRoutineLog(t, `- ${date} [${as}] HOLD: ${policy.hold}`);
   writeCard(r, t);
 }
 
@@ -3519,7 +3529,7 @@ export function routineDone(board, id, { as, result, text, timeout = netTimeout(
   const rel = ctx ? path.relative(ctx.root, real(r.file)).split(path.sep).join('/') : null;
   if (remote && cardPending(ctx, rel)) return { status: 'refused', message: 'the routine file has uncommitted changes besides this run; run roadctl save first so the run is the only change pushed' };
   let original = fs.readFileSync(r.file);
-  applyRoutineDone(r, as, result, text, { source, outcome, reason });
+  applyRoutineDone(r, as, result, text, { source, outcome, reason, keys: outcomeKeysOn(board) });
   const base = { id };
   if (!ctx) return { ...base, status: 'recorded-local', message: 'recorded on the local board only (not a git repository): not yet visible to others' };
   if (!remote) return { ...base, status: 'recorded-local', message: 'recorded locally (the repository has no remote): not yet visible to others' };
@@ -3549,7 +3559,7 @@ export function routineDone(board, id, { as, result, text, timeout = netTimeout(
       const again = loadRoutines(board.dir).find((x) => x.header.id === id);
       if (!again) return { status: 'lost', ...base, message: 'the run was not published: the routine file is gone on the server; tell the owner' };
       original = fs.readFileSync(again.file);
-      applyRoutineDone(again, as, result, text, { source, outcome, reason });
+      applyRoutineDone(again, as, result, text, { source, outcome, reason, keys: outcomeKeysOn(board) });
       const c2 = commit();
       if (!c2.ok) { restoreFailedCommit(ctx, rel, again.file, original); return { status: 'error', ...base, message: `git commit failed: ${failureHint(c2)}` }; }
       continue;
@@ -3767,6 +3777,7 @@ export function routineCommand(flags, args, io, env = process.env) {
     let t = readNorm(r);
     t = removeHeader(t, 'hold');
     t = removeHeader(t, 'fails');
+    t = removeHeader(t, 'hold_id');
     writeCard(r, insertRoutineLog(t, `- ${today()} [${sanitizeText(str('by'), 60)}] RESUME`));
     out(`${args[2]}: resumed (hold and the failure counter cleared). Not committed: run roadctl save`);
     return 0;

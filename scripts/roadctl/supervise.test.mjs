@@ -194,7 +194,22 @@ test('P5.2 a3/a11: exit 0 without routine done is failed: no result, written to 
   assert.doesNotMatch(r.routineText('mr-self'), /src=supervisor/);
 }));
 
+/** P5.4: the outcome keys are written only on a board that requires 0.12.0. */
+const raiseOutcome = (r, requires = '0.12.0') => {
+  const cfg = path.join(r.board, 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg, 'utf8')), requires }));
+};
+
+test('P5.4 rollout: the supervisor writes last_reason and hold only on a board that requires 0.12.0', NEEDS, withRig(async (r) => {
+  r.routine();
+  const t = r.roadctl(r.sup('mr-status', ['sh', '-c', "trap '' TERM; sleep 30 & wait"], ['--timeout', '1s']));
+  assert.equal(t.status, EXIT.timeout);
+  assert.match(r.routineText(), /^last_result: failed$/m);
+  assert.doesNotMatch(r.routineText(), /^(last_reason|fails|hold|hold_id):/m, 'requires 0.6.0: the old behaviour');
+}));
+
 test('P5.4 a3/a7: a timeout holds the routine (last_reason timeout); an external run without a result holds it at once', NEEDS, withRig(async (r) => {
+  raiseOutcome(r);
   r.routine();
   const t = r.roadctl(r.sup('mr-status', ['sh', '-c', "trap '' TERM; sleep 30 & wait"], ['--timeout', '1s']));
   assert.equal(t.status, EXIT.timeout);

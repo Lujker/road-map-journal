@@ -3180,8 +3180,15 @@ test('the shipped routine examples parse and lint clean, are marked as examples,
 
 // ---------------------------------------------------------------- P5.4: outcome policy and HOLD
 
+/** P5.4: the board raises `requires` to 0.12.0 (the owner's step, with the joint rollout): only then do the outcome keys (last_reason, fails, hold, hold_id) get written. */
+function raiseOutcome(boardDir, requires = '0.12.0') {
+  const cfg = path.join(boardDir, 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg, 'utf8')), requires }));
+}
+
 test('P5.4 a1: K consecutive failed runs HOLD the routine, tick offers no RUN until resume; escalated does not count, ok resets', LSKIP, () => {
   const t = tenv();
+  raiseOutcome(t.c.board);
   routineOn(t);
   const done = (result) => t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', result, 'x']);
   const h = () => rc.loadBoard(t.c.board).routines.find((x) => x.header.id === 'mr-status').header;
@@ -3207,10 +3214,28 @@ test('P5.4 a1: K consecutive failed runs HOLD the routine, tick offers no RUN un
   assert.equal(h().fails, '0', 'ok resets the counter');
 });
 
+test('P5.4 rollout: without requires >= 0.12.0 no outcome key is written and nothing holds (the old behaviour); with it the keys appear', LSKIP, () => {
+  const keys = ['last_reason', 'fails', 'hold', 'hold_id'];
+  for (const requires of [undefined, '0.11.0', '0.12.0']) {
+    const t = tenv();
+    if (requires) raiseOutcome(t.c.board, requires);
+    routineOn(t);
+    const on = requires === '0.12.0';
+    for (let i = 0; i < 4; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', i === 3 ? 'ok' : 'failed', 'x']).status, 0);
+    const text = fs.readFileSync(path.join(t.c.board, 'routines', 'mr-status.md'), 'utf8');
+    for (const k of keys) assert.equal(new RegExp(`^${k}:`, 'm').test(text), on, `${requires}: ${k}`); // the 4th run is ok: the hold of the 3rd stays until the owner resumes it
+    assert.match(text, /^last_result: ok$/m, 'last_result is kept as before');
+    const tick = t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' });
+    if (on) assert.equal(tick.stdout, `tick ${ME}: idle\n`, 'held');
+    else assert.match(tick.stdout, /^RUN my-app\/mr-status/m, `${requires}: a board that did not raise requires behaves as before`);
+  }
+});
+
 test('P5.4 a2: HOLD is written by routine done and pushed, so a second clone sees it after pull; tick writes nothing', LSKIP, () => {
   const p = pair();
   const env = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 };
   const run = (w, args, e = {}) => p.run(w, args, '', { ...env, ...e });
+  raiseOutcome(p.bd(p.a)); // the owner raises requires first (then `routine on` also writes the approval hash)
   assert.equal(run(p.a, ['routine', 'new', 'mr-status', RTITLE, '--agent', ME, '--model', RMODEL, '--env', RENV, '--every', '2h']).status, 0);
   assert.equal(run(p.a, ['routine', 'on', 'mr-status', '--by', 'Lujker', '--source', 'chat']).status, 0);
   assert.equal(run(p.a, ['autonomy', 'routines', 'on', '--by', 'Lujker']).status, 0);
@@ -3249,6 +3274,7 @@ test('P5.4 a4/a5: skipped leaves last_result and the counter alone; last_reason 
 
 test('P5.4 a6: after HOLD the tick text changes once and stays byte-stable', LSKIP, () => {
   const t = tenv();
+  raiseOutcome(t.c.board);
   routineOn(t);
   const run = () => t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' });
   assert.match(run().stdout, /^RUN my-app\/mr-status/m, 'before HOLD the routine is offered');
@@ -3260,6 +3286,7 @@ test('P5.4 a6: after HOLD the tick text changes once and stays byte-stable', LSK
 
 test('P5.4 a8: HOLD is the same reason in tick, routine list, lint and digest; a stale copy with a raised requires refuses', LSKIP, () => {
   const t = tenv();
+  raiseOutcome(t.c.board);
   routineOn(t);
   for (let i = 0; i < 3; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'x']).status, 0);
   assert.equal(rc.boardRequires({ requires: '0.12.0' }, '0.11.0'), 'board requires roadctl 0.12.0 or newer; this is 0.11.0', 'an older copy refuses the board');
@@ -3273,6 +3300,7 @@ test('P5.4 a8: HOLD is the same reason in tick, routine list, lint and digest; a
 
 test('P5.4 a9: the transition to HOLD is one immediate problem in digest and is not repeated by the next digest', LSKIP, () => {
   const t = tenv();
+  raiseOutcome(t.c.board);
   routineOn(t);
   for (let i = 0; i < 3; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'x']).status, 0);
   const d1 = t.bcli(['digest']);
