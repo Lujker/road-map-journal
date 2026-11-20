@@ -29,7 +29,7 @@ function rig(names = ['my-app']) {
     fs.cpSync(EXAMPLE_BOARD, boards[n], { recursive: true });
   }
   const env = { ...process.env, HOME: dir, USERPROFILE: dir, XDG_STATE_HOME: path.join(dir, 'state'), XDG_CACHE_HOME: path.join(dir, 'cache'), XDG_CONFIG_HOME: path.join(dir, 'cfg'), ROADCTL_WORKSPACE: ws, ROADCTL_REGISTRY: NOREG, ...clock() };
-  const run = (args, cwd = ws) => spawnSync(process.execPath, [SELF, ...args], { cwd, encoding: 'utf8', env });
+  const run = (args, cwd = ws, over = {}) => spawnSync(process.execPath, [SELF, ...args], { cwd, encoding: 'utf8', env: { ...env, ...over } });
   const ok = (args) => {
     const r = run(args);
     assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}${r.stdout}`);
@@ -49,8 +49,11 @@ function rig(names = ['my-app']) {
     ok(['routine', 'on', id, '--by', 'Owner', '--source', 'chat 2026-11-12', ...b]);
     ok(['autonomy', 'routines', 'on', '--by', 'Owner', ...b]);
   };
-  const tick = (extra = []) => run(['tick', '--as', AGENT, '--no-pull', '--json', ...extra]);
-  return { dir, ws, boards, env, run, ok, setRequires, routine, tick };
+  // P5.4 a4: a tick whose limits gate refuses a due RUN (no provider here) is a skipped run and starts the term of `every` again; each tick of these tests is one term (3h) later, so the question is the board, not the clock
+  let step = 0;
+  const term = () => ({ ROADCTL_NOW: new Date(Date.now() + 3 * 3600e3 * ++step).toISOString().replace(/\.\d{3}Z$/, 'Z') });
+  const tick = (extra = []) => run(['tick', '--as', AGENT, '--no-pull', '--json', ...extra], ws, term());
+  return { dir, ws, boards, env, run, ok, setRequires, routine, tick, term };
 }
 
 // ---------------------------------------------------------------- the comparison
@@ -101,10 +104,10 @@ test('a1: a board that requires a newer roadctl gives no RUN; the reason is visi
   assert.equal(j.decision, 'idle');
   assert.deepEqual(j.items, []);
   assert.deepEqual(j.sync, [`requires: my-app: board requires roadctl ${NEWER} or newer; this is ${VERSION}`]);
-  const text = r.run(['tick', '--as', AGENT, '--no-pull']);
+  const text = r.run(['tick', '--as', AGENT, '--no-pull'], r.ws, r.term());
   assert.equal(text.status, 4);
   assert.equal(text.stdout, `tick ${AGENT}: idle\nrequires: my-app: board requires roadctl ${NEWER} or newer; this is ${VERSION}\n`);
-  assert.equal(r.run(['tick', '--as', AGENT, '--no-pull', '--prompt']).stdout.includes('RUN '), false, '--prompt names no RUN either');
+  assert.equal(r.run(['tick', '--as', AGENT, '--no-pull', '--prompt'], r.ws, r.term()).stdout.includes('RUN '), false, '--prompt names no RUN either');
   // the same board, asked at exactly this copy's version, is fine again
   r.setRequires('my-app', VERSION);
   r.ok(['routine', 'on', 'mr-status', '--by', 'Owner', '--board', r.boards['my-app']]); // P5.15: 0.6.0 is the version that checks the approval hash, so a routine approved earlier is approved again
@@ -149,7 +152,7 @@ test('a1: with several boards only the refused one drops out; the others are off
   assert.notEqual(j.decision, 'idle', 'there is work (the limits gate of an unregistered agent may still say blocked-unknown; not what is tested here)');
   assert.deepEqual(j.items.map((i) => `${i.kind} ${i.project}/${i.id}`), ['RUN alpha/mr-status']);
   assert.deepEqual(j.sync, [`requires: beta: board requires roadctl 99.0.0 or newer; this is ${VERSION}`]);
-  const text = r.run(['tick', '--as', AGENT, '--no-pull']).stdout;
+  const text = r.run(['tick', '--as', AGENT, '--no-pull'], r.ws, r.term()).stdout;
   assert.match(text, /^RUN alpha\/mr-status /m);
   assert.match(text, /^requires: beta: /m);
 });
