@@ -79,8 +79,10 @@ export function readQuestions(section) {
     if (!q || typeof q !== 'object' || Array.isArray(q) || !instant(q.created)) fail('invalid Questions data');
     const allowed = ['id', 'kind', 'prompt', 'reason', 'scope', 'points', 'blocking', 'created', 'state', 'recommended', 'undo_until', 'answer', 'answered', 'undo_comment', 'undone', 'agent', 'defer_until', 'partial_answers'];
     if (Object.keys(q).some((k) => !allowed.includes(k))) fail('invalid Questions data');
-    // the stored class wins: roadctl can make an agent's `reversible` question blocking (P5.24 a5/a11)
+    // the stored class wins: roadctl can make an agent's `reversible` question blocking (P5.24 a5/a11).
+    // It may only raise the strictness: an irreversible reason or an external area must be blocking whatever the field says.
     if (typeof q.blocking !== 'boolean') fail('invalid Questions data');
+    if (q.blocking === false && (q.reason !== 'reversible' || (Array.isArray(q.scope) && q.scope.includes('external')))) fail('invalid blocking class: an irreversible or external question must be blocking');
     const blocking = q.blocking;
     const window = blocking ? new Date(Date.parse(q.created) + 1).toISOString() : q.undo_until;
     const base = makeQuestion({ id: q.id, kind: q.kind, prompt: q.prompt, reason: q.reason, ...(q.scope === undefined ? {} : { scope: q.scope }), ...(q.points === undefined ? {} : { points: q.points }), ...(q.recommended === undefined ? {} : { recommended: q.recommended }) }, q.created, window, { blocking });

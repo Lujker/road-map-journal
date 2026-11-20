@@ -24,7 +24,7 @@ function fixture(t) {
   const run = (args, data, extra = {}) => spawnSync(process.execPath, [cli, ...args, '--board', board], { cwd: root, encoding: 'utf8', input: data === undefined ? undefined : JSON.stringify(data), env: { ...env, ...extra } });
   return { root, board, card, run, read: () => fs.readFileSync(card, 'utf8') };
 }
-const q = (id, reason = 'irreversible') => ({ question: { id, kind: 'confirm', prompt: 'Proceed?', reason, ...(reason === 'reversible' ? { recommended: true } : {}) }, undo_until: '2026-11-21T10:00:00.000Z' });
+const q = (id, reason = 'irreversible', scope = ['implementation']) => ({ question: { id, kind: 'confirm', prompt: 'Proceed?', reason, ...(reason === 'reversible' ? { recommended: true, scope } : {}) }, undo_until: '2026-11-21T10:00:00.000Z' });
 
 test('P5.24 a1/a4/a9: ask and answer persist a card question, log and owner audit; repeat is refused', (t) => {
   const f = fixture(t);
@@ -230,7 +230,7 @@ test('P5.24 a8: a reversible question retains the claim and the worker can repor
   const f = fixture(t);
   const claim = 'claim: worker at=2026-11-20T09:00:00Z until=2026-11-20T10:30:00Z';
   fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=claimed at=2026-11-20T09:00:00Z\n${claim}`));
-  const ask = f.run(['ask', 'W-3', '--as', 'worker'], { ...q('q', 'reversible'), checkpoint: { did: 'ready', next: 'continue', in_flight: 'none' } });
+  const ask = f.run(['ask', 'W-3', '--as', 'worker'], { ...q('q', 'reversible', ['implementation']), checkpoint: { did: 'ready', next: 'continue', in_flight: 'none' } });
   assert.equal(ask.status, 0, ask.stderr); assert.ok(f.read().includes(claim)); assert.match(f.read(), /state=claimed/); assert.match(f.read(), /status: doing/);
   const report = f.run(['report', 'W-3', '--as', 'worker', 'completed']);
   assert.equal(report.status, 0, report.stderr); assert.match(f.read(), /REPORT: completed/);
@@ -375,7 +375,7 @@ test('P5.24 a5/a11: roadctl decides the blocking class; a declared reversible ne
   assert.match(f.read(), /"state":"waiting"/);
   assert.doesNotMatch(f.read(), /"recommended"/);
   assert.doesNotMatch(f.read(), /"undo_until"/);
-  assert.match(f.read(), /ASK ext: waiting for owner \(blocking: an external area is involved\)/);
+  assert.match(f.read(), /ASK ext: waiting for owner \(blocking: .*an external area is involved\)/);
   assert.ok(!JSON.parse(f.run(['inbox', '--json']).stdout).items.some((i) => i.type === 'decision'));
   // an external area recorded on the card
   f = fixture(t);
@@ -454,7 +454,7 @@ test('P5.24 a5/a11: inbox offers no Undo where the command would refuse (done, b
 
 test('P5.24 a10: the confirmation is built from roadctl data and the agent wording stays a quote', (t) => {
   const f = fixture(t);
-  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q', kind: 'confirm', prompt: 'Confirm the tiny thing', reason: 'reversible', recommended: true }, undo_until: '2027-01-01T00:00:00.000Z' }).status, 0);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q', kind: 'confirm', prompt: 'Confirm the tiny thing', reason: 'reversible', recommended: true, scope: ['implementation'] }, undo_until: '2027-01-01T00:00:00.000Z' }).status, 0);
   const item = JSON.parse(f.run(['inbox', '--json']).stdout).items.find((i) => i.question?.id === 'q');
   assert.equal(item.type, 'decision');
   assert.equal(item.confirmation, `Undo W-3/q: W-3 "Экспорт отчёта в CSV" scope=implementation hash=${item.hash.slice(0, 12)}`);
@@ -473,18 +473,18 @@ test('P5.24 a5/a11: the undo window is the board daily overview; without a sched
   const untilOf = (id) => JSON.parse(f.run(['inbox', '--json']).stdout).items.find((i) => i.question?.id === id)?.question.undo_until;
   // the caller's own deadline is ignored; the next 09:00 UTC is tomorrow
   fs.writeFileSync(cfg, JSON.stringify({ ...base, digest: { daily: '09:00', tz: 'UTC' } }));
-  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q1', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true }, undo_until: '2099-01-01T00:00:00.000Z' }).status, 0);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q1', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true, scope: ['implementation'] }, undo_until: '2099-01-01T00:00:00.000Z' }).status, 0);
   assert.equal(untilOf('q1'), '2026-11-21T09:00:00.000Z');
   // an overview still ahead today
   fs.writeFileSync(cfg, JSON.stringify({ ...base, digest: { daily: '12:00', tz: 'UTC' } }));
-  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q2', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true } }).status, 0);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q2', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true, scope: ['implementation'] } }).status, 0);
   assert.equal(untilOf('q2'), '2026-11-20T12:00:00.000Z');
   // no schedule: a fixed 24 hours; a malformed one counts as none
   fs.writeFileSync(cfg, JSON.stringify(base));
-  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q3', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true } }).status, 0);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q3', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true, scope: ['implementation'] } }).status, 0);
   assert.equal(untilOf('q3'), '2026-11-21T10:00:00.000Z');
   fs.writeFileSync(cfg, JSON.stringify({ ...base, digest: { daily: '9:00' } }));
-  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q4', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true } }).status, 0);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q4', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true, scope: ['implementation'] } }).status, 0);
   assert.equal(untilOf('q4'), '2026-11-21T10:00:00.000Z');
 });
 
@@ -495,7 +495,7 @@ test('P5.24 a8: ask leaves the card uncommitted, so a report with a remote needs
   assert.match(docs.replace(/\s+/g, ' '), /run `roadctl save` before `roadctl report`/);
   const claim = 'claim: worker at=2026-11-20T09:00:00Z until=2026-11-20T10:30:00Z';
   fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=claimed at=2026-11-20T09:00:00Z\n${claim}`));
-  const ask = f.run(['ask', 'W-3', '--as', 'worker'], { ...q('q', 'reversible'), checkpoint: { did: 'ready', next: 'continue', in_flight: 'none' } });
+  const ask = f.run(['ask', 'W-3', '--as', 'worker'], { ...q('q', 'reversible', ['implementation']), checkpoint: { did: 'ready', next: 'continue', in_flight: 'none' } });
   assert.equal(ask.status, 0, ask.stderr);
   const bin = path.join(f.root, 'fake-bin'); fs.mkdirSync(bin);
   const fake = `#!${process.execPath}
@@ -511,3 +511,109 @@ else if (args[0] === 'status' && process.env.FAKE_GIT_DIRTY) console.log(' M boa
   assert.equal(r.status, 1);
   assert.match(r.stdout + r.stderr, /run roadctl save first/);
 });
+
+test('P5.24 a5/a11: a missing scope blocks, and a Tell the owner rule is matched by the question text', (t) => {
+  const setup = () => {
+    const f = fixture(t);
+    const mandate = '---\nmandate: 1\nlevel: L3\nkinds: fix, docs\nmax_size: M\nmerge: branch\nbudget: cards_per_day=2, runs_per_week=10\n---\n\n## Goals\n- G1 (priority 1): ship\n\n## Forbidden\n- nothing\n\n## Tell the owner\n- Deploy to production\n';
+    fs.writeFileSync(path.join(f.board, 'mandate.md'), mandate);
+    const shown = JSON.parse(f.run(['mandate', 'show', '--json']).stdout);
+    assert.equal(f.run(['mandate', 'approve', '--by', 'Owner', '--hash', shown.hash]).status, 0);
+    fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\nkind: fix\nsize: S\ngoal: G1\nby_mandate: ${shown.hash}`));
+    return f;
+  };
+  // no scope at all: the area cannot be established, so the question is blocking even though the words are new
+  let f = setup();
+  let r = f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'plain', kind: 'confirm', prompt: 'Which of these two?', reason: 'reversible', recommended: true } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(f.read(), /"blocking":true/);
+  assert.match(f.read(), /"state":"waiting"/);
+  assert.match(f.read(), /no area is named/);
+  assert.ok(!JSON.parse(f.run(['inbox', '--json']).stdout).items.some((i) => i.type === 'decision'));
+  // the rule is matched by the text, still without a scope
+  f = setup();
+  r = f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'tell', kind: 'confirm', prompt: 'Deploy to production?', reason: 'reversible', recommended: true } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(f.read(), /a subject of Tell the owner in the mandate/);
+  assert.doesNotMatch(f.read(), /"state":"decided"/);
+  assert.match(f.read(), /status: blocked/);
+  // an area inside the card does not help when the text matches the rule
+  f = setup();
+  r = f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'tell2', kind: 'confirm', prompt: 'DEPLOY to production?', reason: 'reversible', recommended: true, scope: ['implementation'] } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(f.read(), /"blocking":true/);
+  assert.match(f.read(), /a subject of Tell the owner in the mandate/);
+  assert.doesNotMatch(f.read(), /"state":"decided"/);
+});
+
+test('P5.24 a11: a stored blocking field may only raise the strictness', async (t) => {
+  const { readQuestions } = await import('./owner-questions-data.mjs');
+  const bad = { id: 'bad', kind: 'confirm', prompt: 'Proceed?', reason: 'irreversible', scope: ['external'], created: '2026-11-20T10:00:00.000Z', state: 'decided', blocking: false, recommended: true, undo_until: '2026-11-21T10:00:00.000Z' };
+  assert.throws(() => readQuestions(JSON.stringify([bad])), /invalid blocking class/, 'irreversible and external data cannot be stored as non-blocking');
+  const raised = { ...bad, state: 'waiting', blocking: true };
+  delete raised.recommended; delete raised.undo_until;
+  const rows = readQuestions(JSON.stringify([raised]));
+  assert.equal(rows.length, 1); assert.equal(rows[0].blocking, true);
+  const f = fixture(t);
+  fs.writeFileSync(f.card, `${f.read().trimEnd()}\n\n## Questions\n${JSON.stringify([bad])}\n`);
+  const r = f.run(['inbox', '--json']);
+  assert.equal(r.status, 2); assert.match(r.stderr, /invalid blocking class/);
+});
+
+test('P5.24 a11: RESUME follows the work after a reassignment; the previous agent gets nothing', (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(f.card, f.read().replace('status: doing', 'status: doing\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=open at=2026-11-20T09:00:00Z'));
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q', 'reversible')).status, 0);
+  assert.equal(f.run(['undo', 'W-3', 'q', '--by', 'Owner'], { comment: 'redo' }).status, 0);
+  let tick = JSON.parse(f.run(['tick', '--as', 'worker', '--no-pull', '--json']).stdout);
+  assert.equal(tick.items.find((i) => i.id === 'W-3')?.kind, 'RESUME');
+  // the delegation moves to another agent: the rework task moves with it
+  fs.writeFileSync(f.card, f.read().replace('to=worker host=any', 'to=coordinator host=any'));
+  tick = JSON.parse(f.run(['tick', '--as', 'coordinator', '--no-pull', '--json']).stdout);
+  const item = tick.items.find((i) => i.id === 'W-3');
+  assert.equal(item?.kind, 'RESUME'); assert.equal(item.undo, 'redo');
+  tick = JSON.parse(f.run(['tick', '--as', 'worker', '--no-pull', '--json']).stdout);
+  assert.ok(!tick.items.some((i) => i.id === 'W-3'), 'the previous agent gets neither a RESUME nor a TAKE');
+});
+
+test('P5.24 a10: one confirmation contract for every inbox type, the agent text only as a quote', (t) => {
+  const f = fixture(t);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('dec', 'reversible')).status, 0);
+  let r = f.run(['routine', 'new', 'r1', 'Collect', '--agent', 'worker', '--model', 'none', '--env', 'local', '--every', '2h']); assert.equal(r.status, 0, r.stderr);
+  fs.appendFileSync(path.join(f.board, 'routines', 'r1.md'), '\n## Log\n- 2026-11-20 [worker] RUN escalated: needs review\n');
+  const dir = path.join(f.board, 'cards');
+  fs.writeFileSync(path.join(dir, 'P-1.md'), '---\nid: P-1\ntitle: Proposal\nstatus: proposed\n---\n\n## Goal\nDraft\n');
+  fs.writeFileSync(path.join(dir, 'M-1.md'), '---\nid: M-1\ntitle: Milestone\nstatus: review\nkind: milestone\n---\n\n## Goal\nReview\n');
+  // the open question needs a card that is still doing, so it lives on its own board
+  const g = fixture(t);
+  assert.equal(g.run(['ask', 'W-3', '--as', 'worker'], q('block')).status, 0);
+  const items = [...JSON.parse(f.run(['inbox', '--json']).stdout).items, ...JSON.parse(g.run(['inbox', '--json']).stdout).items];
+  for (const type of ['question', 'decision', 'review', 'approval', 'escalation', 'proposed', 'milestone']) assert.ok(items.some((i) => i.type === type), type);
+  const verb = { question: 'Answer', decision: 'Undo' };
+  for (const i of items) {
+    assert.match(i.confirmation, new RegExp(`^${verb[i.type] ?? i.type}`), i.confirmation);
+    assert.ok(i.confirmation.includes(i.target), i.confirmation);
+    assert.match(i.confirmation, / scope=\S+ hash=[a-f0-9]{12}$/, i.confirmation);
+    assert.doesNotMatch(i.confirmation, /Proceed\?|needs review/, 'the agent text never enters the action line');
+  }
+  for (const i of items.filter((x) => ['question', 'decision'].includes(x.type))) assert.equal(i.quote, 'Proceed?');
+  const escalation = items.find((i) => i.type === 'escalation');
+  assert.equal(escalation.quote, 'RUN escalated: needs review');
+});
+
+test('P5.24 a11: one unreadable Questions section does not remove the other RESUME items', (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(f.card, f.read().replace('status: doing', 'status: doing\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=open at=2026-11-20T09:00:00Z'));
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q', 'reversible')).status, 0);
+  assert.equal(f.run(['undo', 'W-3', 'q', '--by', 'Owner'], { comment: 'redo' }).status, 0);
+  fs.writeFileSync(path.join(f.board, 'cards', 'broken.md'), '---\nid: B-1\ntitle: Broken\nstatus: doing\n---\n\n## Goal\nx\n\n## Questions\nnot json\n');
+  const r = f.run(['tick', '--as', 'worker', '--no-pull', '--json']);
+  assert.equal(r.status, 0, r.stderr);
+  const tick = JSON.parse(r.stdout);
+  assert.equal(tick.items.find((i) => i.id === 'W-3')?.kind, 'RESUME');
+  assert.ok(!tick.items.some((i) => i.id === 'B-1'), 'the broken card is skipped here');
+  const lint = f.run(['lint']);
+  assert.match(lint.stdout, /broken\.md/);
+  assert.match(lint.stdout, /Questions section cannot be read/);
+});
+

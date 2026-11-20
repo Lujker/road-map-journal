@@ -119,7 +119,10 @@ function nextOverview(board, now) {
 function classify(board, item, question, api) {
   const why = [];
   const scope = Array.isArray(question?.scope) ? question.scope : [];
+  const prompt = String(question?.prompt ?? '').toLowerCase();
   if (question?.reason !== 'reversible') why.push(`the reason is ${asLine(question?.reason ?? '-')}`);
+  // P5.24 a5/a11: an area that cannot be established makes the question blocking — a missing scope is never a free pass
+  if (!scope.length) why.push('no area is named, so the area of the decision is unknown');
   const areas = areasOfCard(item);
   if (scope.includes('external') || areas.includes('external')) why.push('an external area is involved');
   if (scope.some((a) => a !== 'external' && areas.length && !areas.includes(a))) why.push('outside the approved scope of the card');
@@ -127,10 +130,30 @@ function classify(board, item, question, api) {
   if (mandate) {
     if (mandate.state !== 'approved' || mandate.problems.length) why.push('the mandate is not in force');
     else if (!admission(board, item, mandate, 'work', api).ok) why.push('outside the mandate');
-    const tell = [...TELL_OWNER_FLOOR, ...mandate.tell_extra].map((t) => t.toLowerCase());
-    if (scope.some((a) => tell.some((t) => t.includes(a)))) why.push('a subject of Tell the owner in the mandate');
+    // the rule is matched by the question's own text as well as by a named area: the asking agent cannot talk around it
+    const tell = [...TELL_OWNER_FLOOR, ...mandate.tell_extra].map((t) => t.toLowerCase()).filter((t) => t.length >= 3);
+    if (tell.some((t) => prompt.includes(t) || scope.some((a) => t.includes(a)))) why.push('a subject of Tell the owner in the mandate');
   }
   return { blocking: why.length > 0, why };
+}
+
+/**
+ * Who holds the work of a card now (P5.24 a11, review 3): the claim holder, else the agent a delegation was given to,
+ * else null (no usable delegation: the asking agent keeps the rework). `holdsWork` says whether `agent` is that holder.
+ */
+function holdsWork(board, card, agent, api) {
+  let info;
+  try { info = api.delegationInfo(card); } catch { return null; }
+  if (!info?.present || info.errors?.length) return null;
+  const d = info.delegate;
+  if (d?.state === 'claimed' && info.claim) return info.claim.agent === agent;
+  if (!d?.to) return null;
+  if (d.to === agent) return true;
+  if (d.host && d.host !== 'any' && api.hostOfAgent(agent) !== d.host) return false;
+  try {
+    const reg = api.loadRegistry(process.env);
+    return Boolean(reg?.agents?.[agent]?.roles?.includes(d.to));
+  } catch { return false; }
 }
 
 /** Whether the owner may undo this decision now: decided, in the window, and a card state the undo command accepts. */
@@ -265,11 +288,20 @@ export function ownerItems(board, time) {
     }
     if (board.cards.includes(item) && ['review', 'ready', 'proposed'].includes(item.header.status)) {
       const type = item.header.status === 'proposed' ? 'proposed' : item.header.kind === 'milestone' && item.header.status === 'review' ? 'milestone' : item.header.status === 'review' ? 'review' : (!item.header.approved ? 'approval' : null);
-      if (type && !deferred(type)) items.push({ type, target: item.header.id, title: item.header.title, hash: sha(raw), confirmation: `${type}: ${item.header.id} ${item.header.title}` });
+      if (type && !deferred(type)) {
+        const hash = sha(raw);
+        const scope = areasOfCard(item).join('+') || 'card';
+        items.push({ type, target: item.header.id, title: item.header.title, hash, confirmation: `${type}: ${item.header.id} "${asLine(item.header.title ?? '')}" scope=${scope} hash=${hash.slice(0, 12)}` });
+      }
     }
     if (!board.cards.includes(item)) {
       const lastRun = [...(item.log ?? [])].reverse().find((l) => /^RUN (ok|escalated|failed):/.test(l.text));
-      if (lastRun && /^RUN escalated:/.test(lastRun.text) && !deferred('escalation')) items.push({ type: 'escalation', target: item.header.id, text: lastRun.text, hash: sha(JSON.stringify(lastRun)), confirmation: `Review escalation ${item.header.id}: ${lastRun.text}` });
+      if (lastRun && /^RUN escalated:/.test(lastRun.text) && !deferred('escalation')) {
+        const hash = sha(JSON.stringify(lastRun));
+        const scope = areasOfCard(item).join('+') || 'card';
+        // the agent's own text is a quote, never part of the action line (P5.24 a10)
+        items.push({ type: 'escalation', target: item.header.id, text: lastRun.text, hash, confirmation: `escalation: ${item.header.id} "${asLine(item.header.title ?? '')}" scope=${scope} hash=${hash.slice(0, 12)}`, quote: lastRun.text });
+      }
     }
   }
   return items;
@@ -291,10 +323,17 @@ export default {
       if ((api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) return {};
       const statusOf = (card) => board.config.status_map?.[card.header.status] ?? card.header.status;
       return { items: board.cards.flatMap((card) => {
-        const rows = questionsFromItem(rawItem(card));
-        // P5.24 a11: after an undo the item is a rework task, for a delegated card too, and it carries the owner's comment
-        const undone = rows.find((q) => q.state === 'undone' && q.agent === agent);
-        if (undone && ['doing', 'review'].includes(statusOf(card))) return [{ kind: 'RESUME', id: card.header.id, title: card.header.title, undo: undone.undo_comment }];
+        let rows;
+        // P5.24 a11: a card with unreadable Questions is skipped here (lint names it); the other cards keep their items
+        try { rows = questionsFromItem(rawItem(card)); } catch { return []; }
+        // after an undo the item is a rework task for whoever holds the work now, delegated or not, with the owner's comment
+        const undone = rows.find((q) => q.state === 'undone');
+        if (undone) {
+          const holder = holdsWork(board, card, agent, api);
+          const gets = holder === null ? undone.agent === agent : holder;
+          if (gets && ['doing', 'review'].includes(statusOf(card))) return [{ kind: 'RESUME', id: card.header.id, title: card.header.title, undo: undone.undo_comment }];
+          return [];
+        }
         const answered = card.header.status === 'blocked' && /^owner answer /.test(card.header.blocked ?? '');
         const undelegated = card.header.status === 'doing' && !card.header.delegate;
         if (!answered && !undelegated) return [];
@@ -310,7 +349,15 @@ export default {
         return questionsFromItem(raw).some((q) => q.state === 'waiting') ? { reasons: ['waiting for owner answer'], lint: 'none' } : {};
       } catch { return { reasons: ['owner question data unreadable'], lint: 'error' }; }
     },
-    'tick-before'({ items, boardDirs, api }) {
+    /** A card whose Questions section cannot be read is refused by tick (no RESUME); lint names it here. */
+    'board-lint'({ board, api }) {
+      const findings = [];
+      for (const card of board.cards) {
+        try { questionsFromItem(rawItem(card)); } catch (e) { findings.push({ level: 'error', file: `cards/${card.name}`, text: `the Questions section cannot be read, so tick offers nothing for this card: ${api.sanitize(e.message, 200)}` }); }
+      }
+      return { findings };
+    },
+    'tick-before'({ agent, items, boardDirs, api }) {
       const run = {};
       for (const item of items.filter((x) => x.kind === 'RUN')) {
         const board = api.loadBoard(boardDirs[item.project]);
@@ -321,23 +368,30 @@ export default {
         const answers = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && (!Number.isFinite(last) || Date.parse(q.answered) >= last)).map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
         if (answers.length) run[`${item.project}/${item.id}`] = { owner_answers: answers };
       }
-      // P5.24 a11: a card whose decision the owner undid is a RESUME task, not a plain TAKE (delegated or not)
+      // P5.24 a11: a card whose decision the owner undid is a RESUME task for its current holder, not a plain TAKE —
+      // and only that holder loses its TAKE, so a reassignment keeps the other agent's way in
       for (let i = items.length - 1; i >= 0; i--) {
         if (items[i].kind !== 'TAKE') continue;
-        let card;
+        let card, board;
         try {
-          const board = api.loadBoard(boardDirs[items[i].project]);
+          board = api.loadBoard(boardDirs[items[i].project]);
           if ((api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) continue;
           card = board.cards.find((c) => c.header.id === items[i].id);
         } catch { continue; }
-        if (card && questionsFromItem(rawItem(card)).some((q) => q.state === 'undone')) items.splice(i, 1);
+        if (!card) continue;
+        let rows;
+        try { rows = questionsFromItem(rawItem(card)); } catch { continue; }
+        const undone = rows.find((q) => q.state === 'undone');
+        if (!undone) continue;
+        const holder = holdsWork(board, card, agent, api);
+        if (holder === null ? undone.agent === agent : holder) items.splice(i, 1);
       }
       return { run };
     },
   },
   commands: {
-    ask: spec('record a question for the owner', 'Reads JSON {question:{id,kind,prompt,reason,scope?,points?,recommended?},checkpoint?}; kind is confirm, choice or text, reason is reversible, irreversible or outside-mandate. Reversible needs a recommended answer; the undo window is roadctl\'s own (the next daily overview from "digest" in board/config.json, else 24 hours) and an undo_until in the input is ignored. roadctl decides the class: an irreversible reason, an external area (scope or card), a scope outside the card, a card outside the mandate or a subject of its Tell the owner makes the question blocking and no decision is written. A claimed card needs checkpoint {did,next,in_flight}. Blocking questions release the lease; reversible decisions let the agent continue. The card file stays uncommitted: run roadctl save before roadctl report.', ['roadctl ask ID --board DIR --as AGENT < question.json'], [['--board DIR', 'board directory'], ['--as AGENT', 'asking agent']], ['roadctl ask W-3 --board ./board --as worker < question.json'], 'Writes the question and checkpoint to the target file.', ask),
-    inbox: spec('list owner questions and decisions', 'Lists questions and owner decisions as text or versioned JSON; a decision is undoable only while roadctl undo would pass, and the confirmation is built from roadctl data (target, id, title, area, hash) with the agent\'s wording kept apart as a quote.', ['roadctl inbox --board DIR [--json]'], [['--board DIR', 'board directory'], ['--json', 'print JSON'], ['--until ISO', 'hide a question until this time'], ['--by OWNER', 'owner name for deferral']], ['roadctl inbox --board ./board --json'], 'Reads board files; defer writes the item.', inbox, { effect: 'write', owner: { sub: ['defer'] } }),
+    ask: spec('record a question for the owner', 'Reads JSON {question:{id,kind,prompt,reason,scope?,points?,recommended?},checkpoint?}; kind is confirm, choice or text, reason is reversible, irreversible or outside-mandate. Reversible needs a recommended answer; the undo window is roadctl\'s own (the next daily overview from "digest" in board/config.json, else 24 hours) and an undo_until in the input is ignored. roadctl decides the class: an irreversible reason, an external area (scope or card), a scope outside the card, a card outside the mandate or a subject of its Tell the owner (matched by the question text too) makes the question blocking and no decision is written; a question without scope is blocking as well, because the area of the decision must be named. A claimed card needs checkpoint {did,next,in_flight}. Blocking questions release the lease; reversible decisions let the agent continue. The card file stays uncommitted: run roadctl save before roadctl report.', ['roadctl ask ID --board DIR --as AGENT < question.json'], [['--board DIR', 'board directory'], ['--as AGENT', 'asking agent']], ['roadctl ask W-3 --board ./board --as worker < question.json'], 'Writes the question and checkpoint to the target file.', ask),
+    inbox: spec('list owner questions and decisions', 'Lists questions and owner decisions as text or versioned JSON; a decision is undoable only while roadctl undo would pass. Every item has one confirmation built from roadctl data (target, title, area, hash); agent wording and escalation text are kept apart as a quote.', ['roadctl inbox --board DIR [--json]'], [['--board DIR', 'board directory'], ['--json', 'print JSON'], ['--until ISO', 'hide a question until this time'], ['--by OWNER', 'owner name for deferral']], ['roadctl inbox --board ./board --json'], 'Reads board files; defer writes the item.', inbox, { effect: 'write', owner: { sub: ['defer'] } }),
     answer: spec('answer an owner question', 'Owner only; reads JSON {answer:VALUE}: a boolean for confirm, a string for text or a map of point IDs to answers for choice. Choice points may be answered separately. Writes the item Log and owner audit; refuses in an unattended run.', ['roadctl answer ID QUESTION --board DIR --by OWNER < answer.json'], [['--board DIR', 'board directory'], ['--by OWNER', 'owner name']], ['roadctl answer W-3 q1 --board ./board --by Owner < answer.json'], 'Writes the answer and Log entry.', (ctx) => resolve(ctx), { owner: true }),
     undo: spec('undo a reversible decision', 'Owner only; reads JSON {comment:TEXT}, returns a reported card for rework and refuses after undo_until or in an unattended run.', ['roadctl undo ID QUESTION --board DIR --by OWNER < comment.json'], [['--board DIR', 'board directory'], ['--by OWNER', 'owner name']], ['roadctl undo W-3 q1 --board ./board --by Owner < comment.json'], 'Writes the undo and Log entry.', (ctx) => resolve(ctx, true), { owner: true }),
   },
