@@ -322,7 +322,7 @@ export function boardRequires(config, version = VERSION) {
   for (const [v, name] of REQUIRES_MODULE) if (compareVersions(req, v) >= 0 && !MODULE_REG.modules.includes(name)) return `board requires the module ${name} (roadctl ${v}, scripts/roadctl/), which this copy does not have; install the whole roadctl folder`;
   return null;
 }
-const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate']]; // [version, module]: a board that requires that version or newer needs the module loaded, else the board is refused
+const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy']]; // [version, module]: a board that requires that version or newer needs the module loaded, else the board is refused
 
 const statusOf = (board, card) => {
   const s = card.header.status ?? '';
@@ -3314,7 +3314,6 @@ export function routineRows(board, ms = nowMs(), env = process.env) {
     if (!enabled) reasons.push('disabled');
     if (!sw) reasons.push('board switch off');
     if (h.hours && !withinHours(h.hours, ms)) reasons.push('outside hours');
-    if (h.hold) reasons.push(`held: ${h.hold} (roadctl routine resume ${h.id ?? ''})`); // P5.4 a1/a8: a held routine is never due, so tick offers no RUN until the owner resumes it
     const every = parseEvery(h.every);
     let due = false;
     const lastRun = localLastRun(board, h.id, h.last_run, env); // P5.6 a7: a quiet observation keeps its last_run in machine state

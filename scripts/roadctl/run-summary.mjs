@@ -133,8 +133,8 @@ export function parseLogText(text) {
 // ---------------------------------------------------------------- what the owner reads
 
 const WORDS = {
-  en: { did: 'did', decisions: 'decided', problem: 'problem', ask: 'needs from you', notChecked: 'not checked', unpublished: 'not published: waits for roadctl save', resolved: 'resolved', task: 'task', routine: 'routine', orchestrator: 'orchestrator', crashed: 'CRASHED', timeout: 'TIMEOUT', aborted: 'ABORTED', failed: 'FAILED', escalated: 'ESCALATED', ok: 'ok', skipped: 'skipped', hold: 'HOLD', min: 'm', sec: 's' },
-  ru: { did: 'сделано', decisions: 'решено', problem: 'проблема', ask: 'нужно от вас', notChecked: 'не проверено', unpublished: 'не опубликовано: ждёт roadctl save', resolved: 'снято', task: 'поручение', routine: 'рутина', orchestrator: 'оркестратор', crashed: 'ОБОРВАН', timeout: 'ТАЙМАУТ', aborted: 'ПРЕРВАН', failed: 'СБОЙ', escalated: 'ЭСКАЛАЦИЯ', ok: 'ок', skipped: 'пропуск', hold: 'УДЕРЖАНО', min: 'м', sec: 'с' },
+  en: { did: 'did', decisions: 'decided', problem: 'problem', ask: 'needs from you', notChecked: 'not checked', unpublished: 'not published: waits for roadctl save', resolved: 'resolved', task: 'task', routine: 'routine', orchestrator: 'orchestrator', crashed: 'CRASHED', timeout: 'TIMEOUT', aborted: 'ABORTED', failed: 'FAILED', escalated: 'ESCALATED', ok: 'ok', skipped: 'skipped', min: 'm', sec: 's' },
+  ru: { did: 'сделано', decisions: 'решено', problem: 'проблема', ask: 'нужно от вас', notChecked: 'не проверено', unpublished: 'не опубликовано: ждёт roadctl save', resolved: 'снято', task: 'поручение', routine: 'рутина', orchestrator: 'оркестратор', crashed: 'ОБОРВАН', timeout: 'ТАЙМАУТ', aborted: 'ПРЕРВАН', failed: 'СБОЙ', escalated: 'ЭСКАЛАЦИЯ', ok: 'ок', skipped: 'пропуск', min: 'м', sec: 'с' },
 };
 /** The words of a board's language (`language` of config.json; `ru` or English, anything else is English). Headings follow the board, the text of the agent is shown as written. */
 export const wordsFor = (language) => (String(language ?? '').toLowerCase().startsWith('ru') ? WORDS.ru : WORDS.en);

@@ -3284,31 +3284,50 @@ test('P5.4 a6: after HOLD the tick text changes once and stays byte-stable', LSK
   assert.equal(run().stdout, a, 'the held tick text is byte-identical on the next run');
 });
 
-test('P5.4 a8: HOLD is the same reason in tick, routine list, lint and digest; a stale copy with a raised requires refuses', LSKIP, () => {
+test('P5.4 a8: HOLD comes through the routine-reasons hook: tick, routine list, routine show, lint and digest give the same reason; an older copy refuses', LSKIP, () => {
   const t = tenv();
   raiseOutcome(t.c.board);
   routineOn(t);
+  const WHY = 'held: after 3 failed runs in a row (roadctl routine resume mr-status)';
   for (let i = 0; i < 3; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'x']).status, 0);
   assert.equal(rc.boardRequires({ requires: '0.12.0' }, '0.11.0'), 'board requires roadctl 0.12.0 or newer; this is 0.11.0', 'an older copy refuses the board');
-  // the reason is the same single source (routineRows) in every view
+  const row = JSON.parse(t.bcli(['routine', 'list', '--json']).stdout).find((x) => x.id === 'mr-status');
+  assert.deepEqual(row.module_reasons, [{ text: WHY, lint: 'warning', module: 'outcome-policy', immediate: true }], 'the hook gives the reason (not the core)');
+  assert.ok(row.reasons.includes(WHY) && !row.run_now);
   assert.equal(t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' }).status, 4, 'tick: no RUN');
-  assert.match(t.bcli(['routine', 'list']).stdout, /would not run: [^\n]*held: after 3 failed runs in a row/);
+  assert.match(t.bcli(['routine', 'list']).stdout, new RegExp(`would not run: [^\\n]*${WHY.replace(/[()]/g, '\\$&')}`));
   assert.match(t.bcli(['routine', 'show', 'mr-status']).stdout, /held: after 3 failed runs in a row/);
-  assert.match(t.bcli(['digest', '--daily']).stdout, /held: after 3 failed runs in a row/);
+  const lint = JSON.parse(t.bcli(['lint', '--json']).stdout);
+  assert.ok(lint.some((x) => x.rule === 30 && x.level === 'warning' && x.card === 'routines/mr-status.md' && x.msg.includes(`would not run: ${WHY} (module outcome-policy)`)), `lint shows the hold itself: ${JSON.stringify(lint)}`);
   assert.doesNotMatch(t.bcli(['lint']).stdout, /unknown key hold/, 'hold is a known key');
+  assert.match(t.bcli(['digest', '--daily']).stdout, /held: after 3 failed runs in a row/);
+  assert.match(t.bcli(['digest']).stdout, /outcome-policy: held: after 3 failed runs in a row/, 'and an immediate problem in digest');
 });
 
-test('P5.4 a9: the transition to HOLD is one immediate problem in digest and is not repeated by the next digest', LSKIP, () => {
+test('P5.4 a9: the transition to HOLD is one immediate problem in digest, not repeated by the next digest; HOLD, resume, the same HOLD again without a digest in between is told twice', LSKIP, () => {
   const t = tenv();
   raiseOutcome(t.c.board);
   routineOn(t);
-  for (let i = 0; i < 3; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'x']).status, 0);
+  const fail3 = () => { for (let i = 0; i < 3; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'x']).status, 0); };
+  const hold = () => rc.loadBoard(t.c.board).routines.find((x) => x.header.id === 'mr-status').header;
+  fail3();
+  const id1 = hold().hold_id;
+  assert.match(id1, /^[0-9a-f]{12}$/, 'a hold episode has an id');
   const d1 = t.bcli(['digest']);
   assert.equal(d1.status, 0, d1.stderr);
-  assert.match(d1.stdout, /hold/, 'one immediate hold problem');
+  assert.equal((d1.stdout.match(/held: after 3 failed runs in a row/g) ?? []).length, 1, `one immediate hold problem: ${d1.stdout}`);
   const d2 = t.bcli(['digest']);
   assert.equal(d2.status, 0, d2.stderr);
-  assert.doesNotMatch(d2.stdout, /hold/, 'the next digest does not repeat it');
+  assert.doesNotMatch(d2.stdout, /held:/, 'the next digest does not repeat it');
+  // the owner resumes and the routine fails again with the very same reason: no digest saw the resumed state in between
+  assert.equal(t.bcli(['routine', 'resume', 'mr-status', '--by', 'Lujker']).status, 0);
+  assert.equal(hold().hold_id, undefined, 'resume closes the episode');
+  fail3();
+  assert.equal(hold().hold, 'after 3 failed runs in a row', 'the same text');
+  assert.notEqual(hold().hold_id, id1, 'a new episode');
+  const d3 = t.bcli(['digest']);
+  assert.equal((d3.stdout.match(/held: after 3 failed runs in a row/g) ?? []).length, 1, `the second HOLD is told too (two events in all): ${d3.stdout}`);
+  assert.doesNotMatch(t.bcli(['digest']).stdout, /held:/, 'and only once');
 });
 
 // ---------------------------------------------------------------- P4.11: one routine per scheduler job, a time window for routines, the working directory of a claim

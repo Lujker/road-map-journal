@@ -250,7 +250,7 @@ When anything fails.
   };
   for (const [k, t] of Object.entries(changes)) assert.notEqual(approvalHash(t), h, `${k} changes the hash`);
   assert.equal(new Set(Object.values(changes).map(approvalHash)).size, Object.keys(changes).length, 'every change gives its own hash');
-  assert.deepEqual(OUTSIDE_KEYS, ['enabled', 'notify', 'last_run', 'last_result', 'last_reason', 'fails', 'hold', 'approved', HASH_KEY, ID_KEY], 'the list of header keys outside the hash is part of the contract (docs/roadctl.md)');
+  assert.deepEqual(OUTSIDE_KEYS, ['enabled', 'notify', 'last_run', 'last_result', 'last_reason', 'fails', 'hold', 'hold_id', 'approved', HASH_KEY, ID_KEY], 'the list of header keys outside the hash is part of the contract (docs/roadctl.md)');
   assert.equal(approvalHash('no header here'), null);
 });
 
