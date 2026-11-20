@@ -181,7 +181,7 @@ export function checkLauncher(ctx) {
   if (ctx.platform === 'win32') return res('launcher', 'skip', 'not checked on native Windows (the launcher is a POSIX script)');
   const bin = path.join(ctx.home, '.local', 'bin');
   const file = path.join(bin, 'roadctl');
-  if (!fs.existsSync(file)) return res('launcher', 'warn', `no launcher ${tilde(file, ctx.home)}`, 'create it: a script that runs `node ~/.local/share/road-map-journal/roadctl.mjs "$@"`, or call the installed file directly');
+  if (!fs.existsSync(file)) return res('launcher', 'warn', `no launcher ${tilde(file, ctx.home)}`, 'node scripts/update-installed.mjs --roadctl --apply   (from a checkout of road-map-journal) writes it; or call the installed file directly');
   const onPath = String(ctx.env.PATH ?? '').split(':').some((d) => d && path.resolve(d) === path.resolve(bin));
   return onPath ? res('launcher', 'ok', `${tilde(file, ctx.home)} exists and ${tilde(bin, ctx.home)} is in PATH`) : res('launcher', 'warn', `${tilde(file, ctx.home)} exists but ${tilde(bin, ctx.home)} is not in PATH here`, 'add it to PATH for non-interactive shells too (cron, ssh commands, wsl.exe -e), not only in the login profile');
 }

@@ -13,9 +13,10 @@
 ## Быстрый старт
 
 ```sh
+git clone https://github.com/Lujker/road-map-journal && cd road-map-journal   # scripts/update-installed.mjs лежит в рабочей копии
 npx skills add Lujker/road-map-journal --skill road-map-journal   # навык
-node scripts/update-installed.mjs --roadctl --apply               # roadctl (из рабочей копии)
-roadctl hook-install --claude --apply                             # также --codex, --hermes, --git
+node scripts/update-installed.mjs --roadctl --apply               # roadctl и команда ~/.local/bin/roadctl (добавьте ~/.local/bin в PATH)
+roadctl hook-install --claude --user --apply                      # также --codex, --hermes (уровень пользователя), --git (на репозиторий)
 export ROADCTL_AS=<ваше имя>                                     # исполнитель, профиль или оркестратор/профиль
 roadctl doctor                                                   # одна проверка только на чтение; для каждой проблемы печатает команду исправления
 ```

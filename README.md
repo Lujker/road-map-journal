@@ -13,9 +13,10 @@ A portable [Agent Skill](https://agentskills.io/) that keeps a project's roadmap
 ## Quick start
 
 ```sh
+git clone https://github.com/Lujker/road-map-journal && cd road-map-journal   # scripts/update-installed.mjs lives in the checkout
 npx skills add Lujker/road-map-journal --skill road-map-journal   # the skill
-node scripts/update-installed.mjs --roadctl --apply               # roadctl (from a checkout)
-roadctl hook-install --claude --apply                             # also --codex, --hermes, --git
+node scripts/update-installed.mjs --roadctl --apply               # roadctl and the command ~/.local/bin/roadctl (put ~/.local/bin in PATH)
+roadctl hook-install --claude --user --apply                      # also --codex, --hermes (user-level), --git (per repository)
 export ROADCTL_AS=<your name>                                     # executor, profile, or orchestrator/profile
 roadctl doctor                                                   # one read-only check; it prints the fix for each problem
 ```

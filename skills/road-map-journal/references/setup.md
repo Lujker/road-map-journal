@@ -5,24 +5,30 @@ For any agent (Claude Code, Codex, pi, Hermes, an OpenBot agent) or a person who
 ## Install
 
 ```sh
+# the project (it holds scripts/update-installed.mjs; the skill install alone does not bring it)
+git clone https://github.com/Lujker/road-map-journal && cd road-map-journal
+
 # the skill (what tells the agent to use roadctl and how)
 npx skills add Lujker/road-map-journal --skill road-map-journal
 
-# roadctl (the command the skill uses); from a checkout of the project
+# roadctl (the command the skill uses), run from that checkout
 node scripts/update-installed.mjs --roadctl --apply
 ```
 
-`update-installed.mjs` puts roadctl in `~/.local/share/road-map-journal/` and writes `installed.json` so `roadctl doctor` can compare it.
+`update-installed.mjs --roadctl --apply` puts roadctl in `~/.local/share/road-map-journal/`, writes `installed.json` so `roadctl doctor` can compare it, and writes the launcher `~/.local/bin/roadctl` (a small `#!/bin/sh` script that runs the installed file), so `roadctl` is a command. It writes the launcher only when there is none or it is its own; a launcher that someone else wrote is kept unless you add `--force`. If `~/.local/bin` is not in your `PATH` it prints one line saying so: add `export PATH="$HOME/.local/bin:$PATH"` to your shell profile (and make cron, ssh or `wsl.exe -e` see it too). It also installs or refreshes the skill for the agents it finds, so the `npx skills add` line is for a machine that needs only the skill.
 
 ## Hooks
 
-Hooks give a new session the brief (where it is, what is in work), remind it to save at stop, and watch for a limit stop. Install them for each harness on the machine:
+Hooks give a new session the brief (where it is, what is in work), remind it to save at stop, and write the limit checkpoint when the usage limit is near (see the section "Limit checkpoint" in docs/roadctl.md of the project; the explicit `limit-stop` event is wired by hand, `hook-install` does not write it). Install them once per harness on the machine, at user level, which is where `roadctl doctor` looks:
 
 ```sh
-roadctl hook-install --claude --apply      # also: --codex, --hermes, --git
+roadctl hook-install --claude --user --apply   # Claude Code: ~/.claude/settings.json (without --user: this project only)
+roadctl hook-install --codex --apply           # Codex: ~/.codex/hooks.json (user-level already)
+roadctl hook-install --hermes --apply          # Hermes: config.yaml (user-level already)
+roadctl hook-install --git --apply             # optional, per repository: the pre-commit lint
 ```
 
-Claude and Codex may ask you to review or trust the hooks once (`/hooks`); Hermes asks to approve on first use. The hooks stay silent where there is no board.
+Without `--apply` each command only shows what it would write. Claude and Codex may ask you to review or trust the hooks once (`/hooks`); Hermes asks to approve on first use. The hooks stay silent where there is no board.
 
 ## Where the board is
 
@@ -41,10 +47,10 @@ The registry (`agents/registry.json` of the workspace) names the executors and t
 export ROADCTL_AS=<name>
 ```
 
-- **Direct harness (Claude Code, Codex, pi):** the executor name, for example `claude-code@home-wsl`, `codex@home-wsl`, `pi-worker@home-wsl`.
-- **Agent of an orchestrator:** a profile or a pair `orchestrator/profile`, for example `pi-developer` or `openbot@home-wsl/pi-developer`; a variant like `pi-developer-small` is also accepted.
+- **Direct harness (Claude Code, Codex, pi):** the executor name, for example `<harness>@<machine>` as it is written in the registry.
+- **Agent of an orchestrator:** a profile or a pair `orchestrator/profile`, for example `<profile>` or `<orchestrator>@<machine>/<profile>`; a variant of a profile is also accepted.
 
-`roadctl claim`, `report`, `tick` and the limit checkpoint use it; `--as` on a command overrides it for that one call. Who may take what is in [Executors and the registry](executors.md). An unknown name is refused with a hint.
+`roadctl claim`, `report` and the limit checkpoint use it (a profile or a pair is resolved to its executor); `tick` and `limits --check` need an executor name, so pass `--as <executor>` to them; `--as` on a command overrides it for that one call. Who may take what is in [Executors and the registry](executors.md). An unknown name is refused with a hint.
 
 ## Check the machine
 
@@ -71,9 +77,11 @@ Give a card to another agent with `roadctl handoff <id> --to <who>`, not a hand-
 
 ## Update
 
+From the checkout of the project (`git pull` it first):
+
 ```sh
-node scripts/update-installed.mjs --roadctl --apply      # roadctl (and its modules)
-node scripts/update-installed.mjs --apply                # the installed skill
+node scripts/update-installed.mjs --roadctl --apply      # roadctl, its modules, the launcher, and the installed skill
+node scripts/update-installed.mjs --apply                # the installed skill only
 ```
 
-Run `roadctl doctor` afterwards. Reinstalling can overwrite local edits; `update-installed.mjs` refuses to overwrite a locally modified copy without `--force`.
+Run `roadctl doctor` afterwards. Reinstalling can overwrite local edits; `update-installed.mjs` refuses to overwrite a locally modified skill copy, or a launcher it did not write, without `--force`.
