@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { inboxProblems } from '../testkit/inbox-schema.mjs';
+import { tickJsonProblems } from '../testkit/tick-schema.mjs';
 
 const cli = fileURLToPath(new URL('../roadctl.mjs', import.meta.url));
 const example = fileURLToPath(new URL('../../examples/board-example/board/', import.meta.url));
@@ -276,17 +277,20 @@ test('P5.24 a5: a blocking question does not prevent an independent delegated ca
   assert.ok(!tick.items.some((i) => i.id === 'W-3')); assert.ok(tick.items.some((i) => i.kind === 'TAKE' && i.id === 'X-1'));
 });
 
-test('P5.24 a4: answer publishes only its file through a fake git, refuses dirty targets and reports a failed push', (t) => {
+test('P5.24 a4: answer publishes the checked commit, not HEAD, through a fake git; dirty targets and a failed push are reported', (t) => {
   const f = fixture(t);
   assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q')).status, 0);
   const bin = path.join(f.root, 'fake-bin'); fs.mkdirSync(bin);
   const log = path.join(f.root, 'fake-git.log');
+  const sha = 'a'.repeat(40);
   const fake = `#!${process.execPath}
 const fs = require('fs');
 const args = process.argv.slice(2);
 fs.appendFileSync(process.env.FAKE_GIT_LOG, JSON.stringify(args) + '\\n');
-if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) console.log(process.env.FAKE_GIT_ROOT);
+if (args[0] === 'rev-parse' && args.includes('HEAD')) console.log(process.env.FAKE_GIT_SHA || '${sha}');
+else if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) console.log(process.env.FAKE_GIT_ROOT);
 else if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) console.log('origin/main');
+else if (args[0] === 'show') console.log(process.env.FAKE_GIT_SHOW || 'board/cards/W-3-eksport-csv.md');
 else if (args[0] === 'remote') console.log('origin');
 else if (args[0] === 'rev-list') console.log(process.env.FAKE_GIT_AHEAD || '1');
 else if (args[0] === 'symbolic-ref') console.log('main');
@@ -298,28 +302,34 @@ else if (args[0] === 'push' && process.env.FAKE_GIT_FAIL) process.exit(1);
 `;
   fs.writeFileSync(path.join(bin, 'git'), fake, { mode: 0o755 });
   const over = { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_GIT_ROOT: f.root, FAKE_GIT_LOG: log };
+  const callsNow = () => fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(JSON.parse);
   const before = f.read();
   let r = f.run(['answer', 'W-3', 'q', '--by', 'Owner'], { answer: true }, { ...over, FAKE_GIT_DIRTY: '1' });
   assert.equal(r.status, 2); assert.equal(f.read(), before);
   r = f.run(['answer', 'W-3', 'q', '--by', 'Owner'], { answer: true }, { ...over, FAKE_GIT_FAIL: '1' });
   assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /committed locally; push failed/);
-  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
-  assert.ok(calls.some((args) => args[0] === 'add' && args.at(-1) === 'board/cards/W-3-eksport-csv.md'));
-  assert.ok(calls.some((args) => args[0] === 'commit' && args.at(-1) === 'board/cards/W-3-eksport-csv.md'));
-  assert.ok(calls.some((args) => args[0] === 'push' && args.includes('--no-follow-tags') && args.includes('HEAD:refs/heads/main')));
+  let calls = callsNow();
+  assert.ok(calls.some((a) => a[0] === 'add' && a.at(-1) === 'board/cards/W-3-eksport-csv.md'));
+  assert.ok(calls.some((a) => a[0] === 'commit' && a.at(-1) === 'board/cards/W-3-eksport-csv.md'));
+  assert.ok(calls.some((a) => a[0] === 'show' && a.includes(sha)), 'the file list comes from the pinned commit');
+  assert.ok(calls.some((a) => a[0] === 'rev-list' && a.includes(`@{u}..${sha}`)), 'the unpushed count comes from the pinned commit');
+  assert.ok(calls.some((a) => a[0] === 'push' && a.includes('--no-follow-tags') && a.includes(`${sha}:refs/heads/main`)));
+  assert.ok(!calls.some((a) => a[0] === 'push' && a.some((x) => x.startsWith('HEAD:'))), 'never pushes a moving HEAD');
+  assert.ok(!calls.some((a) => a[0] === 'log' && a.includes('@{u}..HEAD')), 'no check of a moving HEAD');
+  // a commit another process adds after the check stays local: the answer pushes only its own pinned commit
   assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q2')).status, 0);
-  r = f.run(['answer', 'W-3', 'q2', '--by', 'Owner'], { answer: true }, over);
+  fs.writeFileSync(log, '');
+  r = f.run(['answer', 'W-3', 'q2', '--by', 'Owner'], { answer: true }, { ...over, FAKE_GIT_FOREIGN: '1' });
   assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /published/);
+  calls = callsNow();
+  assert.ok(calls.some((a) => a[0] === 'push' && a.includes(`${sha}:refs/heads/main`)));
+  assert.ok(!calls.some((a) => a[0] === 'push' && a.some((x) => x.startsWith('HEAD:'))));
+  // a second unpushed commit on top of the checked one: published nothing
   assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q3')).status, 0);
   fs.writeFileSync(log, '');
-  r = f.run(['answer', 'W-3', 'q3', '--by', 'Owner'], { answer: true }, { ...over, FAKE_GIT_FOREIGN: '1' });
+  r = f.run(['answer', 'W-3', 'q3', '--by', 'Owner'], { answer: true }, { ...over, FAKE_GIT_AHEAD: '2' });
   assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /other commits or files are unpushed/);
-  assert.ok(!fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).some((args) => args[0] === 'push'));
-  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q4')).status, 0);
-  fs.writeFileSync(log, '');
-  r = f.run(['answer', 'W-3', 'q4', '--by', 'Owner'], { answer: true }, { ...over, FAKE_GIT_AHEAD: '2' });
-  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /other commits or files are unpushed/);
-  assert.ok(!fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).some((args) => args[0] === 'push'));
+  assert.ok(!callsNow().some((a) => a[0] === 'push'));
 });
 
 test('P5.24 a11: undo does not silently reopen an owner-accepted or otherwise blocked card', (t) => {
@@ -332,4 +342,172 @@ test('P5.24 a11: undo does not silently reopen an owner-accepted or otherwise bl
     const r = f.run(['undo', 'W-3', 'q', '--by', 'Owner'], { comment: 'reconsider' });
     assert.equal(r.status, 2); assert.match(r.stderr, /resolve its status/); assert.equal(f.read(), before);
   }
+});
+
+test('P5.24 a2/a7: the tick --json contract carries RESUME and the owner answers of a RUN through the schema', (t) => {
+  const f = fixture(t);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q')).status, 0);
+  assert.equal(f.run(['answer', 'W-3', 'q', '--by', 'Owner'], { answer: true }).status, 0);
+  let j = JSON.parse(f.run(['tick', '--as', 'worker', '--no-pull', '--json']).stdout);
+  assert.deepEqual(tickJsonProblems(j), []);
+  const resume = j.items.find((i) => i.kind === 'RESUME');
+  assert.ok(resume); assert.equal(resume.id, 'W-3'); assert.equal('delegate' in resume, false);
+  let r = f.run(['routine', 'new', 'r1', 'Collect status', '--agent', 'worker', '--model', 'none', '--env', 'local', '--every', '2h']); assert.equal(r.status, 0, r.stderr);
+  r = f.run(['routine', 'on', 'r1', '--by', 'Owner', '--source', 'test']); assert.equal(r.status, 0, r.stderr);
+  r = f.run(['autonomy', 'routines', 'on', '--by', 'Owner']); assert.equal(r.status, 0, r.stderr);
+  assert.equal(f.run(['ask', 'r1', '--as', 'worker'], q('rq')).status, 0);
+  assert.equal(f.run(['answer', 'r1', 'rq', '--by', 'Owner'], { answer: true }).status, 0);
+  j = JSON.parse(f.run(['tick', '--as', 'worker', '--routine', 'r1', '--no-pull', '--json']).stdout);
+  assert.deepEqual(tickJsonProblems(j), []);
+  const run = j.items.find((i) => i.kind === 'RUN');
+  assert.ok(run);
+  assert.deepEqual(run.routine.owner_answers.map((a) => ({ id: a.id, prompt: a.prompt, answer: a.answer })), [{ id: 'rq', prompt: 'Proceed?', answer: true }]);
+});
+
+test('P5.24 a5/a11: roadctl decides the blocking class; a declared reversible never lowers it', (t) => {
+  const reversible = (id, extra = {}) => ({ question: { id, kind: 'confirm', prompt: 'Proceed?', reason: 'reversible', recommended: true, ...extra } });
+  // an external area named by the question
+  let f = fixture(t);
+  let r = f.run(['ask', 'W-3', '--as', 'worker'], reversible('ext', { scope: ['external'] }));
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(f.read(), /status: blocked/);
+  assert.match(f.read(), /"blocking":true/);
+  assert.match(f.read(), /"state":"waiting"/);
+  assert.doesNotMatch(f.read(), /"recommended"/);
+  assert.doesNotMatch(f.read(), /"undo_until"/);
+  assert.match(f.read(), /ASK ext: waiting for owner \(blocking: an external area is involved\)/);
+  assert.ok(!JSON.parse(f.run(['inbox', '--json']).stdout).items.some((i) => i.type === 'decision'));
+  // an external area recorded on the card
+  f = fixture(t);
+  fs.writeFileSync(f.card, f.read().replace('scope=implementation', 'scope=implementation+external'));
+  r = f.run(['ask', 'W-3', '--as', 'worker'], reversible('card'));
+  assert.equal(r.status, 0, r.stderr); assert.match(f.read(), /status: blocked/); assert.match(f.read(), /"blocking":true/);
+  // a scope outside the approved scope of the card
+  f = fixture(t);
+  r = f.run(['ask', 'W-3', '--as', 'worker'], reversible('wide', { scope: ['repo'] }));
+  assert.equal(r.status, 0, r.stderr); assert.match(f.read(), /status: blocked/);
+  assert.match(f.read(), /outside the approved scope of the card/);
+  // a mandate that is not in force: nothing is inside it
+  f = fixture(t);
+  fs.writeFileSync(path.join(f.board, 'mandate.md'), '---\nmandate: 1\nlevel: L3\nkinds: fix, docs\nmax_size: M\nmerge: branch\nbudget: cards_per_day=2, runs_per_week=10\n---\n\n## Goals\n- G1 (priority 1): ship\n\n## Forbidden\n- nothing\n\n## Tell the owner\n- deploy to production\n');
+  r = f.run(['ask', 'W-3', '--as', 'worker'], reversible('nomandate'));
+  assert.equal(r.status, 0, r.stderr); assert.match(f.read(), /status: blocked/); assert.match(f.read(), /the mandate is not in force/);
+  // an approved mandate: a subject of Tell the owner blocks, the card's own scope does not
+  f = fixture(t);
+  const mandate = '---\nmandate: 1\nlevel: L3\nkinds: fix, docs\nmax_size: M\nmerge: branch\nbudget: cards_per_day=2, runs_per_week=10\n---\n\n## Goals\n- G1 (priority 1): ship\n\n## Forbidden\n- nothing\n\n## Tell the owner\n- deploy to production\n';
+  fs.writeFileSync(path.join(f.board, 'mandate.md'), mandate);
+  const shown = JSON.parse(f.run(['mandate', 'show', '--json']).stdout);
+  const approved = f.run(['mandate', 'approve', '--by', 'Owner', '--hash', shown.hash]);
+  assert.equal(approved.status, 0, approved.stderr);
+  fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\nkind: fix\nsize: S\ngoal: G1\nby_mandate: ${shown.hash}`));
+  r = f.run(['ask', 'W-3', '--as', 'worker'], reversible('tell', { scope: ['deploy'] }));
+  assert.equal(r.status, 0, r.stderr); assert.match(f.read(), /status: blocked/); assert.match(f.read(), /a subject of Tell the owner in the mandate/);
+  f = fixture(t);
+  fs.writeFileSync(path.join(f.board, 'mandate.md'), mandate);
+  const shown2 = JSON.parse(f.run(['mandate', 'show', '--json']).stdout);
+  assert.equal(f.run(['mandate', 'approve', '--by', 'Owner', '--hash', shown2.hash]).status, 0);
+  fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\nkind: fix\nsize: S\ngoal: G1\nby_mandate: ${shown2.hash}`));
+  r = f.run(['ask', 'W-3', '--as', 'worker'], reversible('inside', { scope: ['implementation'] }));
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(f.read(), /"blocking":false/); assert.match(f.read(), /"state":"decided"/);
+});
+
+test('P5.24 a11: after an undo the card is a RESUME task with the comment, delegated or not, never a TAKE', (t) => {
+  // undelegated
+  let f = fixture(t);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q', 'reversible')).status, 0);
+  let r = f.run(['undo', 'W-3', 'q', '--by', 'Owner'], { comment: 'redo the export' });
+  assert.equal(r.status, 0, r.stderr);
+  let tick = JSON.parse(f.run(['tick', '--as', 'worker', '--no-pull', '--json']).stdout);
+  assert.deepEqual(tickJsonProblems(tick), []);
+  const item = tick.items.find((i) => i.id === 'W-3');
+  assert.equal(item.kind, 'RESUME'); assert.equal(item.undo, 'redo the export');
+  // delegated and open: the same RESUME, not the plain TAKE the delegation would otherwise offer
+  f = fixture(t);
+  fs.writeFileSync(f.card, f.read().replace('status: doing', 'status: doing\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=open at=2026-11-20T09:00:00Z'));
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q', 'reversible')).status, 0);
+  tick = JSON.parse(f.run(['tick', '--as', 'worker', '--no-pull', '--json']).stdout);
+  assert.ok(tick.items.some((i) => i.kind === 'TAKE' && i.id === 'W-3'), 'before the undo the open delegation is a TAKE');
+  r = f.run(['undo', 'W-3', 'q', '--by', 'Owner'], { comment: 'not like that' });
+  assert.equal(r.status, 0, r.stderr);
+  tick = JSON.parse(f.run(['tick', '--as', 'worker', '--no-pull', '--json']).stdout);
+  assert.deepEqual(tickJsonProblems(tick), []);
+  assert.ok(!tick.items.some((i) => i.kind === 'TAKE' && i.id === 'W-3'));
+  assert.equal(tick.items.find((i) => i.id === 'W-3')?.kind, 'RESUME');
+  assert.equal(tick.items.find((i) => i.id === 'W-3')?.undo, 'not like that');
+  assert.match(f.run(['tick', '--as', 'worker', '--no-pull', '--prompt']).stdout, /RESUME .*W-3.*the owner undid a decision/);
+});
+
+test('P5.24 a5/a11: inbox offers no Undo where the command would refuse (done, blocked)', (t) => {
+  const f = fixture(t);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q', 'reversible')).status, 0);
+  const original = f.read();
+  let item = JSON.parse(f.run(['inbox', '--json']).stdout).items.find((i) => i.question?.id === 'q');
+  assert.equal(item.undoable, true, 'doing in the window: the undo would pass');
+  for (const status of ['done', 'blocked']) {
+    fs.writeFileSync(f.card, original.replace('status: doing', `status: ${status}`));
+    item = JSON.parse(f.run(['inbox', '--json']).stdout).items.find((i) => i.question?.id === 'q');
+    assert.equal(item.undoable, false, status);
+    assert.match(item.confirmation, /^Decision W-3\/q: /);
+  }
+});
+
+test('P5.24 a10: the confirmation is built from roadctl data and the agent wording stays a quote', (t) => {
+  const f = fixture(t);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q', kind: 'confirm', prompt: 'Confirm the tiny thing', reason: 'reversible', recommended: true }, undo_until: '2027-01-01T00:00:00.000Z' }).status, 0);
+  const item = JSON.parse(f.run(['inbox', '--json']).stdout).items.find((i) => i.question?.id === 'q');
+  assert.equal(item.type, 'decision');
+  assert.equal(item.confirmation, `Undo W-3/q: W-3 "Экспорт отчёта в CSV" scope=implementation hash=${item.hash.slice(0, 12)}`);
+  assert.equal(item.quote, 'Confirm the tiny thing');
+  assert.ok(!item.confirmation.includes('Confirm the tiny thing'));
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('block')).status, 0);
+  const waiting = JSON.parse(f.run(['inbox', '--json']).stdout).items.find((i) => i.question?.id === 'block');
+  assert.equal(waiting.confirmation, `Answer W-3/block: W-3 "Экспорт отчёта в CSV" scope=implementation hash=${waiting.hash.slice(0, 12)}`);
+  assert.equal(waiting.quote, 'Proceed?');
+});
+
+test('P5.24 a5/a11: the undo window is the board daily overview; without a schedule it is 24 hours', (t) => {
+  const f = fixture(t);
+  const cfg = path.join(f.board, 'config.json');
+  const base = JSON.parse(fs.readFileSync(cfg, 'utf8'));
+  const untilOf = (id) => JSON.parse(f.run(['inbox', '--json']).stdout).items.find((i) => i.question?.id === id)?.question.undo_until;
+  // the caller's own deadline is ignored; the next 09:00 UTC is tomorrow
+  fs.writeFileSync(cfg, JSON.stringify({ ...base, digest: { daily: '09:00', tz: 'UTC' } }));
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q1', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true }, undo_until: '2099-01-01T00:00:00.000Z' }).status, 0);
+  assert.equal(untilOf('q1'), '2026-11-21T09:00:00.000Z');
+  // an overview still ahead today
+  fs.writeFileSync(cfg, JSON.stringify({ ...base, digest: { daily: '12:00', tz: 'UTC' } }));
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q2', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true } }).status, 0);
+  assert.equal(untilOf('q2'), '2026-11-20T12:00:00.000Z');
+  // no schedule: a fixed 24 hours; a malformed one counts as none
+  fs.writeFileSync(cfg, JSON.stringify(base));
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q3', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true } }).status, 0);
+  assert.equal(untilOf('q3'), '2026-11-21T10:00:00.000Z');
+  fs.writeFileSync(cfg, JSON.stringify({ ...base, digest: { daily: '9:00' } }));
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'q4', kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true } }).status, 0);
+  assert.equal(untilOf('q4'), '2026-11-21T10:00:00.000Z');
+});
+
+test('P5.24 a8: ask leaves the card uncommitted, so a report with a remote needs roadctl save first, and the help says so', (t) => {
+  const f = fixture(t);
+  assert.match(f.run(['help', 'ask']).stdout.replace(/\s+/g, ' '), /roadctl save before roadctl report/);
+  const docs = fs.readFileSync(fileURLToPath(new URL('../../docs/roadctl.md', import.meta.url)), 'utf8');
+  assert.match(docs.replace(/\s+/g, ' '), /run `roadctl save` before `roadctl report`/);
+  const claim = 'claim: worker at=2026-11-20T09:00:00Z until=2026-11-20T10:30:00Z';
+  fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=claimed at=2026-11-20T09:00:00Z\n${claim}`));
+  const ask = f.run(['ask', 'W-3', '--as', 'worker'], { ...q('q', 'reversible'), checkpoint: { did: 'ready', next: 'continue', in_flight: 'none' } });
+  assert.equal(ask.status, 0, ask.stderr);
+  const bin = path.join(f.root, 'fake-bin'); fs.mkdirSync(bin);
+  const fake = `#!${process.execPath}
+const args = process.argv.slice(2);
+if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) console.log(process.env.FAKE_GIT_ROOT);
+else if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) console.log('origin/main');
+else if (args[0] === 'remote') console.log('origin');
+else if (args[0] === 'status' && process.env.FAKE_GIT_DIRTY) console.log(' M board/cards/W-3-eksport-csv.md');
+`;
+  fs.writeFileSync(path.join(bin, 'git'), fake, { mode: 0o755 });
+  const over = { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_GIT_ROOT: f.root, FAKE_GIT_DIRTY: '1' };
+  const r = f.run(['report', 'W-3', '--as', 'worker', 'completed'], undefined, over);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout + r.stderr, /run roadctl save first/);
 });

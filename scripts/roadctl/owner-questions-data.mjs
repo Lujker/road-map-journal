@@ -4,14 +4,22 @@ const MAX_TEXT = 1000;
 const text = (v) => typeof v === 'string' && v.trim() && v.length <= MAX_TEXT && !/[\x00-\x1f\x7f]/.test(v);
 const fail = (message, code = 'invalid') => { throw Object.assign(new Error(message), { code }); };
 const instant = (v) => typeof v === 'string' && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(v) && Number.isFinite(Date.parse(v)) && new Date(v).toISOString() === v;
+const AREA = /^[a-z][a-z0-9._-]{0,39}$/;
+/** The areas a question names (`scope`), read by roadctl to classify the question; not a claim that lowers the class. */
+const validScope = (v) => {
+  if (v === undefined) return null;
+  if (!Array.isArray(v) || !v.length || v.length > 5 || v.some((x) => typeof x !== 'string' || !AREA.test(x)) || new Set(v).size !== v.length) fail('scope must be 1 to 5 area names like board, repo or external');
+  return [...v];
+};
 
-/** Validate and create one question. Blocking is required for irreversible or out-of-mandate decisions. */
-export function makeQuestion(input, now, undoUntil) {
+/** Validate and create one question. Blocking is required for irreversible or out-of-mandate decisions and comes from roadctl (`forced`), not from the asking agent. */
+export function makeQuestion(input, now, undoUntil, forced = null) {
   if (!input || typeof input !== 'object' || Array.isArray(input)) fail('question must be an object');
-  const { id, kind, prompt, reason, points, recommended } = input;
+  const { id, kind, prompt, reason, points, recommended, scope } = input;
   if (!ID.test(id ?? '') || !['confirm', 'choice', 'text'].includes(kind) || !text(prompt)) fail('invalid question id, kind or prompt');
   if (!['reversible', 'irreversible', 'outside-mandate'].includes(reason)) fail('invalid decision reason');
   if (!instant(now) || !instant(undoUntil) || Date.parse(undoUntil) <= Date.parse(now)) fail('invalid decision window');
+  const areas = validScope(scope);
   if (kind === 'choice') {
     if (!Array.isArray(points) || !points.length || points.length > 20) fail('choice needs 1 to 20 points');
     const ids = new Set();
@@ -20,10 +28,10 @@ export function makeQuestion(input, now, undoUntil) {
       ids.add(p.id);
     }
   } else if (points !== undefined) fail('points only apply to choice questions');
-  const blocking = reason !== 'reversible';
+  const blocking = forced?.blocking ?? reason !== 'reversible';
   if (blocking && recommended !== undefined) fail('blocking questions cannot apply a recommendation');
   if (!blocking && !validAnswer({ kind, points }, recommended)) fail('a reversible question requires a valid recommendation');
-  return { id, kind, prompt, reason, ...(points ? { points: structuredClone(points) } : {}), blocking, created: now,
+  return { id, kind, prompt, reason, ...(areas ? { scope: areas } : {}), ...(points ? { points: structuredClone(points) } : {}), blocking, created: now,
     state: blocking ? 'waiting' : 'decided', ...(blocking ? {} : { recommended: structuredClone(recommended), undo_until: undoUntil }) };
 }
 
@@ -69,11 +77,13 @@ export function readQuestions(section) {
   if (!Array.isArray(rows) || rows.length > 200 || new Set(rows.map((q) => q?.id)).size !== rows.length) fail('invalid Questions data');
   for (const q of rows) {
     if (!q || typeof q !== 'object' || Array.isArray(q) || !instant(q.created)) fail('invalid Questions data');
-    const allowed = ['id', 'kind', 'prompt', 'reason', 'points', 'blocking', 'created', 'state', 'recommended', 'undo_until', 'answer', 'answered', 'undo_comment', 'undone', 'agent', 'defer_until', 'partial_answers'];
+    const allowed = ['id', 'kind', 'prompt', 'reason', 'scope', 'points', 'blocking', 'created', 'state', 'recommended', 'undo_until', 'answer', 'answered', 'undo_comment', 'undone', 'agent', 'defer_until', 'partial_answers'];
     if (Object.keys(q).some((k) => !allowed.includes(k))) fail('invalid Questions data');
-    const blocking = q.reason !== 'reversible';
+    // the stored class wins: roadctl can make an agent's `reversible` question blocking (P5.24 a5/a11)
+    if (typeof q.blocking !== 'boolean') fail('invalid Questions data');
+    const blocking = q.blocking;
     const window = blocking ? new Date(Date.parse(q.created) + 1).toISOString() : q.undo_until;
-    const base = makeQuestion({ id: q.id, kind: q.kind, prompt: q.prompt, reason: q.reason, ...(q.points === undefined ? {} : { points: q.points }), ...(q.recommended === undefined ? {} : { recommended: q.recommended }) }, q.created, window);
+    const base = makeQuestion({ id: q.id, kind: q.kind, prompt: q.prompt, reason: q.reason, ...(q.scope === undefined ? {} : { scope: q.scope }), ...(q.points === undefined ? {} : { points: q.points }), ...(q.recommended === undefined ? {} : { recommended: q.recommended }) }, q.created, window, { blocking });
     if (q.blocking !== base.blocking) fail('invalid blocking class');
     if (q.agent !== undefined && (typeof q.agent !== 'string' || !/^[A-Za-z0-9@._:-]{1,100}$/.test(q.agent))) fail('invalid question agent');
     if (q.defer_until !== undefined && !instant(q.defer_until)) fail('invalid deferral');
