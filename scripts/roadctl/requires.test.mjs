@@ -10,7 +10,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { tickJsonProblems } from '../testkit/tick-schema.mjs';
-import { clock } from '../testkit/time.mjs';
+import { clock, shift } from '../testkit/time.mjs';
 import { boardRequires, compareVersions, parseVersion, VERSION } from '../roadctl.mjs';
 
 const scripts = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -51,7 +51,7 @@ function rig(names = ['my-app']) {
   };
   // P5.4 a4: a tick whose limits gate refuses a due RUN (no provider here) is a skipped run and starts the term of `every` again; each tick of these tests is one term (3h) later, so the question is the board, not the clock
   let step = 0;
-  const term = () => ({ ROADCTL_NOW: new Date(Date.now() + 3 * 3600e3 * ++step).toISOString().replace(/\.\d{3}Z$/, 'Z') });
+  const term = () => ({ ROADCTL_NOW: shift(180 * ++step) });
   const tick = (extra = []) => run(['tick', '--as', AGENT, '--no-pull', '--json', ...extra], ws, term());
   return { dir, ws, boards, env, run, ok, setRequires, routine, tick, term };
 }
