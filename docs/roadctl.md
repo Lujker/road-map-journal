@@ -166,6 +166,29 @@ Any agent or script can hand a card (or some of its criteria) to another executo
 
 **Subagents for Claude Code.** `agents-install --claude` writes `road-worker.md` (takes one delegation, follows the card's Delegation section, writes to the board only through `roadctl report`, never changes status, approvals or commits) and `road-reviewer.md` (verifies files and tests itself, runs `accept` or `return`, never `done`) into `~/.claude/agents` (or `--claude-home`), with the model from the registry roles (default `sonnet`). Dry run by default, backup before overwriting, idempotent, other files in that folder are never touched; `agents-uninstall` removes only files carrying the roadctl marker. For Codex and Hermes there is no file to install; see the delegating protocol in the skill's `references/long-running.md` (host commands there are examples to check against the host's current documentation).
 
+## Orchestrator reconciliation and a closed limit (P5.41, slice 3, a10)
+
+An orchestrator is an external system that runs agents (a chat platform, a scheduler, a bot); roadctl does not know its agents except through the registry (`agent_profiles`, `openbot`). Three hidden commands, `roadctl help orchestrator` describes each, let the orchestrator and the registry check each other. The orchestrator id is an instance, `system@machine` (`--orchestrator openbot@home-wsl` or `ROADCTL_ORCHESTRATOR`); `--orchestrator` takes a value only for `orchestrator` and `candidates` (`supervise --orchestrator` stays a switch).
+
+- `roadctl orchestrator form --orchestrator ID` prints a JSON form: for every profile of the registry what roadctl expects (`expect`: executor, model, agent name, variants) and empty fields for what the orchestrator reports about itself (`name`, `id`, `model`, `available`), plus an empty `extra` list for agents it has that are not profiles.
+- `roadctl orchestrator sync --orchestrator ID < filled-form.json` answers for each entry: `ok` (it matches the registry), `unknown` (the registry does not know the profile or name) or `mismatch` (the name, the id or the model differs; exit 1), and for each profile that was not reported: `not reported, kept`. A model matches when the two strings contain one another, ignoring case (`Claude Sonnet 5.5` matches `sonnet`); a variant of a profile may have its own `model`. `unknown` and a stale reconciliation are shown, not failures.
+- `roadctl orchestrator status --orchestrator ID` shows the stored state: `none` (never reconciled), `stale`, `mismatch`, `unknown` or `ok`, with the age in hours and what to do.
+
+**The cache** lives outside the board, in the roadctl state directory, one file per orchestrator id (`orchestrator-<id>.json`, mode 0600) with the time of the last reconciliation and the last answer per profile. A reconciliation older than **24 hours** is `stale` (registry `"orchestrator_sync": { "stale_hours": 24 }` changes the limit): a warning, **never a block**. What sync never does: change the registry, a card or a permission; create a profile, an executor or a link from an unknown name (such names are only listed as `unknown`, at most 20); delete a link because a list was short; widen a right (fields such as `roles`, `executor` or `can_accept` in the form are ignored). Nothing is written to git; the form is not a way to give an agent more access.
+
+Example of a form for OpenBot (only an example: the core names no product; the fields are the same for any orchestrator). The orchestrator fills what it knows and sends it back:
+
+```json
+{ "form": 1, "orchestrator": "openbot@home-wsl",
+  "agents": [
+    { "profile": "claude-developer", "name": "claude-developer", "id": "agent-d9c5...", "model": "Claude Sonnet 5.5", "available": true },
+    { "profile": "pi-developer", "name": "pi-developer-small", "id": "agent-362c...", "model": "Flash", "available": true }
+  ],
+  "extra": [] }
+```
+
+**A closed limit in `candidates`.** An executor whose provider has no limit left (the owner's reserve reached, or `closed_until` of the limits cache of P5.17 ahead) is refused, as before, and the answer now says which provider is closed and until when (`closed_until`, `provider`) and carries a `replacement` block: the first agent of the owner's list that passed every check and has an agreed profile (`agent_profiles`; with `--orchestrator`, one that the last reconciliation matched and did not report unavailable), `source: list`; if there is none, an executor of another profile that has the role and passes the same checks, `source: profiles`, **as advice only** (`advice_only`: outside the owner's list, never chosen, nothing launched; the owner or the mandate decides). A candidate with no profile, or a profile the reconciliation does not agree, is listed under `skipped` with the reason. With `--orchestrator` the answer also carries `orchestrator: { id, sync, age_hours, hint }`, and a `stale` or `none` state is one warning line on stderr. `chosen` and the exit code are still decided by the owner's list.
+
 ## Handoff, build lock and worktrees (P5.41, slice 1 line B)
 
 Three small commands that replace what coordinators used to write by hand into every assignment. They are the same for every harness and every orchestrator; they send, start and write nothing on the board. They are hidden from the `roadctl help` overview (its line budget) but `roadctl help <command>` describes each. Who may take a delegation (`--as`, `ROADCTL_AS`, profiles and orchestrator/profile pairs) is a separate part of P5.41: see the section "Who takes the work".

@@ -483,7 +483,7 @@ export function loadRegistry(env = process.env) {
     if (!obj(pv)) throw new Error(`registry ${p}: provider ${id} must be an object`);
     checkReserve(pv.reserve, `providers.${id}.reserve`);
   }
-  return { path: p, version: r.version ?? 1, roles: r.roles ?? {}, agents: r.agents ?? {}, agent_profiles: r.agent_profiles ?? {}, openbot: r.openbot ?? {}, limits: r.limits ?? {}, providers: r.providers ?? {}, environments: r.environments ?? {}, preference: r.preference ?? {} };
+  return { path: p, version: r.version ?? 1, roles: r.roles ?? {}, agents: r.agents ?? {}, agent_profiles: r.agent_profiles ?? {}, openbot: r.openbot ?? {}, orchestrator_sync: r.orchestrator_sync ?? {}, limits: r.limits ?? {}, providers: r.providers ?? {}, environments: r.environments ?? {}, preference: r.preference ?? {} };
 }
 
 const scriptName = (a) => /^(cron|script):/.test(a);
@@ -4401,7 +4401,7 @@ function parse(argv) {
     if (a === '--') { o.rest = argv.slice(i + 1); break; } // P5.2: what follows `--` is a command line for `supervise`, not flags
     if (a.startsWith('--')) {
       if (repeated.has(a)) (o.flags[a.slice(2)] ??= []).push(argv[++i]);
-      else if (moduleValue.has(a) || withValue.has(a) || (a === '--check' && argv[0] === 'limits')) o.flags[a.slice(2)] = argv[++i];
+      else if (moduleValue.has(a) || withValue.has(a) || (a === '--check' && argv[0] === 'limits') || (a === '--orchestrator' && ['orchestrator', 'candidates'].includes(argv[0]))) o.flags[a.slice(2)] = argv[++i]; // P5.41 slice 3: `--orchestrator ID` takes a value only here; `supervise --orchestrator` stays a switch
       else o.flags[a.slice(2)] = true;
     } else o._.push(a);
   }
