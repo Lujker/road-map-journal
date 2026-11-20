@@ -53,6 +53,7 @@ After an authorized edit, check the affected status, queue, links, and consisten
 
 ## References
 
+- [Setup: connect once and use every day](references/setup.md) — install the skill and roadctl, hooks, where the board is, the registry and the agent name (`ROADCTL_AS`), `roadctl doctor`, the daily cycle, updating. Read it to «подключить, настроить, новый агент или машина».
 - [Generic templates](references/templates.md) — optional starting points, adapted to the project.
 - [Scenarios](references/scenarios.md) — concise examples of mode and scope choices.
 - [Long-running work](references/long-running.md) — tracks, checkpoints, handoff and recovery, pause and stop, acceptance, budgets, shared checkouts.

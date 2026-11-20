@@ -429,6 +429,60 @@ export function boardsOf(ctx) {
   return list;
 }
 
+// ---------------------------------------------------------------- setup (P5.47): one-step onboarding
+
+/** The name the agent runs under: ROADCTL_AS resolves to an executor (or a profile, a variant, an orchestrator/profile pair) in the registry, so claim and report work. */
+export function checkAgentName(ctx, loaded) {
+  const name = String(ctx.env.ROADCTL_AS ?? '').trim();
+  if (!name) return res('agent-name', 'skip', 'ROADCTL_AS is not set: claim, report, tick and the limit checkpoint then need --as every time', 'set ROADCTL_AS once per session: export ROADCTL_AS=<executor|profile|orchestrator/profile> (see references/setup.md)');
+  if (!loaded.reg) return res('agent-name', 'skip', `ROADCTL_AS=${name} is set but no registry resolves it (looked at ${tilde(ctx.api.registryPath(ctx.env), ctx.home)})`, 'set ROADCTL_AS to an executor, or add the registry (see references/executors.md)');
+  const r = ctx.api.resolveAs(name, loaded.reg);
+  if (r.error) return res('agent-name', 'fail', `ROADCTL_AS=${name} does not resolve: ${r.error}`, r.hint ?? 'use an executor, a profile or an orchestrator/profile pair from the registry (see references/executors.md)');
+  const who = `${r.executor}${r.profile ? ` (profile ${r.profile})` : ''}${r.orchestrator ? ` under ${r.orchestrator}` : ''}`;
+  return res('agent-name', 'ok', `ROADCTL_AS=${name} resolves to ${who}`);
+}
+
+const HOOK_KINDS = [
+  { kind: 'claude', exe: 'claude', dir: (ctx) => path.join(ctx.env.CLAUDE_CONFIG_DIR?.trim() || ctx.home, '.claude'), file: 'settings.json', marker: 'session-start' },
+  { kind: 'codex', exe: 'codex', dir: (ctx) => path.join(ctx.env.CODEX_HOME?.trim() || ctx.home, '.codex'), file: 'hooks.json', marker: 'roadctl' },
+  { kind: 'hermes', exe: 'hermes', dir: (ctx) => path.join(ctx.env.HERMES_HOME?.trim() || ctx.home, '.hermes'), file: 'config.yaml', marker: '# roadctl-managed begin' },
+];
+
+/** The roadctl hooks (session-start / pre-compact / stop, and the limit-stop observer) for each harness whose command is in PATH; missing hooks mean a session runs without the brief and the stop handoff. */
+export function checkHooks(ctx) {
+  const out = [];
+  for (const h of HOOK_KINDS) {
+    if (!which(h.exe, ctx.env, ctx.platform)) {
+      out.push(res('hooks', 'skip', `${h.exe} is not in PATH: no ${h.kind} hooks to check`, `install ${h.exe}, or run roadctl hook-install --${h.kind} --apply on the machine where it runs`));
+      continue;
+    }
+    const file = path.join(h.dir(ctx), h.file);
+    const installed = (() => { try { return fs.readFileSync(file, 'utf8').includes(h.marker); } catch { return false; } })();
+    out.push(installed
+      ? res('hooks', 'ok', `${h.kind} hooks are installed (${tilde(file, ctx.home)})`, null, h.kind)
+      : res('hooks', 'warn', `${h.kind} is in PATH but its roadctl hooks are not installed at ${tilde(file, ctx.home)}`, `roadctl hook-install --${h.kind} --apply`, h.kind));
+  }
+  return out;
+}
+
+/** The installed skill (the instruction set that tells an agent to use roadctl): present and not older than the copy that runs doctor. */
+export function checkSkill(ctx) {
+  const version = (file) => { try { return /^\s*version: "([^"]+)"/m.exec(fs.readFileSync(file, 'utf8'))?.[1] ?? null; } catch { return null; } };
+  const here = path.join(ctx.runDir, '..', 'skills', 'road-map-journal', 'SKILL.md');
+  const hereVersion = fs.existsSync(here) ? version(here) : null;
+  const locations = [
+    path.join(ctx.home, '.agents', 'skills', 'road-map-journal', 'SKILL.md'),
+    path.join(ctx.home, '.claude', 'skills', 'road-map-journal', 'SKILL.md'),
+    path.join(ctx.home, '.codex', 'skills', 'road-map-journal', 'SKILL.md'),
+  ];
+  const found = locations.find((f) => fs.existsSync(f));
+  if (!found) return res('skill', 'warn', `no installed skill found (looked in ~/.agents/skills, ~/.claude/skills and ~/.codex/skills)`, 'install the skill: npx skills add Lujker/road-map-journal --skill road-map-journal');
+  const v = version(found);
+  if (!v) return res('skill', 'warn', `the installed skill at ${tilde(found, ctx.home)} has no readable version`, 'reinstall it: npx skills add Lujker/road-map-journal --skill road-map-journal');
+  if (hereVersion && v !== hereVersion) return res('skill', 'warn', `the installed skill is ${v}, this copy ships ${hereVersion}`, 'node scripts/update-installed.mjs --apply   (from a checkout of road-map-journal)');
+  return res('skill', 'ok', `skill road-map-journal ${v} at ${tilde(found, ctx.home)}`);
+}
+
 export function checkBoards(ctx, loaded) {
   const boards = boardsOf(ctx);
   if (!boards.length) return [res('boards', 'warn', 'no board found (no board/config.json above the working directory, no workspace, no boards list)', 'run from a project with a board, or: roadctl boards add <dir>, or set ROADCTL_WORKSPACE')];
@@ -538,6 +592,9 @@ export const CHECKS = [
   ['state', checkState],
   ['registry', (ctx, loaded) => checkRegistry(ctx, loaded)],
   ['executors', (ctx, loaded) => checkExecutors(ctx, loaded)],
+  ['agent-name', (ctx, loaded) => checkAgentName(ctx, loaded)],
+  ['hooks', checkHooks],
+  ['skill', checkSkill],
   ['launch-templates', (ctx, loaded) => checkLaunch(ctx, loaded)],
   ['boards', (ctx, loaded) => checkBoards(ctx, loaded)],
 ];

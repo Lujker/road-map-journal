@@ -10,6 +10,18 @@
 
 > Ранняя разработка: проверены установка и несколько коротких сценариев. Обнаружение каждым агентом и поведение на долгих проектах проверены не полностью; просматривайте изменения агента перед принятием. См. [ROADMAP.md](ROADMAP.md). Это перевод [README.md](README.md); при расхождении ориентируйтесь на английский оригинал.
 
+## Быстрый старт
+
+```sh
+npx skills add Lujker/road-map-journal --skill road-map-journal   # навык
+node scripts/update-installed.mjs --roadctl --apply               # roadctl (из рабочей копии)
+roadctl hook-install --claude --apply                             # также --codex, --hermes, --git
+export ROADCTL_AS=<ваше имя>                                     # исполнитель, профиль или оркестратор/профиль
+roadctl doctor                                                   # одна проверка только на чтение; для каждой проблемы печатает команду исправления
+```
+
+Всё остальное — реестр, где доска, ежедневный цикл, обновление — в [skills/road-map-journal/references/setup.md](skills/road-map-journal/references/setup.md).
+
 ## Что он делает
 
 - Находит существующую дорожную карту и следует соглашениям проекта, а не заменяет их.
@@ -91,10 +103,15 @@ npx skills add Lujker/road-map-journal --skill road-map-journal
 skills/road-map-journal/
 ├── SKILL.md
 └── references/
+    ├── autonomy.md
     ├── board.md
+    ├── executors.md
+    ├── handoff.md
     ├── long-running.md
     ├── multi-repo-sync.md
+    ├── routines.md
     ├── scenarios.md
+    ├── setup.md
     └── templates.md
 ```
 

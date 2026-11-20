@@ -449,6 +449,43 @@ test('registry: an unreadable registry is a failure; an agent whose provider is 
   assert.equal(r.json(['doctor']).by('registry').status, 'skip');
 });
 
+test('P5.47 a3: agent-name — ROADCTL_AS resolves to an executor, a profile or a pair; unknown is a failure with a hint', () => {
+  const r = rig({ git: false });
+  assert.equal(r.json(['doctor']).by('agent-name').status, 'skip');
+  fs.writeFileSync(r.regFile, JSON.stringify({ version: 1, agents: { [AGENT]: { host: 'claude-code', roles: ['worker'] }, 'pi-worker@home-wsl': { host: 'pi', roles: ['worker'] } }, agent_profiles: { 'pi-developer': { executor: 'pi-worker@home-wsl' }, 'claude-developer': { executor: AGENT } } }));
+  const ok = r.json(['doctor'], { env: { ROADCTL_AS: 'pi-developer' } }).by('agent-name');
+  assert.equal(ok.status, 'ok');
+  assert.match(ok.detail, /resolves to pi-worker@home-wsl \(profile pi-developer\)/);
+  assert.equal(r.json(['doctor'], { env: { ROADCTL_AS: 'openbot@home-wsl/pi-developer' } }).by('agent-name').status, 'ok');
+  assert.equal(r.json(['doctor'], { env: { ROADCTL_AS: AGENT } }).by('agent-name').status, 'ok', 'a plain executor');
+  const bad = r.json(['doctor'], { env: { ROADCTL_AS: 'nobody-developer' } });
+  assert.equal(bad.by('agent-name').status, 'fail');
+  assert.match(bad.by('agent-name').detail, /does not resolve/);
+  assert.match(bad.by('agent-name').hint, /profiles:/);
+  assert.equal(bad.r.status, 1);
+});
+
+test('P5.47 a3: hooks — a harness in PATH without its hooks is a warning with the fix command; with them it is ok', () => {
+  const r = rig({ git: false });
+  const claude = () => r.json(['doctor']).all('hooks').find((c) => c.subject === 'claude');
+  assert.equal(claude().status, 'warn', 'claude (the fake) is in PATH but has no settings.json');
+  assert.match(claude().hint, /hook-install --claude --apply/);
+  fs.mkdirSync(path.join(r.home, '.claude'), { recursive: true });
+  fs.writeFileSync(path.join(r.home, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node', args: ['roadctl.mjs', 'hook', 'session-start'] }] }] } }));
+  assert.equal(claude().status, 'ok');
+  assert.equal(r.json(['doctor']).all('hooks').find((c) => c.subject === 'codex').status, 'warn', 'codex (the fake) is in PATH but has no hooks.json');
+});
+
+test('P5.47 a3: skill — a missing installed skill is a warning with the install command; an installed one is ok', () => {
+  const r = rig({ git: false });
+  assert.equal(r.json(['doctor']).by('skill').status, 'warn');
+  assert.match(r.json(['doctor']).by('skill').hint, /npx skills add/);
+  fs.mkdirSync(path.join(r.home, '.agents', 'skills', 'road-map-journal'), { recursive: true });
+  fs.writeFileSync(path.join(r.home, '.agents', 'skills', 'road-map-journal', 'SKILL.md'), '---\nname: road-map-journal\nmetadata:\n  version: "0.4.1"\n---\n');
+  assert.equal(r.json(['doctor']).by('skill').status, 'ok');
+  assert.match(r.json(['doctor']).by('skill').detail, /skill road-map-journal 0\.4\.1/);
+});
+
 test('routines: an enabled routine that cannot run, or that names an agent missing from the registry, is a warning; consistent ones are ok', () => {
   const r = rig({ git: false });
   const cli = (args) => {

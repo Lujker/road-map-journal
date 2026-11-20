@@ -10,6 +10,18 @@ A portable [Agent Skill](https://agentskills.io/) that keeps a project's roadmap
 
 > Early development: installation and a few short behavioral checks were done. Discovery by every agent and behavior on long-running projects are not fully verified; review changes before accepting them. See [ROADMAP.md](ROADMAP.md).
 
+## Quick start
+
+```sh
+npx skills add Lujker/road-map-journal --skill road-map-journal   # the skill
+node scripts/update-installed.mjs --roadctl --apply               # roadctl (from a checkout)
+roadctl hook-install --claude --apply                             # also --codex, --hermes, --git
+export ROADCTL_AS=<your name>                                     # executor, profile, or orchestrator/profile
+roadctl doctor                                                   # one read-only check; it prints the fix for each problem
+```
+
+Everything beyond that — the registry, where the board is, the daily cycle, updating — is in [skills/road-map-journal/references/setup.md](skills/road-map-journal/references/setup.md).
+
 ## What it does
 
 - Finds an existing roadmap and follows the project's conventions instead of replacing them.
@@ -91,10 +103,15 @@ An optional card-board format and helper for larger projects are described in [d
 skills/road-map-journal/
 ├── SKILL.md
 └── references/
+    ├── autonomy.md
     ├── board.md
+    ├── executors.md
+    ├── handoff.md
     ├── long-running.md
     ├── multi-repo-sync.md
+    ├── routines.md
     ├── scenarios.md
+    ├── setup.md
     └── templates.md
 ```
 
