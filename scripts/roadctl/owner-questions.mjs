@@ -109,6 +109,7 @@ function resolve({ args, flags, api, env, out }, undo = false) {
   const rows = questionsFromItem(raw);
   const index = rows.findIndex((q) => q.id === args[2]);
   if (index < 0) throw new Error('question not found');
+  if (undo && !routine && !['doing', 'review'].includes(board.config.status_map?.[item.header.status] ?? item.header.status)) throw new Error('undo cannot return a card in this state; resolve its status first');
   const timestamp = when(env, api);
   const publish = api.ownerUpdateContext(board, item.file);
   try { rows[index] = undo ? undoQuestion(rows[index], data.comment, timestamp) : answerQuestion(rows[index], data.answer, timestamp); }

@@ -312,3 +312,15 @@ else if (args[0] === 'push' && process.env.FAKE_GIT_FAIL) process.exit(1);
   assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /other files are unpushed/);
   assert.ok(!fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).some((args) => args[0] === 'push'));
 });
+
+test('P5.24 a11: undo does not silently reopen an owner-accepted or otherwise blocked card', (t) => {
+  const f = fixture(t);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q', 'reversible')).status, 0);
+  const original = f.read();
+  for (const status of ['done', 'dropped', 'blocked']) {
+    fs.writeFileSync(f.card, original.replace('status: doing', `status: ${status}`));
+    const before = f.read();
+    const r = f.run(['undo', 'W-3', 'q', '--by', 'Owner'], { comment: 'reconsider' });
+    assert.equal(r.status, 2); assert.match(r.stderr, /resolve its status/); assert.equal(f.read(), before);
+  }
+});
