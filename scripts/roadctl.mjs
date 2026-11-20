@@ -1692,14 +1692,19 @@ function publishOwnerUpdate(prepared, action, id, timeout = netTimeout()) {
     return 'recorded locally; git commit failed';
   }
   if (!upstreamOf(ctx.root)) return 'committed locally; no upstream';
-  const count = gitx(['rev-list', '--count', '@{u}..HEAD'], ctx.root);
-  const pending = gitx(['log', '@{u}..HEAD', '--name-only', '--format='], ctx.root);
-  if (!count.ok || count.out !== '1' || !pending.ok || pending.out.split('\n').filter(Boolean).some((p) => p !== rel)) return 'committed locally; other commits or files are unpushed or cannot be checked';
+  // P5.24 a4: pin the commit that was checked. A commit another process adds afterwards stays local; `push HEAD:...` would take it along.
+  const head = gitx(['rev-parse', 'HEAD'], ctx.root);
+  const sha = head.out.trim();
+  if (!head.ok || !/^[0-9a-f]{40}([0-9a-f]{24})?$/.test(sha)) return 'committed locally; the new commit cannot be read';
+  const files = gitx(['show', '--name-only', '--format=', '--no-renames', sha], ctx.root);
+  if (!files.ok || files.out.split('\n').filter(Boolean).some((p) => p !== rel)) return 'committed locally; the new commit touches other files';
+  const count = gitx(['rev-list', '--count', `@{u}..${sha}`], ctx.root);
+  if (!count.ok || count.out !== '1') return 'committed locally; other commits or files are unpushed or cannot be checked';
   const branch = gitx(['symbolic-ref', '--quiet', '--short', 'HEAD'], ctx.root);
   const remote = branch.ok && gitx(['config', '--get', `branch.${branch.out}.remote`], ctx.root);
   const target = branch.ok && gitx(['config', '--get', `branch.${branch.out}.merge`], ctx.root);
   if (!remote?.ok || !target?.ok || !remote.out || remote.out === '.' || !/^refs\/heads\//.test(target.out)) return 'committed locally; upstream branch cannot be checked';
-  const pushed = gitx(['push', '--quiet', '--no-follow-tags', '--', remote.out, `HEAD:${target.out}`], ctx.root, { timeout });
+  const pushed = gitx(['push', '--quiet', '--no-follow-tags', '--', remote.out, `${sha}:${target.out}`], ctx.root, { timeout });
   return pushed.ok ? 'published' : 'committed locally; push failed, reconcile and save the board';
 }
 
