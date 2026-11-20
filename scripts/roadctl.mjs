@@ -1692,9 +1692,14 @@ function publishOwnerUpdate(prepared, action, id, timeout = netTimeout()) {
     return 'recorded locally; git commit failed';
   }
   if (!upstreamOf(ctx.root)) return 'committed locally; no upstream';
+  const count = gitx(['rev-list', '--count', '@{u}..HEAD'], ctx.root);
   const pending = gitx(['log', '@{u}..HEAD', '--name-only', '--format='], ctx.root);
-  if (!pending.ok || pending.out.split('\n').filter(Boolean).some((p) => p !== rel)) return 'committed locally; other files are unpushed or cannot be checked';
-  const pushed = gitx(['push', '--quiet'], ctx.root, { timeout });
+  if (!count.ok || count.out !== '1' || !pending.ok || pending.out.split('\n').filter(Boolean).some((p) => p !== rel)) return 'committed locally; other commits or files are unpushed or cannot be checked';
+  const branch = gitx(['symbolic-ref', '--quiet', '--short', 'HEAD'], ctx.root);
+  const remote = branch.ok && gitx(['config', '--get', `branch.${branch.out}.remote`], ctx.root);
+  const target = branch.ok && gitx(['config', '--get', `branch.${branch.out}.merge`], ctx.root);
+  if (!remote?.ok || !target?.ok || !remote.out || remote.out === '.' || !/^refs\/heads\//.test(target.out)) return 'committed locally; upstream branch cannot be checked';
+  const pushed = gitx(['push', '--quiet', '--no-follow-tags', '--', remote.out, `HEAD:${target.out}`], ctx.root, { timeout });
   return pushed.ok ? 'published' : 'committed locally; push failed, reconcile and save the board';
 }
 
