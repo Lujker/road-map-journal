@@ -3390,8 +3390,10 @@ test('P5.4 a5: the old parser (0.11.0) reads what 0.12.0 writes: last_result sta
 
 test('P5.24 answer delivery, two clones: the answer is offered on both until a run on the other clone, that began after it and ended ok, marks it in git; then both stop offering it', LSKIP, () => {
   const p = pair();
-  const state = { a: fs.mkdtempSync(path.join(os.tmpdir(), 'rc-st-a-')), b: fs.mkdtempSync(path.join(os.tmpdir(), 'rc-st-b-')) }; // each clone has its own run ledger
-  const at = (w, iso, extra = {}) => ({ ROADCTL_REGISTRY: NOREG, XDG_STATE_HOME: w === p.a ? state.a : state.b, ROADCTL_NOW: iso, ...extra });
+  // each clone is its own machine: its own state directory (run ledger), limits cache and PATH with the fake claude (known limits, 10% used), so the test
+  // never depends on an installed claude or on the limits cache of the machine it runs on (on CI: no claude, limits unknown, the gate would stay shut)
+  const sbx = { a: sandbox(), b: sandbox() };
+  const at = (w, iso, extra = {}) => ({ ...(w === p.a ? sbx.a : sbx.b).env, ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: iso, ...extra });
   const run = (w, args, iso, input = '', extra = {}) => p.run(w, args, input, at(w, iso, extra));
   const ok = (w, args, iso, input) => { const r = run(w, args, iso, input); assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}${r.stdout}`); return r; };
   raiseOutcome(p.bd(p.a), '0.13.0'); // owner questions need requires 0.13.0 (and the approval hash comes with it)
