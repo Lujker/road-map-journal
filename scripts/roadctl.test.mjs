@@ -3231,6 +3231,49 @@ test('P5.4 rollout: without requires >= 0.12.0 no outcome key is written and not
   }
 });
 
+/** The roadctl of the commit before P5.4 (0.11.0, the real old parser), unpacked into a temp folder; null when the history is not there (a shallow copy). */
+function oldRoadctl() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-old-'));
+  try {
+    const tar = execFileSync('git', ['archive', 'a8247cc', 'scripts'], { cwd: path.join(here, '..'), maxBuffer: 64 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+    execFileSync('tar', ['-x', '-C', dir], { input: tar, stdio: ['pipe', 'ignore', 'ignore'] });
+    const self = path.join(dir, 'scripts', 'roadctl.mjs');
+    return fs.existsSync(self) ? self : null;
+  } catch {
+    return null;
+  }
+}
+
+test('P5.4 a5: the old parser (0.11.0) reads what 0.12.0 writes: last_result stays ok|escalated|failed; on a board that raised requires it refuses instead', LSKIP, (tc) => {
+  const old = oldRoadctl();
+  if (!old) return tc.skip('the history of a8247cc is not in this copy'); // a shallow clone has nothing to unpack
+  const t = tenv();
+  routineOn(t);
+  const oldRun = (args) => spawnSync(process.execPath, [old, ...args], { cwd: t.c.ws, encoding: 'utf8', env: { ...t.env, ROADCTL_DATE: '2026-11-10', ROADCTL_NOW: '2026-11-11T13:00:00Z' } });
+  assert.match(oldRun(['version']).stdout, /0\.11\.0/, 'it is the old copy');
+  // a board that has not raised requires: 0.12.0 writes what 0.11.0 wrote (three failed runs, an ok run, an escalation)
+  for (const r of ['failed', 'failed', 'failed', 'escalated', 'ok']) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', r, 'x']).status, 0);
+  const text = fs.readFileSync(path.join(t.c.board, 'routines', 'mr-status.md'), 'utf8');
+  assert.match(text, /^last_result: ok$/m);
+  assert.doesNotMatch(text, /^(last_reason|fails|hold|hold_id):/m, 'nothing the old copy does not know');
+  const lint = oldRun(['lint', '--board', t.c.board]);
+  assert.doesNotMatch(lint.stdout + lint.stderr, /last_result must be one of|unknown key/, 'the old parser has nothing to say about the routine');
+  assert.match(oldRun(['tick', '--as', ME, '--no-pull']).stdout, /^RUN my-app\/mr-status/m, 'and offers it as before');
+  // the three values are the whole set for the old parser, the fourth is its error (the reason a new value must go in a new key)
+  const f = path.join(t.c.board, 'routines', 'mr-status.md');
+  fs.writeFileSync(f, text.replace(/^last_result: ok$/m, 'last_result: skipped'));
+  assert.match(oldRun(['lint', '--board', t.c.board]).stdout, /last_result must be one of ok\|escalated\|failed/);
+  fs.writeFileSync(f, text);
+  // a board that raised requires to 0.12.0 and holds: the old copy offers nothing, whatever it would do with the keys
+  raiseOutcome(t.c.board);
+  const tick = (cmd) => cmd(['tick', '--as', ME, '--no-pull']).stdout;
+  fs.writeFileSync(f, text.replace(/^last_result: ok$/m, 'last_result: failed\nlast_reason: failed\nfails: 3\nhold: after 3 failed runs in a row\nhold_id: abcdef012345'));
+  const refused = tick(oldRun);
+  assert.doesNotMatch(refused, /^RUN /m);
+  assert.match(refused, /requires: my-app: board requires roadctl 0\.12\.0 or newer; this is 0\.11\.0/);
+  assert.doesNotMatch(t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' }).stdout, /^RUN /m, 'the new copy holds it');
+});
+
 test('P5.4 a2: HOLD is written by routine done and pushed, so a second clone sees it after pull; tick writes nothing', LSKIP, () => {
   const p = pair();
   const env = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 };
