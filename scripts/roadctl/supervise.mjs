@@ -490,9 +490,10 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
   let unsaved = false; // a stop or back-off that could not be saved: the lock stays, marked
   if (outcome) text = `${outcome} (reported by the command; ${exitText}; ${dur}s)`;
   else {
-    outcome = stopping === 'timeout' ? 'timeout' : stopping ? 'aborted' : 'failed';
-    const reason = stopping === 'timeout' ? `no result within ${Math.round(t.timeout / 1000)}s` : stopping === 'paused' ? 'stopped by pause --now' : stopping ? 'the supervisor was told to stop' : 'no result';
-    const fields = { ...EMPTY, did: [cleanText(after?.note || t.nodata, 120)], problems: [{ kind: 'unknown', key: outcome === 'failed' ? 'no-result' : outcome, text: `${reason} (${exitText})` }], writes: [`${t.kind}:${t.id}`] };
+    const maxTurns = !stopping && usage.claude?.subtype === 'max_turns'; // P5.4 a3/a7: the model ran out of turns mid-work (it may have written outside): an aborted run, never a plain failure that the routine repeats after `every`
+    outcome = stopping === 'timeout' ? 'timeout' : stopping || maxTurns ? 'aborted' : 'failed';
+    const reason = stopping === 'timeout' ? `no result within ${Math.round(t.timeout / 1000)}s` : stopping === 'paused' ? 'stopped by pause --now' : stopping ? 'the supervisor was told to stop' : maxTurns ? `the model stopped at max_turns (${usage.claude.turns ?? '?'} turns) without a result` : 'no result';
+    const fields = { ...EMPTY, did: [cleanText(after?.note || t.nodata, 120)], problems: [{ kind: 'unknown', key: maxTurns ? 'max-turns' : outcome === 'failed' ? 'no-result' : outcome, text: `${reason} (${exitText})` }], writes: [`${t.kind}:${t.id}`] };
     const w = writeRoutineResult(ctx, bdir, t, a.as, run_id, fields, outcome);
     const refused = t.kind === 'routine' && !written(w);
     if (w.status === 'unsupported') { lost.push('the board no longer declares requires 0.6.0: nothing was written to the routine file'); unsaved = true; }

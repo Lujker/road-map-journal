@@ -373,11 +373,17 @@ test('P5.2 a7/a12/a18: huge output does not grow the log past its limit; the led
   assert.ok(run.usage.tail.length <= 600 && run.usage.tail.length > 100, `tail ${run.usage.tail.length}`);
   // the adapter: `--output-format json` fills the claude fields from the last JSON line; no data is `unknown`, and a run without a result still gets a summary of the supervisor
   const json = JSON.stringify({ type: 'result', subtype: 'max_turns', session_id: 's-1', num_turns: 30, is_error: true, total_cost_usd: 0.5 });
+  raiseOutcome(r);
   r.routine('mr-json');
   r.roadctl(r.sup('mr-json', ['claude', '-p', 'x', '--output-format', 'json']), { FAKE_STDOUT: `${json}\n` });
   const adapted = r.runs().find((x) => x.id === 'mr-json');
   assert.deepEqual(adapted.usage.claude, { exit_code: 0, session_id: 's-1', turns: 30, is_error: true, subtype: 'max_turns', cost_usd: 0.5 });
-  assert.deepEqual([adapted.outcome, adapted.source], ['failed', 'supervisor']);
+  assert.deepEqual([adapted.outcome, adapted.source], ['aborted', 'supervisor'], 'P5.4 a3/a7: max_turns is an aborted run, not a plain failure');
+  assert.match(adapted.reason, /max_turns/);
+  assert.match(r.routineText('mr-json'), /^last_result: failed$/m, 'last_result keeps its three values');
+  assert.match(r.routineText('mr-json'), /^last_reason: aborted$/m);
+  assert.match(r.routineText('mr-json'), /^hold: aborted$/m, 'a read+board routine is held at once, not offered again after `every`');
+  assert.doesNotMatch(r.roadctl(['tick', '--as', ME, '--routine', 'mr-json']).stdout, /^RUN /m);
   r.routine('mr-nodata');
   r.roadctl(r.sup('mr-nodata', ['claude', '-p', 'x', '--output-format=json']), { FAKE_STDOUT: 'plain text\n' });
   assert.equal(r.runs().find((x) => x.id === 'mr-nodata').usage.claude.session_id, 'unknown');
