@@ -17,8 +17,9 @@ import environment from './environment.mjs';
 import plan from './plan.mjs';
 import checkpoint from './checkpoint.mjs';
 import outcomePolicy from './outcome-policy.mjs';
+import limitCheckpoint from './limit-checkpoint.mjs';
 import ownerQuestions from './owner-questions.mjs';
 
-export const MODULES = [probe, doctor, runLedger, pause, digest, supervise, approvalHash, launch, mandate, ownerGateModule, stats, environment, plan, checkpoint, outcomePolicy, ownerQuestions];
+export const MODULES = [probe, doctor, runLedger, pause, digest, supervise, approvalHash, launch, mandate, ownerGateModule, stats, environment, plan, checkpoint, outcomePolicy, limitCheckpoint, ownerQuestions];
 
 export const buildModuleRegistry = (opts) => ({ ...buildRegistry(MODULES, opts), ownerGate }); // P5.3: main() asks ownerGate before every command

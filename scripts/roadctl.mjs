@@ -35,7 +35,7 @@
 //   roadctl routine list [--all] [--json] | show <id> | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"] | on|off <id> --by NAME | done <id> --as A --result ok|escalated|failed "summary" | observe <id> --as A [--confirm-after N] [--heartbeat DUR]   recurring routines
 //   roadctl autonomy routines on|off --by NAME   the board switch for routines (owner only; independent of card autonomy)
 //   roadctl agents-install --claude [--apply] ; agents-uninstall   Claude Code subagents road-worker and road-reviewer
-//   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | hermes-api-error | pre-commit | pre-commit-all
+//   roadctl hook <event> [--host claude|codex]   session-start | pre-compact | stop | hermes-pre-llm | hermes-api-error | limit-stop | pre-commit | pre-commit-all
 //   roadctl hook-install --claude [--user]|--codex|--hermes|--git [--all] [--apply] ; hook-uninstall (same flags)
 //   roadctl instructions-install --claude --codex [--workspace DIR] [--apply] ; instructions-uninstall
 //
@@ -2052,7 +2052,7 @@ function writeLimitMarker(board, payload) {
 
 const limitReminder = 'A provider limit or billing error was observed; retry, rotation or fallback may have succeeded. This is not proof of a stop or a checkpoint. Reconcile actual state and in-flight actions; identify your own card before writing a handoff. Check the reserve before further work.';
 
-export function hookContext(event, payload, boardArg, host = 'claude') {
+function coreHookContext(event, payload, boardArg, host = 'claude') {
   const start = payload.cwd || process.cwd();
   const dir = findBoard(start, boardArg);
   if (!dir) return null;
@@ -2092,6 +2092,26 @@ export function hookContext(event, payload, boardArg, host = 'claude') {
     return null;
   }
   return null;
+}
+
+/** What the core hooks say, plus the lines of the modules (seam `hook-event`, P5.43): a module may write on its own (the limit checkpoint) and may add context lines for the session. */
+export function hookContext(event, payload, boardArg, host = 'claude') {
+  const r = coreHookContext(event, payload, boardArg, host);
+  let lines = [];
+  try {
+    const dir = findBoard(payload.cwd || process.cwd(), boardArg);
+    if (dir) lines = MODULE_REG.callHook('hook-event', { event, payload, host, board: loadBoard(dir), env: process.env, api: moduleApi() }).flatMap((h) => (Array.isArray(h.value?.lines) ? h.value.lines.filter((l) => typeof l === 'string' && l.trim()) : []));
+  } catch { /* a module never breaks a hook */ }
+  if (!lines.length) return r;
+  const add = lines.join('\n');
+  if (r?.json?.hookSpecificOutput) return { json: { hookSpecificOutput: { ...r.json.hookSpecificOutput, additionalContext: [r.json.hookSpecificOutput.additionalContext, add].filter(Boolean).join('\n') } } };
+  if (typeof r?.json?.context === 'string') return { json: { context: `${r.json.context}\n${add}` } };
+  if (r?.json?.decision === 'block') return { json: { ...r.json, reason: `${r.json.reason}\n${add}` } };
+  if (r?.text) return { text: `${r.text}\n${add}` };
+  if (event === 'session-start') return { json: { hookSpecificOutput: { hookEventName: 'SessionStart', additionalContext: add } } };
+  if (event === 'hermes-pre-llm') return { json: { context: add } };
+  if (event === 'pre-compact' && host !== 'codex') return { text: add };
+  return r;
 }
 
 export function runHook(event, payload, boardArg, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }, host = 'claude') {
@@ -4146,10 +4166,10 @@ export const COMMANDS = {
   hook: {
     group: 'Setup', effect: 'read', summary: 'entry point for agent and git hooks',
     purpose: 'Called by Claude Code, Codex, Hermes and git hooks, not by hand. Reads a JSON payload on stdin and prints context for the agent; silent when there is no board. With autosync switched on, session-start may pull and stop may save.',
-    usage: ['roadctl hook <event> [--host claude|codex] [--board DIR]', 'events: session-start | pre-compact | stop | hermes-pre-llm | hermes-api-error | pre-commit | pre-commit-all'],
+    usage: ['roadctl hook <event> [--host claude|codex] [--board DIR]', 'events: session-start | pre-compact | stop | hermes-pre-llm | hermes-api-error | limit-stop | pre-commit | pre-commit-all'],
     flags: [['--host claude|codex', 'which host format to answer in (default: claude)']],
     examples: ['echo \'{"cwd":"."}\' | roadctl hook session-start', 'roadctl hook pre-commit'],
-    changes: 'Hooks may write local reminder or Hermes observation markers; with autosync (board config or ROADCTL_AUTOSYNC=1) session-start pulls and stop saves.', exits: '0 ok; 1 pre-commit / pre-commit-all blocked by lint errors; 2 error',
+    changes: 'Hooks may write local reminder or Hermes observation markers, and (P5.43) one limit checkpoint line in the Log of the card in work that this agent or session claimed; with autosync (board config or ROADCTL_AUTOSYNC=1) session-start pulls and stop saves.', exits: '0 ok; 1 pre-commit / pre-commit-all blocked by lint errors; 2 error',
   },
   'hook-install': {
     group: 'Setup', effect: 'write', owner: { flags: ['apply'] }, summary: 'install hooks for Claude, Codex, Hermes or git',
@@ -4258,7 +4278,7 @@ TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
 const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
-  boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
+  boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
   const lines = [];
@@ -4322,6 +4342,7 @@ function parse(argv) {
   const o = { _: [], flags: {} };
   const withValue = new Set(['--claude-home', '--helper', '--workspace', '--host', '--codex-home', '--hermes-home', '--board', '--date', '--log', '--commits', '--author', '--commit', '--by', '--scope', '--source', '--status', '--node', '--to', '--for', '--as', '--criteria', '--accept', '--lease', '--provider', '--confirm', '--project', '--agents', '--at', '--agent', '--model', '--env', '--every', '--result', '--run', '--workdir', '--hours', '--routine', '--kinds', '--confirm-after', '--heartbeat']);
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
+  withValue.add('--cwd'); // P5.43: `roadctl limit-checkpoint --cwd DIR`
   const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
   const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile', '--hash', '--since', '--accept-from', '--role', '--needs']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7; --hash: P5.33; --since, --accept-from: P5.27
   for (let i = 0; i < argv.length; i++) {
