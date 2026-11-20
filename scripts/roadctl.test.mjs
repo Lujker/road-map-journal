@@ -1664,6 +1664,34 @@ test('limits: the cache is reused for cache_minutes, --fresh bypasses it, a pass
   assert.equal(sb3.calls('codex').length, 4, 'cache_minutes 0 turns the cache off');
 });
 
+test('P5.17 a1: in reserve with a known resets_at the next probe is not before the reset (the fake provider counts the calls)', LSKIP, () => {
+  const sb = sandbox();
+  const env = { FAKE_5H: '95', FAKE_RESET: '1794409200' }; // five_hour 95% used -> 5% left -> reserve; resets at 2026-11-11T15:00:00Z
+  const first = lcli(sb, ['limits', '--check', 'codex', '--fresh'], { ...env, ROADCTL_NOW: '2026-11-11T14:00:00Z' });
+  assert.equal(first.status, 1, first.stderr);
+  assert.match(first.stderr, /reserve reached/);
+  assert.equal(sb.calls('codex').length, 1);
+  // 30 minutes later, still before the reset: answered from the cache, no probe (the default cache is 10 minutes)
+  const again = lcli(sb, ['limits', '--check', 'codex'], { ...env, ROADCTL_NOW: '2026-11-11T14:30:00Z' });
+  assert.equal(again.status, 1);
+  assert.equal(sb.calls('codex').length, 1, 'closed until the reset: no probe');
+  // after the reset the cache is stale and the next probe runs
+  const after = lcli(sb, ['limits', '--check', 'codex'], { ...env, ROADCTL_NOW: '2026-11-11T15:01:00Z' });
+  assert.equal(sb.calls('codex').length, 2, 'probed again after the reset');
+  // an allowed (non-reserve) result still uses the plain cache_minutes, not closed_until
+  const sb2 = sandbox();
+  lcli(sb2, ['limits', '--provider', 'codex'], { FAKE_5H: '30', ROADCTL_NOW: '2026-11-11T10:00:00Z' });
+  lcli(sb2, ['limits', '--provider', 'codex'], { FAKE_5H: '30', ROADCTL_NOW: '2026-11-11T10:11:00Z' });
+  assert.equal(sb2.calls('codex').length, 2, 'an allowed result is re-probed after cache_minutes');
+});
+
+test('P5.17 a3: docs record that only the main provider of an agent is accounted (the Hermes limit)', () => {
+  const docs = fs.readFileSync(path.join(here, '..', 'docs', 'roadctl.md'), 'utf8');
+  assert.match(docs, /one provider per agent/i);
+  assert.match(docs, /Hermes/i);
+  assert.match(docs, /secondary provider/i);
+});
+
 test('limits: table lists every provider with windows, used, left, reserve, resets, state, measured_at and source; needs no board', LSKIP, () => {
   const sb = sandbox();
   const reg = regFile({ providers: { 'some-api': { kind: 'api' } } });

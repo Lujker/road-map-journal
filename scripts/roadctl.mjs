@@ -2612,12 +2612,18 @@ export async function providerLimits(id, reg, { fresh = false, env = process.env
   const c = store?.providers?.[id];
   if (!fresh && cacheMs > 0 && c?.state === 'known' && Array.isArray(c.windows)) {
     const age = nowMs() - Date.parse(c.measured_at);
+    const closedUntil = c.closed_until ? Date.parse(c.closed_until) : null;
+    if (closedUntil !== null && Number.isFinite(closedUntil) && closedUntil > nowMs()) return { ...c, cached: true }; // P5.17 a1: in reserve with a known reset, the next probe is not before the reset
     if (age >= 0 && age <= cacheMs && c.windows.every((w) => !w.resets_at || Date.parse(w.resets_at) > nowMs())) return { ...c, cached: true };
   }
   const r = await probeProvider(id, cfg, { env });
   if (r.state === 'known' && cacheMs > 0) {
+    // P5.17 a1: "closed until" — the earliest reset of the windows that are in reserve; while it is in the future the cache answers without a probe.
+    const reserve = reserveFor(reg, id);
+    const breached = r.windows.filter((w) => (100 - w.used_percent) <= reserveOfWindow(reserve, w.name));
+    const closedUntil = breached.length && breached.every((w) => w.resets_at) ? [...breached.map((w) => w.resets_at)].sort()[0] : null;
     try {
-      writeJsonFile(file, { version: 1, providers: { ...(store?.providers ?? {}), [id]: r } });
+      writeJsonFile(file, { version: 1, providers: { ...(store?.providers ?? {}), [id]: { ...r, ...(closedUntil ? { closed_until: closedUntil } : {}) } } });
     } catch {
       // a cache that cannot be written only costs another probe
     }
