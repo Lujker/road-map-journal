@@ -61,7 +61,7 @@ try {
 }
 const xdgDir = STATE?.xdgDir ?? ((env, name, fallback) => (env[name]?.trim() ? env[name].trim() : path.join(os.homedir(), ...fallback))); // seam (P5.28): lone-copy fallback
 
-export const VERSION = '0.11.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.12.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -3122,9 +3122,10 @@ export function boardsCommand(flags, args, io, env = process.env) {
 // (the executor the owner named when creating it). `tick --as AGENT` offers it as RUN to that agent only, when it is due. The text of a routine is
 // the owner's instruction for that agent within its approved scope; nothing injects it into a prompt, `tick --prompt` names the file only.
 
-export const ROUTINE_RESULTS = ['ok', 'escalated', 'failed'];
+export const ROUTINE_RESULTS = ['ok', 'escalated', 'failed']; // last_result never grows (P5.4 a5): the detail lives in last_reason
 export const ROUTINE_SCOPES = ['read', 'board', 'external'];
-const ROUTINE_KEYS = new Set(['id', 'title', 'every', 'hours', 'enabled', 'agent', 'model', 'env', 'approved', 'last_run', 'last_result', 'timeout', 'notify']); // notify (0.5.0, P5.13): problems|always|never; timeout (0.3.0, P5.1): after this long an unfinished run counts as crashed
+export const HOLD_AFTER = 3; // P5.4: K consecutive `failed` runs hold the routine until `routine resume`
+const ROUTINE_KEYS = new Set(['id', 'title', 'every', 'hours', 'enabled', 'agent', 'model', 'env', 'approved', 'last_run', 'last_result', 'last_reason', 'fails', 'hold', 'timeout', 'notify']); // notify (0.5.0, P5.13): problems|always|never; timeout (0.3.0, P5.1): after this long an unfinished run counts as crashed; last_reason/fails/hold (0.12.0, P5.4): the outcome detail, the consecutive-failure counter and the hold
 const ROUTINE_SECTIONS = ['Goal', 'Steps', 'May write', 'Escalate', 'Log'];
 const MODEL_RE = /^[A-Za-z0-9][\w.:[\]-]*$/;
 const ENV_RE = /^[A-Za-z0-9][\w.:@-]*$/;
@@ -3265,6 +3266,8 @@ function routineFindings(r) {
   if ('timeout' in h && parseEvery(h.timeout).error) add('error', 25, 'timeout must be like 30m, 2h or 1d (5 minutes to 30 days)'); // P5.1
   if (h.last_run && !ISO_RE.test(h.last_run)) add('error', 25, 'last_run must be an ISO-8601 UTC time like 2026-11-11T09:30:00Z');
   if (h.last_result && !ROUTINE_RESULTS.includes(h.last_result)) add('error', 25, `last_result must be one of ${ROUTINE_RESULTS.join('|')}`);
+  if (h.fails !== undefined && h.fails !== '' && !/^\d+$/.test(String(h.fails))) add('error', 25, 'fails must be a whole number (0 or more)'); // P5.4
+  if (h.hold !== undefined && !String(h.hold).trim()) add('error', 25, 'hold must be a reason, or run roadctl routine resume to clear it'); // P5.4
   const scopes = scopesOf(h.approved);
   if (h.approved && !scopes.length) add('error', 27, 'approved has no scope=...');
   if (h.enabled === 'true' && !scopes.length) add('error', 27, 'enabled without approved: the owner approves with roadctl routine on <id> --by NAME --source REF');
@@ -3311,6 +3314,7 @@ export function routineRows(board, ms = nowMs(), env = process.env) {
     if (!enabled) reasons.push('disabled');
     if (!sw) reasons.push('board switch off');
     if (h.hours && !withinHours(h.hours, ms)) reasons.push('outside hours');
+    if (h.hold) reasons.push(`held: ${h.hold} (roadctl routine resume ${h.id ?? ''})`); // P5.4 a1/a8: a held routine is never due, so tick offers no RUN until the owner resumes it
     const every = parseEvery(h.every);
     let due = false;
     const lastRun = localLastRun(board, h.id, h.last_run, env); // P5.6 a7: a quiet observation keeps its last_run in machine state
@@ -3458,17 +3462,48 @@ export function setRoutineEnabled(board, id, on, { by, scope, source, date = tod
   return { ok: true, note };
 }
 
-function applyRoutineDone(r, as, result, text, date = today()) {
-  let t = setHeader(readNorm(r), 'last_run', isoAt());
+/** P5.4: the outcome policy of one recorded run. Returns { fails, hold, lastReason }. */
+export function outcomePolicy(h, result, { source = null, outcome = null, reason = null } = {}) {
+  const fails = (h.fails !== undefined && h.fails !== '' && /^\d+$/.test(String(h.fails))) ? Number(h.fails) : 0;
+  if (result === 'ok') return { fails: 0, hold: null, lastReason: 'ok' };
+  if (result === 'escalated') return { fails, hold: h.hold ?? null, lastReason: 'escalated' }; // escalated is not a failure and does not reset the counter
+  // failed
+  const external = scopesOf(h.approved).includes('external');
+  const forced = ['timeout', 'aborted', 'crashed'].includes(outcome); // a run that may have written outside, or was stopped: never retried automatically
+  let next = fails;
+  let hold = null;
+  let lastReason = 'failed';
+  if (source === 'supervisor') {
+    if (outcome) lastReason = outcome;
+    if (forced || external) hold = forced ? `${outcome}` : 'external run without a result';
+    else next = fails + 1;
+  } else {
+    lastReason = reason ?? 'failed';
+    next = fails + 1;
+  }
+  if (!hold && next >= HOLD_AFTER) hold = `after ${next} failed runs in a row`;
+  return { fails: next, hold, lastReason };
+}
+
+function applyRoutineDone(r, as, result, text, opts = {}, date = today()) {
+  const h = r.header;
+  const policy = outcomePolicy(h, result, opts);
+  let t = readNorm(r);
+  t = setHeader(t, 'last_run', isoAt());
   t = setHeader(t, 'last_result', result);
-  writeCard(r, insertRoutineLog(t, `- ${date} [${as}] RUN ${result}: ${sanitizeText(text, 1500)}`));
+  t = setHeader(t, 'last_reason', policy.lastReason);
+  t = setHeader(t, 'fails', String(policy.fails));
+  if (policy.hold) t = setHeader(t, 'hold', policy.hold);
+  t = insertRoutineLog(t, `- ${date} [${as}] RUN ${result}: ${sanitizeText(text, 1500)}`);
+  if (policy.hold) t = insertRoutineLog(t, `- ${date} [${as}] HOLD: ${policy.hold}`);
+  writeCard(r, t);
 }
 
 /**
  * The routine's own agent records a run: last_run (now), last_result and a Log line; then ONLY that file is committed and pushed, like `report`.
  * Statuses: recorded (pushed), recorded-local (offline, no remote or no git), refused, lost (the file is gone on the server), error.
  */
-export function routineDone(board, id, { as, result, text, timeout = netTimeout(), quiet = false }) {
+export function routineDone(board, id, { as, result, text, timeout = netTimeout(), quiet = false, source = null, outcome = null, reason = null }) {
   const e = checkAgent(as, '--as');
   if (e) return { status: 'refused', message: e };
   if (!ROUTINE_RESULTS.includes(result)) return { status: 'refused', message: `--result must be one of ${ROUTINE_RESULTS.join('|')}` };
@@ -3484,7 +3519,7 @@ export function routineDone(board, id, { as, result, text, timeout = netTimeout(
   const rel = ctx ? path.relative(ctx.root, real(r.file)).split(path.sep).join('/') : null;
   if (remote && cardPending(ctx, rel)) return { status: 'refused', message: 'the routine file has uncommitted changes besides this run; run roadctl save first so the run is the only change pushed' };
   let original = fs.readFileSync(r.file);
-  applyRoutineDone(r, as, result, text);
+  applyRoutineDone(r, as, result, text, { source, outcome, reason });
   const base = { id };
   if (!ctx) return { ...base, status: 'recorded-local', message: 'recorded on the local board only (not a git repository): not yet visible to others' };
   if (!remote) return { ...base, status: 'recorded-local', message: 'recorded locally (the repository has no remote): not yet visible to others' };
@@ -3514,7 +3549,7 @@ export function routineDone(board, id, { as, result, text, timeout = netTimeout(
       const again = loadRoutines(board.dir).find((x) => x.header.id === id);
       if (!again) return { status: 'lost', ...base, message: 'the run was not published: the routine file is gone on the server; tell the owner' };
       original = fs.readFileSync(again.file);
-      applyRoutineDone(again, as, result, text);
+      applyRoutineDone(again, as, result, text, { source, outcome, reason });
       const c2 = commit();
       if (!c2.ok) { restoreFailedCommit(ctx, rel, again.file, original); return { status: 'error', ...base, message: `git commit failed: ${failureHint(c2)}` }; }
       continue;
@@ -3539,18 +3574,23 @@ export function showRoutine(board, id, { log = 5 } = {}) {
 /** The board switch: `roadctl autonomy routines on|off`. */
 export const setRoutinesSwitch = (board, on) => writeAutonomy(board, { routines: on });
 
-const ROUTINE_USAGE = 'usage: roadctl routine list [--all] [--json] | show <id> [--json] | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00"] | on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME | launch <id> [--json] | done <id> --as AGENT --result ok|escalated|failed "summary" | observe <id> --as AGENT [--confirm-after N] [--heartbeat DUR] (reads {"problems":[{"key":"...","text":"..."}],"did":"..."} on stdin)';
+const ROUTINE_USAGE = 'usage: roadctl routine list [--all] [--json] | show <id> [--json] | new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00"] | on <id> --by NAME [--scope read+board[+external]] [--source REF] | off <id> --by NAME | launch <id> [--json] | done <id> --as AGENT --result ok|escalated|failed "summary" | observe <id> --as AGENT [--confirm-after N] [--heartbeat DUR] (reads {"problems":[{"key":"...","text":"..."}],"did":"..."} on stdin) | resume <id> --by NAME';
 
 /**
  * The whole of `routine done` including the module hooks (routine-done-before may refuse or replace the text, routine-done-after sees the result).
  * Used by `roadctl routine done` and, through the module api, by the supervisor (P5.2), so a result the supervisor records passes the same hooks
  * (the run ledger, and later the approval check of P5.15) and is refused the same way. Returns { r (the routineDone result), after (the hook values) }.
  */
-export function routineDoneWithHooks(board, id, { as, result, text, flags = {}, env = process.env, io = { err: (s) => process.stderr.write(s) }, source, quiet = false }) {
+export function routineDoneWithHooks(board, id, { as, result, text, flags = {}, env = process.env, io = { err: (s) => process.stderr.write(s) }, source, outcome = null, quiet = false }) {
   const hookCtx = { board, id, as, result, text, flags, env, api: moduleApi(), ...(source === 'supervisor' ? { source } : {}) }; // source: an argument of the call, not read from the environment, so no process can claim to be the supervisor
   const before = MODULE_REG.callHook('routine-done-before', hookCtx, io); // seam (P5.1): run id, duration and host in the Log line; may refuse
   const refusal = before.find((h) => h.value?.refuse)?.value.refuse;
-  const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, id, { as, result, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? text, quiet });
+  const reason = (() => { // P5.4: the failure detail from --problem, when there is exactly one kind
+    const list = Array.isArray(flags.problem) ? flags.problem : typeof flags.problem === 'string' ? [flags.problem] : [];
+    const kinds = list.map((p) => /^(transient|permanent|unknown):/.exec(String(p))?.[1]).filter(Boolean);
+    return kinds.length === 1 ? kinds[0] : null;
+  })();
+  const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, id, { as, result, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? text, quiet, source, outcome, reason });
   const after = MODULE_REG.callHook('routine-done-after', { ...hookCtx, done: r }, io, before);
   return { r, after };
 }
@@ -3717,6 +3757,18 @@ export function routineCommand(flags, args, io, env = process.env) {
     if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
     const sw = autonomyOf(board).routines;
     out(`${args[2]}: ${sub === 'on' ? 'enabled' : 'disabled'}${r.note}.${sub === 'on' && !sw ? ' The board switch is OFF, so nothing runs until the owner runs roadctl autonomy routines on --by NAME.' : ''} Not committed: run roadctl save`);
+    return 0;
+  }
+  if (sub === 'resume') { // P5.4: the owner lifts a HOLD; only the owner does this (owner.sub includes resume)
+    if (!args[2] || !str('by')) throw new Error('usage: roadctl routine resume <id> --by NAME; only when the owner told you to');
+    const board = one();
+    const r = findRoutine(board, args[2]);
+    if (!r.header.hold) return out(`${args[2]}: not held; nothing to do`), 0;
+    let t = readNorm(r);
+    t = removeHeader(t, 'hold');
+    t = removeHeader(t, 'fails');
+    writeCard(r, insertRoutineLog(t, `- ${today()} [${sanitizeText(str('by'), 60)}] RESUME`));
+    out(`${args[2]}: resumed (hold and the failure counter cleared). Not committed: run roadctl save`);
     return 0;
   }
   if (sub === 'launch') { // P5.7: the description lives in the launch module; `routine launch ID` is its `launch --routine ID`
@@ -3958,12 +4010,12 @@ export const COMMANDS = {
     changes: 'The delegate and claim headers and one Log line of that card (not committed: run roadctl save).', exits: '0 ok; 1 refused; 2 usage error, unknown card or no board found',
   },
   routine: {
-    group: 'Delegate', effect: 'git', owner: { sub: ['on', 'off', 'resume', 'promote'] }, summary: 'recurring routines (list, show, launch read; new, on, off write; done, observe git)',
-    purpose: 'Recurring, mostly mechanical project tasks (collect merge request, issue or message state, watch servers) in board/routines/<id>.md. Each has an executor the owner names when creating it: agent, model and env are REQUIRED; a routine without any of them never runs. A routine runs only when the board switch autonomy.routines is on (roadctl autonomy routines on), the routine is enabled, approved, due (no last_run, or now is at least last_run + every) and inside its optional hours window (header hours: days and times, local time or tz=ZONE; outside it list says "outside hours"); roadctl tick --as AGENT then offers it as RUN to that agent only. list shows every routine with its run state and why it would not run now (--all: every board); show prints one routine. new creates a routine from a template, switched off and not approved. on and off are the owner\'s switch: on records the approval (default scope read+board, --source required) and, on a board that requires roadctl 0.6.0, a hash of the routine\'s content (approved_hash): a routine edited afterwards (Steps, agent, every, scope, ...) is "changed after approval" and does not run until the owner runs on again (notify, enabled, last_* and the Log are outside the hash); on refuses without agent, model and env; only when the owner told you to. done is for the routine\'s own agent: sets last_run and last_result, appends a Log line (up to 1500 characters, the last 50 lines are kept) and commits and pushes ONLY that file, like report (offline it stays local; a conflict is applied again on the server file). The routine text is the owner\'s instruction within the approved scope (default: read external systems, write the board); hand over with roadctl delegate or a question for the owner, as its Escalate section says. observe is the model-free close for a watchdog script (agent of the `script` role, `model: none`): it reads JSON facts on stdin, records the run through the same publish path as done, and hands the problem keys to digest (one message per key; the snapshot observe.state.json is local machine state).',
-    usage: ['roadctl routine list [--all] [--json]', 'roadctl routine show <id> [--json]', 'roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]', 'roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF]   (only when the owner told you to)', 'roadctl routine off <id> --by NAME   (only when the owner told you to)', 'roadctl routine launch <id> [--json]   (read only: the argv, stdin and timeout to start the agent; docs/roadctl.md, Launch description)', 'roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary" [--json]', 'roadctl routine observe <id> --as AGENT [--confirm-after N] [--heartbeat DUR] [--json]   (stdin: {"problems":[{"key":"...","text":"..."}],"did":"..."}; the model-free watchdog run; a problem is confirmed, and one is gone, after N observations in a row, default 1)'],
-    flags: [ALL('list routines of'), ['--agent A / --model M / --env E', 'new: the executor (an agent name like claude-code@work-notebook, a model like claude-haiku-5-5, an environment like Work-notebook-wsl); all three are required, ask the owner, never guess'], ['--confirm-after N / --heartbeat DUR', 'observe: a problem is published, and one is gone, after N observations in a row (default 1); an unchanged set is not a board commit until the committed last_run is older than DUR (default: every run is a commit)'], ['--every SPAN', 'new: how often it is due: 30m, 2h, 1d (at least 5m)'], ['--hours H', 'new: the time window in which it may run: DAYS HH:MM-HH:MM[ tz=ZONE], for example "mon-fri 09:00-19:00" or "daily 08:00-23:00 tz=Europe/Moscow" (default: any time; local time of this machine without tz)'], ['--by NAME', 'on, off: the owner who decided'], ['--scope S', 'on: read+board (default) or read+board+external'], ['--source REF', 'on: where the owner said so (required when no approval is recorded yet)'], ['--as AGENT', 'done, observe: the routine\'s own agent'], ['--result R', 'done: ok, escalated or failed'], J],
-    examples: ['roadctl routine list', 'roadctl routine new mr-status "Collect MR and issue status" --agent claude-code@work-notebook --model claude-haiku-5-5 --env Work-notebook-wsl --every 2h', 'roadctl routine on mr-status --by Lujker --source "chat 2026-11-12"', 'roadctl routine done mr-status --as claude-code@work-notebook --result ok "3 cards updated, nothing to hand over"'],
-    changes: 'list, show, launch: nothing. new: creates board/routines/<id>.md. on, off: the enabled (and approved) header and one Log line of that routine file (not committed: run roadctl save). done and observe: the last_run, last_result headers and one Log line of that file, then a git commit and push of that file only (needs the network; offline keeps the commit local); observe also keeps observe.state.json in the machine state directory.', exits: '0 ok (done: recorded or recorded-local; observe: the same); 1 refused (on: missing agent, model or env; done, observe: not the routine\'s agent) or failed; 2 usage error, missing agent/model/env on new, unknown routine or no board found',
+    group: 'Delegate', effect: 'git', owner: { sub: ['on', 'off', 'resume', 'promote'] }, summary: 'recurring routines (list, show, launch read; new, on, off, resume write; done, observe git)',
+    purpose: 'Recurring, mostly mechanical project tasks (collect merge request, issue or message state, watch servers) in board/routines/<id>.md. Each has an executor the owner names when creating it: agent, model and env are REQUIRED; a routine without any of them never runs. A routine runs only when the board switch autonomy.routines is on (roadctl autonomy routines on), the routine is enabled, approved, due (no last_run, or now is at least last_run + every) and inside its optional hours window (header hours: days and times, local time or tz=ZONE; outside it list says "outside hours"); roadctl tick --as AGENT then offers it as RUN to that agent only. After K consecutive failed runs (or a started external run without a result, or an aborted run) the routine is HOLD: tick offers no RUN until the owner runs roadctl routine resume (P5.4). list shows every routine with its run state and why it would not run now (--all: every board); show prints one routine. new creates a routine from a template, switched off and not approved. on and off are the owner\'s switch: on records the approval (default scope read+board, --source required) and, on a board that requires roadctl 0.6.0, a hash of the routine\'s content (approved_hash): a routine edited afterwards (Steps, agent, every, scope, ...) is "changed after approval" and does not run until the owner runs on again (notify, enabled, last_* and the Log are outside the hash); on refuses without agent, model and env; only when the owner told you to. resume clears a HOLD and the failure counter; only the owner. done is for the routine\'s own agent: sets last_run and last_result, appends a Log line (up to 1500 characters, the last 50 lines are kept) and commits and pushes ONLY that file, like report (offline it stays local; a conflict is applied again on the server file). The routine text is the owner\'s instruction within the approved scope (default: read external systems, write the board); hand over with roadctl delegate or a question for the owner, as its Escalate section says. observe is the model-free close for a watchdog script (agent of the `script` role, `model: none`): it reads JSON facts on stdin, records the run through the same publish path as done, and hands the problem keys to digest (one message per key; the snapshot observe.state.json is local machine state).',
+    usage: ['roadctl routine list [--all] [--json]', 'roadctl routine show <id> [--json]', 'roadctl routine new <id> "title" --agent A --model M --env E --every 2h [--hours "mon-fri 09:00-19:00 tz=Europe/Moscow"]', 'roadctl routine on <id> --by NAME [--scope read+board[+external]] [--source REF]   (only when the owner told you to)', 'roadctl routine off <id> --by NAME   (only when the owner told you to)', 'roadctl routine launch <id> [--json]   (read only: the argv, stdin and timeout to start the agent; docs/roadctl.md, Launch description)', 'roadctl routine done <id> --as AGENT --result ok|escalated|failed "summary" [--json]', 'roadctl routine observe <id> --as AGENT [--confirm-after N] [--heartbeat DUR] [--json]   (stdin: {"problems":[{"key":"...","text":"..."}],"did":"..."}; the model-free watchdog run; a problem is confirmed, and one is gone, after N observations in a row, default 1)', 'roadctl routine resume <id> --by NAME   (only when the owner told you to; lifts a HOLD and clears the failure counter)'],
+    flags: [ALL('list routines of'), ['--agent A / --model M / --env E', 'new: the executor (an agent name like claude-code@work-notebook, a model like claude-haiku-5-5, an environment like Work-notebook-wsl); all three are required, ask the owner, never guess'], ['--confirm-after N / --heartbeat DUR', 'observe: a problem is published, and one is gone, after N observations in a row (default 1); an unchanged set is not a board commit until the committed last_run is older than DUR (default: every run is a commit)'], ['--every SPAN', 'new: how often it is due: 30m, 2h, 1d (at least 5m)'], ['--hours H', 'new: the time window in which it may run: DAYS HH:MM-HH:MM[ tz=ZONE], for example "mon-fri 09:00-19:00" or "daily 08:00-23:00 tz=Europe/Moscow" (default: any time; local time of this machine without tz)'], ['--by NAME', 'on, off, resume: the owner who decided'], ['--scope S', 'on: read+board (default) or read+board+external'], ['--source REF', 'on: where the owner said so (required when no approval is recorded yet)'], ['--as AGENT', 'done, observe: the routine\'s own agent'], ['--result R', 'done: ok, escalated or failed'], J],
+    examples: ['roadctl routine list', 'roadctl routine new mr-status "Collect MR and issue status" --agent claude-code@work-notebook --model claude-haiku-5-5 --env Work-notebook-wsl --every 2h', 'roadctl routine on mr-status --by Lujker --source "chat 2026-11-12"', 'roadctl routine done mr-status --as claude-code@work-notebook --result ok "3 cards updated, nothing to hand over"', 'roadctl routine resume mr-status --by Lujker'],
+    changes: 'list, show, launch: nothing. new: creates board/routines/<id>.md. on, off, resume: the enabled (and approved), or the hold and fails headers, and one Log line of that routine file (not committed: run roadctl save). done and observe: the last_run, last_result (and last_reason, fails, hold) headers and one Log line of that file, then a git commit and push of that file only (needs the network; offline keeps the commit local); observe also keeps observe.state.json in the machine state directory.', exits: '0 ok (done: recorded or recorded-local; observe: the same); 1 refused (on: missing agent, model or env; done, observe: not the routine\'s agent) or failed; 2 usage error, missing agent/model/env on new, unknown routine or no board found',
   },
   approve: {
     group: 'Owner only', effect: 'write', owner: true, summary: 'record the owner approval on a card',

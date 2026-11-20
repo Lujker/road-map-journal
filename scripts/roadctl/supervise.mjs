@@ -339,7 +339,7 @@ function recheck(ctx, t, board, dir, now) {
  * Record a result of a routine in its file through the same hooks as `routine done` (routineDoneWithHooks): the run ledger finds the run by ROADCTL_RUN_ID, the Log
  * line gets the trailer with src=supervisor (`source` is an argument of the call), and a hook may refuse (then nothing is written). Returns the routineDone result, or { status: 'skipped' } for a card or the orchestrator.
  */
-function writeRoutineResult(ctx, bdir, t, as, run_id, fields) {
+function writeRoutineResult(ctx, bdir, t, as, run_id, fields, outcome = null) {
   if (t.kind !== 'routine') return { status: 'skipped' };
   try {
     const board = ctx.api.loadBoard(bdir); // read now: the version the board declares is checked right before this write, whatever it said when the run began
@@ -347,7 +347,7 @@ function writeRoutineResult(ctx, bdir, t, as, run_id, fields) {
     if (needs) return { status: 'unsupported', message: needs };
     const flags = { did: fields.did, problem: fields.problems.map((p) => `${p.kind}: ${p.key}: ${p.text}`) };
     const env = { ...ctx.env, ROADCTL_RUN_ID: run_id };
-    return ctx.api.routineDoneWithHooks(board, t.id, { as, result: 'failed', text: fields.did[0], flags, env, io: ctx.io ?? defaultIo, source: 'supervisor' }).r;
+    return ctx.api.routineDoneWithHooks(board, t.id, { as, result: 'failed', text: fields.did[0], flags, env, io: ctx.io ?? defaultIo, source: 'supervisor', outcome }).r;
   } catch (e) {
     return { status: 'error', message: cleanText(e.message, 120) };
   }
@@ -371,7 +371,7 @@ function reconcileOrphans(ctx, bdir, dir, t, as, now) {
   let wrote = false;
   for (const run of opens) {
     const fields = { ...EMPTY, did: [cleanText(run.note || t.nodata, 120)], problems: [{ kind: 'unknown', key: 'crashed', text: 'the supervisor died; the run has no result' }, ...(n >= BACKOFF_MIN.length && !card ? [{ kind: 'permanent', key: 'supervise-stop', text: `${n} runs in a row ended without a result: stopped on this machine until roadctl supervise --reset` }] : [])] };
-    const w = writeRoutineResult(ctx, bdir, t, as, run.run_id, fields);
+    const w = writeRoutineResult(ctx, bdir, t, as, run.run_id, fields, 'crashed');
     wrote = written(w);
     if (w.status === 'unsupported') good = false; // the board no longer declares the version: nothing was written, the lock is kept marked
     const dur = run.started ? Math.max(0, Math.round((now - Date.parse(run.started)) / 1000)) : null;
@@ -493,7 +493,7 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
     outcome = stopping === 'timeout' ? 'timeout' : stopping ? 'aborted' : 'failed';
     const reason = stopping === 'timeout' ? `no result within ${Math.round(t.timeout / 1000)}s` : stopping === 'paused' ? 'stopped by pause --now' : stopping ? 'the supervisor was told to stop' : 'no result';
     const fields = { ...EMPTY, did: [cleanText(after?.note || t.nodata, 120)], problems: [{ kind: 'unknown', key: outcome === 'failed' ? 'no-result' : outcome, text: `${reason} (${exitText})` }], writes: [`${t.kind}:${t.id}`] };
-    const w = writeRoutineResult(ctx, bdir, t, a.as, run_id, fields);
+    const w = writeRoutineResult(ctx, bdir, t, a.as, run_id, fields, outcome);
     const refused = t.kind === 'routine' && !written(w);
     if (w.status === 'unsupported') { lost.push('the board no longer declares requires 0.6.0: nothing was written to the routine file'); unsaved = true; }
     if (!appendEnd(env, { event: 'end', run_id, finished: isoAt(finishedMs), duration_s: dur, outcome, reason: `${reason}${refused ? notWritten(w) : ''}`, source: 'supervisor', usage, ...summaryFields(fields) })) lost.push('the end of the run could not be written to the ledger (the next supervise marks it crashed)');

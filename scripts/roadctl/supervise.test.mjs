@@ -194,6 +194,21 @@ test('P5.2 a3/a11: exit 0 without routine done is failed: no result, written to 
   assert.doesNotMatch(r.routineText('mr-self'), /src=supervisor/);
 }));
 
+test('P5.4 a3/a7: a timeout holds the routine (last_reason timeout); an external run without a result holds it at once', NEEDS, withRig(async (r) => {
+  r.routine();
+  const t = r.roadctl(r.sup('mr-status', ['sh', '-c', "trap '' TERM; sleep 30 & wait"], ['--timeout', '1s']));
+  assert.equal(t.status, EXIT.timeout);
+  assert.match(r.routineText(), /^last_result: failed$/m);
+  assert.match(r.routineText(), /^last_reason: timeout$/m, 'the supervisor sets the failure type');
+  assert.match(r.routineText(), /^hold: timeout$/m, 'an aborted run is held at once');
+  r.routine('mr-ext');
+  r.ok(['routine', 'on', 'mr-ext', '--by', 'Owner', '--scope', 'read+board+external', '--source', 'chat 2026-11-13', '--board', r.board]);
+  const e = r.roadctl(r.sup('mr-ext', ['sh', '-c', 'exit 0']));
+  assert.equal(e.status, EXIT.failed);
+  assert.match(r.routineText('mr-ext'), /^last_reason: failed$/m);
+  assert.match(r.routineText('mr-ext'), /^hold: external run without a result$/m, 'a started external run without a result is never retried');
+}));
+
 test('P5.2 a14: ROADCTL_RUN_ID reaches the command (the fake claude sees it); native Windows is refused with an explanation', NEEDS, withRig(async (r) => {
   r.routine();
   r.roadctl(r.sup('mr-status', ['claude', '-p', 'hello']), { FAKE_MODE: 'ok' });

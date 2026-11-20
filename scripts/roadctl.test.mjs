@@ -3178,6 +3178,111 @@ test('the shipped routine examples parse and lint clean, are marked as examples,
   assert.equal(cli(root, ['routine', 'on', 'server-watch', '--by', 'x', '--source', 's']).status, 0, 'a complete example can be switched on by the owner');
 });
 
+// ---------------------------------------------------------------- P5.4: outcome policy and HOLD
+
+test('P5.4 a1: K consecutive failed runs HOLD the routine, tick offers no RUN until resume; escalated does not count, ok resets', LSKIP, () => {
+  const t = tenv();
+  routineOn(t);
+  const done = (result) => t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', result, 'x']);
+  const h = () => rc.loadBoard(t.c.board).routines.find((x) => x.header.id === 'mr-status').header;
+  assert.equal(done('escalated').status, 0);
+  assert.equal(done('escalated').status, 0);
+  assert.equal(h().fails, '0', 'escalated neither counts nor resets');
+  assert.equal(done('failed').status, 0);
+  assert.equal(done('failed').status, 0);
+  assert.equal(h().fails, '2');
+  assert.equal(h().hold, undefined);
+  assert.equal(done('failed').status, 0);
+  assert.equal(h().fails, '3');
+  assert.equal(h().hold, 'after 3 failed runs in a row');
+  const held = t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' });
+  assert.equal(held.status, 4, held.stdout + held.stderr);
+  assert.equal(held.stdout, `tick ${ME}: idle\n`, 'no RUN while held');
+  assert.equal(t.bcli(['routine', 'resume', 'mr-status', '--by', 'Lujker']).status, 0);
+  assert.equal(h().hold, undefined);
+  assert.equal(h().fails, undefined, 'resume clears the counter');
+  assert.match(t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' }).stdout, /^RUN my-app\/mr-status/m, 'due again after resume');
+  assert.equal(done('failed').status, 0);
+  assert.equal(done('ok').status, 0);
+  assert.equal(h().fails, '0', 'ok resets the counter');
+});
+
+test('P5.4 a2: HOLD is written by routine done and pushed, so a second clone sees it after pull; tick writes nothing', LSKIP, () => {
+  const p = pair();
+  const env = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 };
+  const run = (w, args, e = {}) => p.run(w, args, '', { ...env, ...e });
+  assert.equal(run(p.a, ['routine', 'new', 'mr-status', RTITLE, '--agent', ME, '--model', RMODEL, '--env', RENV, '--every', '2h']).status, 0);
+  assert.equal(run(p.a, ['routine', 'on', 'mr-status', '--by', 'Lujker', '--source', 'chat']).status, 0);
+  assert.equal(run(p.a, ['autonomy', 'routines', 'on', '--by', 'Lujker']).status, 0);
+  assert.equal(out(run(p.a, ['save', '--json'])).status, 'pushed');
+  assert.equal(out(run(p.b, ['pull', '--json'])).status, 'pulled');
+  for (let i = 0; i < 3; i++) assert.equal(run(p.b, ['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', `run ${i}`]).status, 0);
+  const rel = 'projects/my-app/board/routines/mr-status.md';
+  assert.match(g(p.server, 'show', `main:${rel}`), /^hold: after 3 failed runs in a row$/m, 'the hold is on the server');
+  assert.match(g(p.server, 'show', `main:${rel}`), /HOLD: after 3 failed runs in a row$/m, 'a HOLD Log line, for the digest and the owner');
+  assert.equal(out(run(p.a, ['pull', '--json'])).status, 'pulled');
+  assert.match(fs.readFileSync(path.join(p.bd(p.a), 'routines', 'mr-status.md'), 'utf8'), /^hold: after 3 failed runs in a row$/m, 'the second clone sees the hold');
+  assert.match(run(p.a, ['routine', 'list']).stdout, /held: after 3 failed runs in a row/);
+  // tick writes nothing to the board and offers no RUN
+  const before = snapshot(p.bd(p.a));
+  assert.equal(run(p.a, ['tick', '--as', ME, '--no-pull'], { ROADCTL_NOW: '2026-11-10T13:00:00Z' }).status, 4);
+  assert.equal(snapshot(p.bd(p.a)), before, 'tick wrote nothing');
+});
+
+test('P5.4 a4/a5: skipped leaves last_result and the counter alone; last_reason holds the detail; last_result stays ok|escalated|failed', () => {
+  const approved = 'o, 2026-11-10, scope=read+board, source=x';
+  assert.deepEqual(rc.outcomePolicy({ fails: '2', approved }, 'ok', {}), { fails: 0, hold: null, lastReason: 'ok' });
+  assert.deepEqual(rc.outcomePolicy({ fails: '2', approved }, 'escalated', {}), { fails: 2, hold: null, lastReason: 'escalated' });
+  assert.deepEqual(rc.outcomePolicy({ fails: '2', approved }, 'failed', {}), { fails: 3, hold: 'after 3 failed runs in a row', lastReason: 'failed' });
+  assert.deepEqual(rc.outcomePolicy({ approved: 'o, 2026-11-10, scope=read+board+external, source=x' }, 'failed', { source: 'supervisor', outcome: 'failed' }).hold, 'external run without a result');
+  assert.deepEqual(rc.outcomePolicy({ approved }, 'failed', { source: 'supervisor', outcome: 'aborted' }).hold, 'aborted');
+  const root = project();
+  const dir = path.join(root, 'board');
+  fs.mkdirSync(path.join(dir, 'routines'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'routines', 's.md'), `---\nid: s\ntitle: t\nevery: 2h\nenabled: false\nagent: ${ME}\nmodel: ${RMODEL}\nenv: ${RENV}\nlast_run: 2026-11-10T10:00:00Z\nlast_result: failed\nlast_reason: skipped\nfails: 2\n---\n\n## Goal\nx\n`);
+  assert.equal(cli(root, ['sync']).status, 0);
+  assert.deepEqual(lintWith(NOREG, rc.loadBoard(dir)).filter((x) => x.level === 'error'), [], 'last_reason: skipped and fails: 2 are valid (the detail lives in last_reason)');
+  assert.equal(rc.routineRows(rc.loadBoard(dir), Date.parse('2026-11-10T12:00:00Z'))[0].last_result, 'failed');
+  fs.writeFileSync(path.join(dir, 'routines', 'b.md'), `---\nid: b\ntitle: t\nevery: 2h\nenabled: false\nagent: ${ME}\nmodel: ${RMODEL}\nenv: ${RENV}\nlast_result: skipped\n---\n\n## Goal\nx\n`);
+  assert.ok(lintWith(NOREG, rc.loadBoard(dir)).some((x) => x.level === 'error' && /last_result must be one of ok\|escalated\|failed/.test(x.msg)), 'a 4th last_result value is refused');
+});
+
+test('P5.4 a6: after HOLD the tick text changes once and stays byte-stable', LSKIP, () => {
+  const t = tenv();
+  routineOn(t);
+  const run = () => t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' });
+  assert.match(run().stdout, /^RUN my-app\/mr-status/m, 'before HOLD the routine is offered');
+  for (let i = 0; i < 3; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'x']).status, 0);
+  const a = run().stdout;
+  assert.equal(a, `tick ${ME}: idle\n`, 'after HOLD the RUN is gone');
+  assert.equal(run().stdout, a, 'the held tick text is byte-identical on the next run');
+});
+
+test('P5.4 a8: HOLD is the same reason in tick, routine list, lint and digest; a stale copy with a raised requires refuses', LSKIP, () => {
+  const t = tenv();
+  routineOn(t);
+  for (let i = 0; i < 3; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'x']).status, 0);
+  assert.equal(rc.boardRequires({ requires: '0.12.0' }, '0.11.0'), 'board requires roadctl 0.12.0 or newer; this is 0.11.0', 'an older copy refuses the board');
+  // the reason is the same single source (routineRows) in every view
+  assert.equal(t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' }).status, 4, 'tick: no RUN');
+  assert.match(t.bcli(['routine', 'list']).stdout, /would not run: [^\n]*held: after 3 failed runs in a row/);
+  assert.match(t.bcli(['routine', 'show', 'mr-status']).stdout, /held: after 3 failed runs in a row/);
+  assert.match(t.bcli(['digest', '--daily']).stdout, /held: after 3 failed runs in a row/);
+  assert.doesNotMatch(t.bcli(['lint']).stdout, /unknown key hold/, 'hold is a known key');
+});
+
+test('P5.4 a9: the transition to HOLD is one immediate problem in digest and is not repeated by the next digest', LSKIP, () => {
+  const t = tenv();
+  routineOn(t);
+  for (let i = 0; i < 3; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'x']).status, 0);
+  const d1 = t.bcli(['digest']);
+  assert.equal(d1.status, 0, d1.stderr);
+  assert.match(d1.stdout, /hold/, 'one immediate hold problem');
+  const d2 = t.bcli(['digest']);
+  assert.equal(d2.status, 0, d2.stderr);
+  assert.doesNotMatch(d2.stdout, /hold/, 'the next digest does not repeat it');
+});
+
 // ---------------------------------------------------------------- P4.11: one routine per scheduler job, a time window for routines, the working directory of a claim
 
 const gq = (dir, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: dir, encoding: 'utf8' });

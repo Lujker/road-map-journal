@@ -4,6 +4,8 @@ Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. 
 
 ## Unreleased
 
+- Repository: roadctl 0.12.0, the outcome policy and HOLD (P5.4). A routine stops running by itself after 3 consecutive `failed` runs (`escalated` does not count, `ok` resets the counter), after a run with scope `external` that ended without a result, or after an `aborted` run (timeout, `max_turns`, crash or stop): the `hold` header then keeps `tick` from offering a RUN until the owner runs `roadctl routine resume <id> --by NAME`. New routine header keys `last_reason` (the outcome detail: `ok`, `escalated`, `failed`, `transient`/`permanent`/`unknown`, `timeout`/`aborted`/`crashed`), `fails` (the consecutive-failure counter) and `hold`; `last_result` stays `ok|escalated|failed`. `routine done` (and the supervisor, `source=supervisor`) computes them; the transition to HOLD is one immediate `permanent hold` problem in `digest`, told once per hold. The keys are outside the approval hash (P5.15) so a run never changes the hash. `skipped` does not change `last_result` or `fails`. **Format change:** a board that uses `hold`, `fails` or `last_reason` sets `"requires": "0.12.0"`.
+
 - Skill 0.4.1: clarify the 10% subscription reserve, checkpoint cadence and handoff before compaction. Behaviour was not re-evaluated in live agent sessions.
 - Repository: `candidates --multiagent` is a static advisory only; it does not check availability, authorize or launch agents.
 - Tests: wait for the detached supervisor's lock and guard before deleting its fixture, fixing the CI cleanup race.

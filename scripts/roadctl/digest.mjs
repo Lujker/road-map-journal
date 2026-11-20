@@ -361,6 +361,28 @@ function immediate({ boards, refused, env, api, now, name, dry, warn }) {
         else delete active[slotKey];
       }
     }
+    // P5.4 a9: a held routine is one immediate problem, told once per hold episode (the hold value changes with resume/re-hold), not repeated by later ticks.
+    for (const b of boards) {
+      const project = projectOf(b);
+      for (const r of b.routines ?? []) {
+        const id = r.header.id;
+        if (!id) continue;
+        const slotKey = `@hold/${project}/${id}`;
+        const held = String(r.header.hold ?? '').trim();
+        if (!held) { delete active[slotKey]; continue; } // resumed: the state goes quietly; the next failed run opens it again
+        const policy = NOTIFY.includes(r.header.notify) ? r.header.notify : 'problems';
+        const slot = active[slotKey] ?? {};
+        const episode = hash(held);
+        if (slot.episode === episode) continue; // already told for this hold
+        if (policy !== 'never') {
+          const fields = { did: [], decisions: [], problems: [{ key: 'hold', kind: 'permanent', text: held }], needs_owner: null, not_checked: null };
+          const lines = renderSummary({ kind: 'routine', project, id, outcome: 'hold', agent: r.header.agent, fields }, b.config?.language);
+          if (!push(lines.slice(0, 6), `@hold/${project}/${id}`)) { cut++; continue; }
+          shown.push({ sig: `@hold/${project}/${id}`, kind: 'routine', target: `${project}/${id}`, outcome: 'hold', agent: r.header.agent, run_id: null, host: null, fields });
+        }
+        active[slotKey] = { episode };
+      }
+    }
     if (cut) blocks.push(`${cut} ${DAILY.en.more}: roadctl digest`);
     const lines = blocks.flatMap((b, i) => (i ? ['', ...b.split('\n')] : b.split('\n')));
     // the mark moves after the text was printed (the caller prints `lines`, then calls commit)

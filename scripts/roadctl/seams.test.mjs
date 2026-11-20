@@ -28,13 +28,13 @@ const AUTO_APPROVED = 'approved: owner, 2026-11-11, scope=implementation+auto, s
 const FIXTURE = `export default {
   name: 'fixture-seams',
   headerKeys: ['rule_ok', 'fx_scope'],
-  routineKeys: ['hold'],
+  routineKeys: ['fx_hold'],
   cardSections: ['Questions'],
   routineSections: ['Checks'],
   helpTopics: { 'fixture-topic': { summary: 'a fixture topic', text: ['line one', 'line two'] } },
   tickKinds: { RESUME: { prompt: ({ agent, items }) => 'RESUME roadctl show <id>; continue ' + items.length + ' card(s) as ' + agent, text: (i) => 'resume ' + i.title } },
   hooks: {
-    'routine-reasons'({ routine }) { return routine.header.hold ? { reasons: ['on hold: ' + routine.header.hold] } : {}; },
+    'routine-reasons'({ routine }) { return routine.header.fx_hold ? { reasons: ['on hold: ' + routine.header.fx_hold] } : {}; },
     'tick-items'({ env }) { return env.FIXTURE_RESUME ? { items: [{ kind: 'RESUME', id: env.FIXTURE_RESUME, title: 'answered by the owner' }] } : {}; },
     'start-admit'({ card }) { return card.header.fx_scope === 'no' ? { admit: false, reason: 'outside the mandate' } : {}; },
     'dep-satisfied'({ by }) { return by.header.rule_ok === 'yes' ? { satisfied: true } : {}; },
@@ -97,11 +97,11 @@ const kindsOf = (out) => [...out.matchAll(/^(TAKE|ACCEPT|START|STALE|RUN|RESUME)
 test('P5.28 a1: a module reason (routine-reasons) is the same in tick, routine list, lint and digest; without the module nothing changes', FAKES_SKIP, () => {
   const r = rig();
   r.routine();
-  r.edit('routines/mr-status.md', (x) => x.replace('id: mr-status', 'id: mr-status\nhold: owner asked'));
+  r.edit('routines/mr-status.md', (x) => x.replace('id: mr-status', 'id: mr-status\nfx_hold: owner asked'));
   // without the module: the routine runs as before (an unknown key is only a warning)
   assert.deepEqual(kindsOf(r.tick(SELF).stdout), ['RUN']);
   const plain = lintOf(r, SELF);
-  assert.ok(plain.some((x) => x.level === 'warning' && /hold/.test(x.msg)), 'unknown key: a warning');
+  assert.ok(plain.some((x) => x.level === 'warning' && /fx_hold/.test(x.msg)), 'unknown key: a warning');
   assert.ok(!plain.some((x) => x.rule === 30));
   // with the module: no RUN, and every view gives the same reason
   const t = r.tick(WITH);
@@ -114,7 +114,7 @@ test('P5.28 a1: a module reason (routine-reasons) is the same in tick, routine l
   assert.equal(rows[0].run_now, false);
   const l = lintOf(r, WITH);
   assert.deepEqual(l.filter((x) => x.rule === 30).map((x) => [x.level, x.msg]), [['warning', 'would not run: on hold: owner asked (module fixture-seams)']]);
-  assert.ok(!l.some((x) => /unknown key hold/.test(x.msg)), 'the module key is known');
+  assert.ok(!l.some((x) => /unknown key fx_hold/.test(x.msg)), 'the module key is known');
   const d = r.run(WITH, ['digest', '--daily', '--board', r.board]);
   assert.equal(d.status, 0, d.stderr);
   assert.match(d.stdout, /on hold: owner asked/);
@@ -125,10 +125,10 @@ test('P5.28 a1: a module reason (routine-reasons) is the same in tick, routine l
 test('P5.28 a2: a module declares a routine key, a card key and sections; unknown ones stay warnings, the module ones are not reported', FAKES_SKIP, () => {
   const r = rig();
   r.routine();
-  r.edit('routines/mr-status.md', (x) => `${x.replace('id: mr-status', 'id: mr-status\nhold: x')}\n## Checks\n\n- one\n`);
+  r.edit('routines/mr-status.md', (x) => `${x.replace('id: mr-status', 'id: mr-status\nfx_hold: x')}\n## Checks\n\n- one\n`);
   r.edit(r.cardFile('W-6'), (x) => `${x.replace('id: W-6', 'id: W-6\nfx_scope: yes\nfuture_key: 1')}\n## Questions\n\n- q1\n\n## Unheard\n\n- x\n`);
   const plain = lintOf(r, SELF).map((x) => x.msg).join('\n');
-  for (const s of ['hold', 'fx_scope', 'Questions', 'Checks', 'future_key', 'Unheard']) assert.match(plain, new RegExp(s), `${s}: reported without the module`);
+  for (const s of ['fx_hold', 'fx_scope', 'Questions', 'Checks', 'future_key', 'Unheard']) assert.match(plain, new RegExp(s), `${s}: reported without the module`);
   const withMod = lintOf(r, WITH);
   const text = withMod.map((x) => x.msg).join('\n');
   for (const s of ['fx_scope', 'Questions', 'Checks']) assert.doesNotMatch(text, new RegExp(`unknown[^\\n]*${s}`), `${s}: known with the module`);
