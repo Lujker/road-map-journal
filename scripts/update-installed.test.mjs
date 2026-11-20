@@ -5,7 +5,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { decide, folderHash, nodeOk, syncRoadctl } from './update-installed.mjs';
+import { decide, folderHash, LAUNCHER_MARKER, launcherContent, nodeOk, syncLauncher, syncRoadctl } from './update-installed.mjs';
 import { MODULES } from './roadctl/index.mjs';
 
 test('nodeOk enforces the skills CLI minimum', () => {
@@ -133,4 +133,65 @@ test('syncRoadctl mirrors the modules folder: a dry run writes nothing, a change
   } finally {
     fs.rmSync(root, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------- P5.47: the command `roadctl` after install
+
+test('P5.47: syncLauncher on an empty HOME writes ~/.local/bin/roadctl (0755) that runs the installed helper; a dry run writes nothing; a second run changes nothing', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rmj-launcher-'));
+  try {
+    const home = path.join(root, 'home');
+    const dest = path.join(home, '.local', 'share', 'road-map-journal', 'roadctl.mjs');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, 'console.log("helper", process.argv.slice(2).join("|"));\n');
+    const bin = path.join(home, '.local', 'bin');
+    const dry = syncLauncher(home, dest, { apply: false, pathEnv: '' });
+    assert.equal(dry.action, 'install');
+    assert.equal(fs.existsSync(bin), false, 'a dry run writes nothing');
+    const r = syncLauncher(home, dest, { pathEnv: '' });
+    assert.equal(r.action, 'install');
+    assert.equal(r.file, path.join(bin, 'roadctl'));
+    assert.equal(fs.statSync(r.file).mode & 0o777, 0o755);
+    const text = fs.readFileSync(r.file, 'utf8');
+    assert.equal(text, launcherContent(dest));
+    assert.ok(text.startsWith('#!/bin/sh\n'));
+    assert.ok(text.includes(LAUNCHER_MARKER));
+    assert.ok(text.includes(`exec node ${JSON.stringify(dest)} "$@"`));
+    // it really runs the helper and passes the arguments through
+    const run = spawnSync('sh', [r.file, 'status', '--json'], { encoding: 'utf8' });
+    assert.equal(run.stdout.trim(), 'helper status|--json');
+    assert.equal(syncLauncher(home, dest, { pathEnv: '' }).action, 'unchanged');
+    // a moved helper rewrites our own launcher
+    const other = path.join(root, 'elsewhere', 'roadctl.mjs');
+    assert.equal(syncLauncher(home, other, { pathEnv: '' }).action, 'update');
+    assert.ok(fs.readFileSync(r.file, 'utf8').includes(JSON.stringify(other)));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('P5.47: syncLauncher never overwrites a launcher that someone else wrote without --force (the old one is kept as .bak with it); the PATH note is one line', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rmj-launcher-'));
+  try {
+    const home = path.join(root, 'home');
+    const bin = path.join(home, '.local', 'bin');
+    const file = path.join(bin, 'roadctl');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.writeFileSync(file, '#!/bin/sh\n# my own launcher\nexec node /somewhere/else.mjs "$@"\n', { mode: 0o755 });
+    const dest = path.join(home, '.local', 'share', 'road-map-journal', 'roadctl.mjs');
+    const kept = syncLauncher(home, dest, { pathEnv: bin });
+    assert.equal(kept.action, 'kept');
+    assert.match(kept.note, /--force overwrites it/);
+    assert.match(fs.readFileSync(file, 'utf8'), /my own launcher/);
+    assert.equal(kept.hint, null, 'in PATH: no note');
+    const forced = syncLauncher(home, dest, { force: true, pathEnv: '/usr/bin' });
+    assert.equal(forced.action, 'update');
+    assert.ok(fs.readFileSync(file, 'utf8').includes(LAUNCHER_MARKER));
+    assert.ok(fs.readdirSync(bin).some((n) => n.startsWith('roadctl.bak-')), 'the foreign file is kept');
+    assert.match(forced.hint, /is not in PATH here: add it/);
+    assert.equal(forced.hint.includes('\n'), false);
+    assert.equal(syncLauncher(home, dest, { platform: 'win32' }).action, 'skip', 'a POSIX script: not on native Windows');
+    // a launcher without the exec bit is repaired
+    fs.chmodSync(file, 0o644);
+    assert.equal(syncLauncher(home, dest, { pathEnv: bin }).action, 'unchanged');
+    assert.equal(fs.statSync(file).mode & 0o777, 0o755);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });

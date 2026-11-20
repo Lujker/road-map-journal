@@ -197,6 +197,38 @@ export function syncRoadctl(home, srcFile, apply = true) {
   return { dest, action: apply ? action : `would ${action}`, files, installedJson: record ?? 'not written' };
 }
 
+/** The text of the launcher `~/.local/bin/roadctl` (P5.47): a POSIX script that runs the installed helper. The marker line says it is ours. */
+export const LAUNCHER_MARKER = '# road-map-journal launcher, written by scripts/update-installed.mjs --roadctl';
+export const launcherContent = (dest) => `#!/bin/sh\n${LAUNCHER_MARKER}\n# refresh: node scripts/update-installed.mjs --roadctl --apply (from a checkout)\nexec node ${JSON.stringify(dest)} "$@"\n`;
+
+/**
+ * Make `roadctl` a command: write `~/.local/bin/roadctl` (mode 0755) that runs the installed helper `dest`. Only when the file is missing or already ours (the marker line); a
+ * file that someone else wrote is left alone unless `force`. Nothing is written without `apply`. Not on native Windows (a POSIX script). Returns
+ * { file, action: install|update|unchanged|kept|skip, hint }; `hint` is one line when ~/.local/bin is not in PATH of this process.
+ */
+export function syncLauncher(home, dest, { apply = true, force = false, platform = process.platform, pathEnv = process.env.PATH ?? '' } = {}) {
+  const bin = path.join(home, '.local', 'bin');
+  const file = path.join(bin, 'roadctl');
+  if (platform === 'win32') return { file, action: 'skip', hint: null };
+  const onPath = String(pathEnv).split(path.delimiter).some((d) => d && path.resolve(d) === path.resolve(bin));
+  const hint = onPath ? null : `${bin} is not in PATH here: add it (for example export PATH="$HOME/.local/bin:$PATH" in your shell profile, and for cron, ssh and wsl.exe -e too) so the command roadctl is found`;
+  const want = launcherContent(dest);
+  let cur = null;
+  try { cur = fs.readFileSync(file, 'utf8'); } catch { /* missing */ }
+  if (cur === want) {
+    if (apply && (fs.statSync(file).mode & 0o111) === 0) fs.chmodSync(file, 0o755);
+    return { file, action: 'unchanged', hint };
+  }
+  if (cur !== null && !cur.includes(LAUNCHER_MARKER) && !force) return { file, action: 'kept', hint, note: 'a file that update-installed did not write is there and was left alone; --force overwrites it' };
+  if (apply) {
+    fs.mkdirSync(bin, { recursive: true });
+    if (cur !== null) fs.copyFileSync(file, `${file}.bak-${new Date().toISOString().replace(/[:.]/g, '-')}`);
+    fs.writeFileSync(file, want, { mode: 0o755 });
+    fs.chmodSync(file, 0o755);
+  }
+  return { file, action: cur === null ? 'install' : 'update', hint };
+}
+
 function copyDir(src, dest) {
   fs.cpSync(src, dest, { recursive: true, verbatimSymlinks: true });
 }
@@ -278,6 +310,10 @@ export async function main(argv) {
     if (o.roadctl) {
       const t = syncRoadctl(o.home, fileURLToPath(new URL('./roadctl.mjs', import.meta.url)), o.apply);
       log(`roadctl helper: ${t.action} ${t.dest}${t.files.length > 1 ? ` (+ ${t.files.length - 1} module file(s) in roadctl/: ${t.files.slice(1).filter((f) => f.action !== 'unchanged').length} changed)` : ''}${t.installedJson === 'write' ? '; installed.json written' : ''}`);
+      const l = syncLauncher(o.home, t.dest, { apply: o.apply, force: o.force });
+      log(`launcher: ${o.apply || l.action === 'unchanged' || l.action === 'kept' || l.action === 'skip' ? l.action : `would ${l.action}`} ${l.file}${l.note ? ` (${l.note})` : ''}`);
+      if (l.hint && l.action !== 'skip') log(`note: ${l.hint}`);
+      report.launcher = { file: l.file, action: l.action };
     }
     const wantsRun = d.action === 'update' || d.action === 'install' || (d.action === 'review' && o.force);
     if (!wantsRun) {
