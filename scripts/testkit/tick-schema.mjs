@@ -7,7 +7,7 @@
 // a consumer treats anything that is not JSON as "no work", the exit code says why.
 
 export const TICK_DECISIONS = ['idle', 'work', 'blocked-reserve', 'blocked-unknown', 'paused'];
-export const TICK_KINDS = ['TAKE', 'ACCEPT', 'START', 'STALE', 'RUN'];
+export const TICK_KINDS = ['TAKE', 'ACCEPT', 'START', 'STALE', 'RUN', 'RESUME'];
 export const LIMIT_STATES = ['allowed', 'reserve', 'unknown', 'not-applicable', 'not-checked'];
 /** Exit code per decision (the text mode has the same ones; busy is 5 and prints no JSON). */
 export const TICK_EXIT_BY_DECISION = { work: 0, idle: 4, 'blocked-reserve': 1, 'blocked-unknown': 3, paused: 6 };
@@ -15,6 +15,12 @@ export const TICK_EXIT_BY_DECISION = { work: 0, idle: 4, 'blocked-reserve': 1, '
 const isObj = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const isStr = (v) => typeof v === 'string' && v.length > 0;
 const strOrNull = (v) => v === null || typeof v === 'string';
+
+/** P5.24 a2/a7: the owner answers a RUN carries as data: [{id, prompt, answer}], answer of the question's own shape. */
+function ownerAnswers(v, where, problems) {
+  if (!Array.isArray(v) || !v.length) return false;
+  return v.every((x, i) => shape(x, `${where}[${i}]`, { id: isStr, prompt: (s) => typeof s === 'string', answer: (a) => a !== undefined && a !== null }, {}, problems));
+}
 
 function shape(value, where, required, optional, problems) {
   if (!isObj(value)) {
@@ -50,9 +56,10 @@ export function tickJsonProblems(j) {
     const kind = item?.kind;
     if (kind === 'RUN') shape(item, at, { ...base, routine: isObj }, {}, problems);
     else if (kind === 'START') shape(item, at, base, { basis: (v) => v === 'mandate' }, problems); // P5.33: basis mandate = admitted by the project mandate, not by the queue
+    else if (kind === 'RESUME') shape(item, at, base, { undo: (v) => typeof v === 'string' && v.length > 0 }, problems); // P5.24 a11: a rework task (after an answer or an undo), no delegate of its own
     else shape(item, at, { ...base, delegate: isObj }, kind === 'STALE' ? { workdir_dirty: (v) => v === true } : {}, problems);
     if (!isObj(item)) return;
-    if (kind === 'RUN' && isObj(item.routine)) shape(item.routine, `${at}.routine`, { agent: isStr, model: isStr, env: isStr, every: isStr, file: isStr, last_run: strOrNull }, { access: isObj, attempt: (v) => Number.isInteger(v) && v >= 2, recover: (v) => typeof v === 'string' && v.length > 0 }, problems); // attempt (0.3.0, P5.1): only after a crashed or failed run of the routine
+    if (kind === 'RUN' && isObj(item.routine)) shape(item.routine, `${at}.routine`, { agent: isStr, model: isStr, env: isStr, every: isStr, file: isStr, last_run: strOrNull }, { access: isObj, attempt: (v) => Number.isInteger(v) && v >= 2, recover: (v) => typeof v === 'string' && v.length > 0, owner_answers: (v) => ownerAnswers(v, `${at}.routine.owner_answers`, problems) }, problems); // attempt (0.3.0, P5.1): only after a crashed or failed run of the routine; owner_answers (0.13.0, P5.24): the owner's answers for this run
     if (['TAKE', 'ACCEPT', 'STALE'].includes(kind) && isObj(item.delegate)) {
       shape(item.delegate, `${at}.delegate`, { to: isStr, host: isStr, criteria: (v) => v === 'all' || (Array.isArray(v) && v.every(isStr)), by: isStr, accept: isStr, state: isStr }, { claim: isObj, env: isStr, access: isObj }, problems);
       if (isObj(item.delegate.claim)) shape(item.delegate.claim, `${at}.delegate.claim`, { agent: isStr, until: isStr }, { workdir: isStr }, problems);
