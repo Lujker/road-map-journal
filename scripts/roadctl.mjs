@@ -2629,9 +2629,10 @@ export async function providerLimits(id, reg, { fresh = false, env = process.env
       // the used share only grows until the reset, so the older measurement is a lower bound and the deny stands.
       if (reserveKey(c.reserve) === reserveKey(reserve)) return { ...c, cached: true };
       const stillClosed = closedUntilOf({ provider: id, state: 'known', windows: c.windows }, reserve);
-      if (stillClosed) return { ...c, closed_until: stillClosed, reserve, cached: true };
-    }
-    if (age >= 0 && age <= cacheMs && c.windows.every((w) => !w.resets_at || Date.parse(w.resets_at) > nowMs())) return { ...c, cached: true };
+      // The recalculated answer counts only while it closes a moment still ahead. A lifted deny needs a fresh measurement: the old
+      // numbers must not come back through the plain cache_minutes branch below, and a reset already behind us must be measured again.
+      if (stillClosed && Date.parse(stillClosed) > nowMs()) return { ...c, closed_until: stillClosed, reserve, cached: true };
+    } else if (age >= 0 && age <= cacheMs && c.windows.every((w) => !w.resets_at || Date.parse(w.resets_at) > nowMs())) return { ...c, cached: true };
   }
   const r = await probeProvider(id, cfg, { env });
   if (r.state === 'known' && cacheMs > 0) {

@@ -1716,6 +1716,43 @@ test('P5.17 a1: a changed reserve is not answered blindly by closed_until', LSKI
   assert.equal(sb3.calls('codex').length, 1, '4% left is below the new 12% reserve: no probe before the reset');
 });
 
+test('P5.17 a1: a lifted long cache is measured again inside the plain cache window', LSKIP, () => {
+  const reset = '1794409200'; // 2026-11-11T15:00:00Z
+  const sb = sandbox();
+  const low = regFile({ limits: { reserve: { five_hour: 5 } } });
+  const first = lcli(sb, ['limits', '--check', 'codex', '--fresh'], { FAKE_5H: '92', FAKE_RESET: reset, ROADCTL_NOW: '2026-11-11T10:00:00Z' });
+  assert.equal(first.status, 1, first.stderr);
+  assert.equal(sb.calls('codex').length, 1);
+  // one minute later the reserve drops to 5%: 8% left is above it, so the long cache is lifted — inside the 10-minute TTL, and still measured
+  const lifted = lcli(sb, ['limits', '--check', 'codex', '--json'], { FAKE_5H: '92', FAKE_RESET: reset, ROADCTL_REGISTRY: low, ROADCTL_NOW: '2026-11-11T10:01:00Z' });
+  const j = JSON.parse(lifted.stdout);
+  assert.equal(j.code, 0, j.message);
+  assert.equal(j.result.cached, false, 'a lifted deny is not answered from the old numbers, even while cache_minutes is still open');
+  assert.equal(sb.calls('codex').length, 2, 'fresh probe');
+  const cached = JSON.parse(fs.readFileSync(path.join(sb.cache, 'road-map-journal', 'limits.json'), 'utf8')).providers.codex;
+  assert.deepEqual(cached.reserve, { seven_day: 10, five_hour: 5 }, 'the entry now belongs to the new reserve');
+  assert.ok(!cached.closed_until, '8% left is above the 5% reserve: nothing is closed');
+});
+
+test('P5.17 a1: a recalculated reset in the past is measured again, never returned', LSKIP, () => {
+  const reset = '1794409200'; // 2026-11-11T15:00:00Z (five_hour); the seven_day window resets one day later
+  const sb = sandbox();
+  const oldReserve = regFile({ limits: { reserve: { five_hour: 5, seven_day: 10 } } });
+  // 10% left on five_hour (fine under 5%) and 3% left on seven_day: closed by the week, not by the five-hour window
+  const first = lcli(sb, ['limits', '--check', 'codex', '--fresh'], { FAKE_5H: '90', FAKE_7D: '97', FAKE_RESET: reset, ROADCTL_REGISTRY: oldReserve, ROADCTL_NOW: '2026-11-11T10:00:00Z' });
+  assert.equal(first.status, 1, first.stderr);
+  const cached = JSON.parse(fs.readFileSync(path.join(sb.cache, 'road-map-journal', 'limits.json'), 'utf8')).providers.codex;
+  assert.equal(cached.closed_until, '2026-11-12T15:00:00Z');
+  // an hour after the five-hour window reset, thresholds swap to 10% / 5%: on the cached numbers five_hour now breaches at a reset
+  // that already passed — that must be measured, not returned as a closed_until in the past
+  const swapped = regFile({ limits: { reserve: { five_hour: 10, seven_day: 5 } } });
+  const again = lcli(sb, ['limits', '--check', 'codex', '--json'], { FAKE_5H: '20', FAKE_7D: '90', FAKE_RESET: reset, ROADCTL_REGISTRY: swapped, ROADCTL_NOW: '2026-11-11T16:00:00Z' });
+  const j = JSON.parse(again.stdout);
+  assert.equal(sb.calls('codex').length, 2, 'the recalculated reset is behind us: probe again');
+  assert.equal(j.result.cached, false);
+  assert.equal(j.code, 0, 'the fresh numbers allow: 80% left on five_hour, 10% left on seven_day');
+});
+
 test('P5.17 a1: closed_until takes its boundary from evaluateLimits, not from raw subtraction (99.8% used, 0.2% reserve)', LSKIP, () => {
   const edge = regFile({ limits: { reserve: { five_hour: 0.2, seven_day: 0 } } });
   const sb = sandbox();
