@@ -176,6 +176,9 @@ export const limitsOf = (api, reg, env) => async (agent) => {
 export async function replacementFor(reg, need, checked, { reach, limits, agreed = () => ({ ok: true }) }) {
   const closed = checked.candidates.find((c) => !c.eligible && c.reasons.some((x) => x.startsWith('limits: reserve reached')));
   if (!closed) return null;
+  // a candidate that is already chosen and comes BEFORE the closed one is the answer: a closed reserve behind it needs no replacement (the owner's order decides)
+  const chosenAt = checked.candidates.findIndex((c) => c.eligible);
+  if (chosenAt >= 0 && chosenAt < checked.candidates.indexOf(closed)) return null;
   const profileOf = (agent) => Object.entries(reg?.agent_profiles ?? {}).find(([, p]) => p?.executor === agent)?.[0] ?? null;
   const because = `${closed.agent}${profileOf(closed.agent) ? ` (profile ${profileOf(closed.agent)})` : ''}: the limit of ${closed.provider ? `provider ${closed.provider}` : 'its provider'} is closed${closed.closed_until ? ` until ${closed.closed_until}` : ' (the owner\'s reserve is reached)'}`;
   const skipped = [];

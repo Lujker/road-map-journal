@@ -213,6 +213,24 @@ test('P5.41 a10: candidates does not offer an executor whose limit is closed (th
   } finally { r.cleanup(); }
 });
 
+test('P5.41 a10: no replacement when the chosen candidate is open and only a reserve behind it is closed (claude open, codex closed)', () => {
+  const r = rig({ ...REG, preference: { worker: [ME, CODEX] } });
+  try {
+    const dir = path.join(r.root, 'cache', 'road-map-journal');
+    fs.mkdirSync(dir, { recursive: true });
+    const win = (used) => [{ name: 'five_hour', used_percent: used, resets_at: shift(180) }, { name: 'seven_day', used_percent: 30, resets_at: shift(60 * 24 * 3) }];
+    const entry = (provider, windows, extra = {}) => ({ provider, kind: 'subscription', state: 'known', measured_at: T0, source: 'synthetic', windows, reserve: { five_hour: 10, seven_day: 10 }, ...extra });
+    fs.writeFileSync(path.join(dir, 'limits.json'), JSON.stringify({ version: 1, providers: { claude: entry('claude', win(20)), codex: entry('codex', win(97), { closed_until: shift(180) }) } }));
+    const c = r.run(['candidates', '--env', 'home-wsl', '--role', 'worker', '--json']);
+    assert.equal(c.status, 0, c.stderr + c.stdout);
+    const j = json(c);
+    assert.equal(j.chosen, ME);
+    assert.match(j.candidates.find((x) => x.agent === CODEX).reasons.join(), /limits: reserve reached/, 'the closed reserve is still refused and shown');
+    assert.equal(j.replacement, undefined, 'but nothing replaces a candidate that was never going to be used');
+    assert.doesNotMatch(r.run(['candidates', '--env', 'home-wsl', '--role', 'worker']).stdout, /replacement:/);
+  } finally { r.cleanup(); }
+});
+
 test('P5.41 a10: outside the owner\'s list a replacement is advice only: it is shown with its profile, never chosen; the exit code stays 1', () => {
   const r = rig(); // preference worker: [ME] only
   try {
