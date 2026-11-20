@@ -554,3 +554,37 @@ test('docs: the run ledger commands, the files, the timeout key, the folding and
   for (const c of ['run', 'runs']) assert.match(spawnSync(process.execPath, [SELF, 'help', c], { encoding: 'utf8' }).stdout, new RegExp(`^roadctl ${c} \\[`));
   assert.ok(overview.trimEnd().split('\n').length <= 70);
 });
+
+test('integration: owner answer survives HOLD, resume and shifting skips until the next RUN', FAKES_SKIP, () => {
+  const r = rig({ env: { FAKE_U5: '0.9' } });
+  const config = path.join(r.board, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), requires: '0.13.0' }));
+  r.routine();
+  for (const minute of [0, 1, 2]) r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'failed'], r.at(minute));
+  assert.match(fs.readFileSync(r.routineFile(), 'utf8'), /^hold:/m);
+  const withInput = (args, data, over) => spawnSync(process.execPath, [SELF, ...args, '--board', r.board], {
+    cwd: r.ws, encoding: 'utf8', input: JSON.stringify(data), env: { ...r.env, ...over },
+  });
+  const question = { question: { id: 'owner-q', kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } };
+  const asked = withInput(['ask', 'mr-status', '--as', ME], question, r.at(3));
+  assert.equal(asked.status, 0, asked.stderr);
+  const heldAndWaiting = JSON.parse(r.ok(['routine', 'list', '--json'], r.at(3)).stdout).find((x) => x.id === 'mr-status');
+  assert.ok(heldAndWaiting.reasons.some((x) => /held:/.test(x)));
+  assert.ok(heldAndWaiting.reasons.some((x) => /waiting for owner/.test(x)));
+  const answer = withInput(['answer', 'mr-status', 'owner-q', '--by', 'Owner'], { answer: 'Use plan B' }, r.at(4));
+  assert.equal(answer.status, 0, answer.stderr);
+  assert.equal(r.tick(['--routine', 'mr-status'], r.at(124)).status, 4, 'HOLD still prevents RUN after the answer');
+  r.ok(['routine', 'resume', 'mr-status', '--by', 'Owner'], r.at(125));
+  assert.equal(r.tick(['--routine', 'mr-status'], r.at(125)).status, 1, 'the real tick path records skipped:limits');
+  assert.ok(r.runs().some((x) => x.reason === 'limits' && x.id === 'mr-status'));
+  assert.equal(store.recordSkip(r.env, { kind: 'routine', project: 'my-app', id: 'mr-status', agent: ME, reason: 'unreachable', now: Date.parse(shift(126)), version: rc.VERSION }), true);
+  const row = JSON.parse(r.ok(['routine', 'list', '--json'], r.at(127)).stdout).find((x) => x.id === 'mr-status');
+  assert.equal(row.skipped_at, shift(126));
+  assert.equal(row.last_run, shift(2), 'skips shift the due-time base, not the last real run');
+  const open = { ...r.at(247), FAKE_U5: '0.1', XDG_CACHE_HOME: path.join(r.dir, 'cache-open') };
+  const tick = r.tick(['--routine', 'mr-status', '--prompt'], open);
+  assert.equal(tick.status, 0, tick.stderr); assert.match(tick.stdout, /owner answers \(data\).*Use plan B/);
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], { ...r.at(248), FAKE_U5: '0.1' });
+  const next = r.tick(['--routine', 'mr-status', '--prompt'], { ...r.at(369), FAKE_U5: '0.1', XDG_CACHE_HOME: path.join(r.dir, 'cache-open') });
+  assert.equal(next.status, 0, next.stderr); assert.doesNotMatch(next.stdout, /Use plan B/);
+});
