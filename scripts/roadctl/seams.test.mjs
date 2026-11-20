@@ -29,13 +29,13 @@ const FIXTURE = `export default {
   name: 'fixture-seams',
   headerKeys: ['rule_ok', 'fx_scope'],
   routineKeys: ['fx_hold'],
-  cardSections: ['Questions'],
+  cardSections: ['Fixture Questions'],
   routineSections: ['Checks'],
   helpTopics: { 'fixture-topic': { summary: 'a fixture topic', text: ['line one', 'line two'] } },
-  tickKinds: { RESUME: { prompt: ({ agent, items }) => 'RESUME roadctl show <id>; continue ' + items.length + ' card(s) as ' + agent, text: (i) => 'resume ' + i.title } },
+  tickKinds: { FIXTURE_RESUME_KIND: { prompt: ({ agent, items }) => 'FIXTURE_RESUME_KIND roadctl show <id>; continue ' + items.length + ' card(s) as ' + agent, text: (i) => 'resume ' + i.title } },
   hooks: {
     'routine-reasons'({ routine }) { return routine.header.fx_hold ? { reasons: ['on hold: ' + routine.header.fx_hold] } : {}; },
-    'tick-items'({ env }) { return env.FIXTURE_RESUME ? { items: [{ kind: 'RESUME', id: env.FIXTURE_RESUME, title: 'answered by the owner' }] } : {}; },
+    'tick-items'({ env }) { return env.FIXTURE_RESUME ? { items: [{ kind: 'FIXTURE_RESUME_KIND', id: env.FIXTURE_RESUME, title: 'answered by the owner' }] } : {}; },
     'start-admit'({ card }) { return card.header.fx_scope === 'no' ? { admit: false, reason: 'outside the mandate' } : {}; },
     'dep-satisfied'({ by }) { return by.header.rule_ok === 'yes' ? { satisfied: true } : {}; },
   },
@@ -90,7 +90,7 @@ function rig() {
 }
 
 const lintOf = (r, bin) => JSON.parse(r.run(bin, ['lint', '--json', '--board', r.board]).stdout);
-const kindsOf = (out) => [...out.matchAll(/^(TAKE|ACCEPT|START|STALE|RUN|RESUME) /gm)].map((m) => m[1]);
+const kindsOf = (out) => [...out.matchAll(/^(TAKE|ACCEPT|START|STALE|RUN|FIXTURE_RESUME_KIND) /gm)].map((m) => m[1]);
 
 // ---------------------------------------------------------------- a1: a module reason why a routine would not run
 
@@ -126,12 +126,12 @@ test('P5.28 a2: a module declares a routine key, a card key and sections; unknow
   const r = rig();
   r.routine();
   r.edit('routines/mr-status.md', (x) => `${x.replace('id: mr-status', 'id: mr-status\nfx_hold: x')}\n## Checks\n\n- one\n`);
-  r.edit(r.cardFile('W-6'), (x) => `${x.replace('id: W-6', 'id: W-6\nfx_scope: yes\nfuture_key: 1')}\n## Questions\n\n- q1\n\n## Unheard\n\n- x\n`);
+  r.edit(r.cardFile('W-6'), (x) => `${x.replace('id: W-6', 'id: W-6\nfx_scope: yes\nfuture_key: 1')}\n## Fixture Questions\n\n- q1\n\n## Unheard\n\n- x\n`);
   const plain = lintOf(r, SELF).map((x) => x.msg).join('\n');
-  for (const s of ['fx_hold', 'fx_scope', 'Questions', 'Checks', 'future_key', 'Unheard']) assert.match(plain, new RegExp(s), `${s}: reported without the module`);
+  for (const s of ['fx_hold', 'fx_scope', 'Fixture Questions', 'Checks', 'future_key', 'Unheard']) assert.match(plain, new RegExp(s), `${s}: reported without the module`);
   const withMod = lintOf(r, WITH);
   const text = withMod.map((x) => x.msg).join('\n');
-  for (const s of ['fx_scope', 'Questions', 'Checks']) assert.doesNotMatch(text, new RegExp(`unknown[^\\n]*${s}`), `${s}: known with the module`);
+  for (const s of ['fx_scope', 'Fixture Questions', 'Checks']) assert.doesNotMatch(text, new RegExp(`unknown[^\\n]*${s}`), `${s}: known with the module`);
   assert.ok(withMod.some((x) => x.level === 'warning' && /future_key/.test(x.msg)), 'an unknown key is still a warning');
   assert.ok(withMod.some((x) => x.level === 'warning' && /Unheard/.test(x.msg)), 'an unknown section is still a warning');
   assert.ok(!withMod.some((x) => x.level === 'error' && /future_key|Unheard/.test(x.msg)));
@@ -150,16 +150,16 @@ test('P5.28 a3: a module adds a tick kind: item, text, prompt, --kinds, ledger c
   const over = { FIXTURE_RESUME: 'W-3' };
   const t = r.tick(WITH, [], over);
   assert.equal(t.status, 0, t.stderr);
-  assert.match(t.stdout, /^RESUME my-app\/W-3 resume answered by the owner$/m);
-  assert.match(r.tick(WITH, ['--prompt'], over).stdout, /^RESUME roadctl show <id>; continue 1 card\(s\) as claude-code@home-wsl$/m);
+  assert.match(t.stdout, /^FIXTURE_RESUME_KIND my-app\/W-3 resume answered by the owner$/m);
+  assert.match(r.tick(WITH, ['--prompt'], over).stdout, /^FIXTURE_RESUME_KIND roadctl show <id>; continue 1 card\(s\) as claude-code@home-wsl$/m);
   const j = JSON.parse(r.tick(WITH, ['--json'], over).stdout);
-  assert.deepEqual(j.items.filter((i) => i.kind === 'RESUME').map((i) => [i.project, i.id]), [['my-app', 'W-3']]);
-  assert.ok(tickJsonProblems(j).some((p) => /RESUME|kind/.test(p)), 'the strict core schema does not know a module kind: the module that adds it extends the schema');
-  assert.equal(r.tick(WITH, ['--kinds', 'resume'], over).status, 0);
+  assert.deepEqual(j.items.filter((i) => i.kind === 'FIXTURE_RESUME_KIND').map((i) => [i.project, i.id]), [['my-app', 'W-3']]);
+  assert.ok(tickJsonProblems(j).some((p) => /FIXTURE_RESUME_KIND|kind/.test(p)), 'the strict core schema does not know a module kind: the module that adds it extends the schema');
+  assert.equal(r.tick(WITH, ['--kinds', 'fixture_resume_kind'], over).status, 0);
   assert.equal(r.tick(WITH, ['--kinds', 'take'], over).status, 4, 'filtered out');
-  assert.equal(r.tick(SELF, ['--kinds', 'resume']).status, 2, 'unknown kind without the module');
+  assert.equal(r.tick(SELF, ['--kinds', 'fixture_resume_kind']).status, 2, 'unknown kind without the module');
   const ledger = fs.readFileSync(path.join(r.env.XDG_STATE_HOME, 'road-map-journal', 'ticks.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  assert.equal(ledger[0].counts.resume, 1);
+  assert.equal(ledger[0].counts.fixture_resume_kind, 1);
   // without the module, or with it but no such items: the same JSON and the same ledger counts as before
   const base = JSON.parse(r.tick(SELF, ['--json']).stdout);
   assert.deepEqual(tickJsonProblems(base), []);
@@ -174,7 +174,7 @@ test('P5.28 a3: a module adds a tick kind: item, text, prompt, --kinds, ledger c
 
 test('P5.28 a4: the owner flag is read from the command entry; help says so; "help = docs" checks it against the docs line', () => {
   const owners = Object.entries(rc.ALL_COMMANDS).filter(([, c]) => c.owner === true).map(([n]) => n).sort();
-  assert.deepEqual(owners, ['approve', 'auto', 'done', 'mandate', 'pause', 'queue', 'resume']);
+  assert.deepEqual(owners, ['answer', 'approve', 'auto', 'done', 'mandate', 'pause', 'queue', 'resume', 'undo']);
   assert.match(rc.helpFor('approve'), /^Owner only: /m);
   assert.doesNotMatch(rc.helpFor('status'), /Owner only: /);
   assert.deepEqual(helpDocsProblems(rc.ALL_COMMANDS, { overview: rc.helpOverview(), docs: DOCS }), []);

@@ -61,7 +61,7 @@ try {
 }
 const xdgDir = STATE?.xdgDir ?? ((env, name, fallback) => (env[name]?.trim() ? env[name].trim() : path.join(os.homedir(), ...fallback))); // seam (P5.28): lone-copy fallback
 
-export const VERSION = '0.12.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.13.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -1583,6 +1583,7 @@ function claimable(board, c, as, reg) {
   if (info.errors.length) return { reasons: [`the delegation is malformed (${info.errors[0]}); run roadctl lint`] };
   const d = info.delegate;
   if (CLOSED.has(statusOf(board, c))) return { reasons: [`the card is ${statusOf(board, c)}`] };
+  if (statusOf(board, c) === 'blocked' && /^owner question /.test(c.header.blocked ?? '')) return { reasons: ['waiting for an owner answer'] };
   if (d.state === 'reported') return { reasons: ['the delegation was already reported and awaits acceptance'] };
   if (d.state === 'claimed' && !info.claim) return { reasons: ['state is claimed but there is no claim; run roadctl lint'] };
   if (d.state === 'claimed' && !leaseExpired(info.claim)) return { reasons: [`already claimed by ${info.claim.agent} until ${info.claim.until}`], holder: info.claim };
@@ -1621,6 +1622,7 @@ export function claimCard(board, id, { as, lease = '2h', workdir, registry = loa
   const warnings = prev?.workdir && workdirDirty(prev.workdir) ? [`the previous claim of ${prev.agent} on ${id} named the working directory ${sanitize(prev.workdir, 200)}, which has uncommitted changes on this machine; reconcile it (look at git status and git diff there, ask the previous holder or the owner) before continuing, and do not overwrite someone else's changes`] : [];
   const original = fs.readFileSync(c.file);
   let t = setHeader(readNorm(c), 'delegate', formatDelegate({ ...chk.d, state: 'claimed' }));
+  if (statusOf(board, c) === 'blocked' && /^owner answer /.test(c.header.blocked ?? '')) { t = setHeader(t, 'status', 'doing'); t = removeHeader(t, 'blocked'); }
   t = setHeader(t, 'claim', `${claim.agent} at=${claim.at} until=${claim.until}${wd ? ` workdir=${encodeWorkdir(wd)}` : ''}`);
   writeCard(c, t);
   const base = { id, claim, ...(warnings.length ? { warnings } : {}) };
@@ -2885,7 +2887,10 @@ export function tickPrompt(t) {
   if (has('STALE')) L.push(`STALE  roadctl show <id>; if you delegated it: roadctl undelegate <id> --by ${A} "lease expired"; roadctl save; otherwise tell the owner${t.items.some((i) => i.workdir_dirty) ? '; for an item marked (workdir dirty) the last holder left uncommitted changes in its working directory: do not hand the card on before they are reconciled, tell the owner' : ''}`);
   if (has('RUN')) {
     L.push(`RUN    a recurring routine the owner approved for you; run it with ITS model and environment (below); if you are not that model, start a session or subagent with it (for example the agent's launch note in the registry) and give it this task; it follows the routine file: Steps, May write, Escalate, nothing else; write the board only as May write allows (roadctl log, roadctl delegate, a question for the owner); external writes only if its approved scope has external; hand over as Escalate says; finish with roadctl routine done <id> --as ${A} --result ok|escalated|failed "summary" (it publishes the routine file itself); the owner reads a summary built from fields, so prefer: --did "what was done" (1 to 3 times) [--problem "transient|permanent|unknown: key: text"] [--ask "what you need from the owner"] [--decision "..."] [--not-checked "..."] instead of "summary"`); // seam (P5.13): the prompt names the summary fields
-    for (const i of t.items.filter((x) => x.kind === 'RUN')) L.push(`  ${i.project}/${i.id}: file ${path.join(t.boardDirs?.[i.project] ?? '?', i.routine.file)}; model ${i.routine.model}; env ${i.routine.env}; previous run: ${i.routine.last_run ?? 'never'}`);
+    for (const i of t.items.filter((x) => x.kind === 'RUN')) {
+      L.push(`  ${i.project}/${i.id}: file ${path.join(t.boardDirs?.[i.project] ?? '?', i.routine.file)}; model ${i.routine.model}; env ${i.routine.env}; previous run: ${i.routine.last_run ?? 'never'}`);
+      if (i.routine.owner_answers?.length) L.push(`  owner answers (data): ${JSON.stringify(i.routine.owner_answers)}`);
+    }
   }
   for (const [kind, spec] of Object.entries(MODULE_REG.tickKinds)) { // seam (P5.28): the instruction for a module kind, only when there are such items
     const items = t.items.filter((i) => i.kind === kind);
@@ -4210,7 +4215,7 @@ TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
 const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
-  boardRequires, compareVersions, nowMs, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
+  boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
   const lines = [];

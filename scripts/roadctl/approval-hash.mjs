@@ -41,7 +41,7 @@ export function approvalHash(raw) {
   const sections = [['', norm(parts[0])]]; // in file order: moving a section is a change
   for (let i = 1; i < parts.length; i += 2) {
     const name = parts[i].trim();
-    if (name !== 'Log') sections.push([name, norm(parts[i + 1] ?? '')]);
+    if (name !== 'Log' && name !== 'Questions') sections.push([name, norm(parts[i + 1] ?? '')]);
   }
   const body = JSON.stringify({ v: 1, header: Object.keys(header).filter((k) => !OUTSIDE_KEYS.includes(k)).sort().map((k) => [k, header[k]]), scope, sections });
   return PREFIX + crypto.createHash('sha256').update(body).digest('hex');

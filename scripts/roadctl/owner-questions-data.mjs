@@ -58,12 +58,14 @@ export function readQuestions(section) {
   if (!Array.isArray(rows) || rows.length > 200 || new Set(rows.map((q) => q?.id)).size !== rows.length) fail('invalid Questions data');
   for (const q of rows) {
     if (!q || typeof q !== 'object' || Array.isArray(q) || !instant(q.created)) fail('invalid Questions data');
-    const allowed = ['id', 'kind', 'prompt', 'reason', 'points', 'blocking', 'created', 'state', 'recommended', 'undo_until', 'answer', 'answered', 'undo_comment', 'undone'];
+    const allowed = ['id', 'kind', 'prompt', 'reason', 'points', 'blocking', 'created', 'state', 'recommended', 'undo_until', 'answer', 'answered', 'undo_comment', 'undone', 'agent', 'defer_until'];
     if (Object.keys(q).some((k) => !allowed.includes(k))) fail('invalid Questions data');
     const blocking = q.reason !== 'reversible';
     const window = blocking ? new Date(Date.parse(q.created) + 1).toISOString() : q.undo_until;
     const base = makeQuestion({ id: q.id, kind: q.kind, prompt: q.prompt, reason: q.reason, ...(q.points === undefined ? {} : { points: q.points }), ...(q.recommended === undefined ? {} : { recommended: q.recommended }) }, q.created, window);
     if (q.blocking !== base.blocking) fail('invalid blocking class');
+    if (q.agent !== undefined && (typeof q.agent !== 'string' || !/^[A-Za-z0-9@._:-]{1,100}$/.test(q.agent))) fail('invalid question agent');
+    if (q.defer_until !== undefined && !instant(q.defer_until)) fail('invalid deferral');
     if (blocking) {
       if (!['waiting', 'answered'].includes(q.state) || q.undo_until !== undefined || q.undo_comment !== undefined || q.undone !== undefined) fail('invalid question state');
       if (q.state === 'waiting' && (q.answer !== undefined || q.answered !== undefined)) fail('invalid question state');
