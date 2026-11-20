@@ -1669,6 +1669,36 @@ const need = (info, state) => {
 
 const cardPending = (ctx, rel) => pendingIn(ctx).some((l) => l.replace(/\\/g, '/').endsWith(` ${rel}`) || l.replace(/\\/g, '/') === rel);
 
+/** Prepare an owner update without taking unrelated edits into its commit. */
+function ownerUpdateContext(board, file) {
+  const ctx = syncContext(board);
+  if (!ctx || !gitx(['remote'], ctx.root).out) return null;
+  const rel = path.relative(ctx.root, real(file)).split(path.sep).join('/');
+  if (!inScope(ctx, rel)) throw new Error('the item is outside the board repository scope');
+  const status = gitx(['status', '--porcelain', '--', rel], ctx.root);
+  if (!status.ok || status.out) throw new Error('the item has uncommitted changes; save them before answering');
+  return { ctx, rel };
+}
+
+/** Publish exactly the owner-updated file; on failure retain the local change or commit. */
+function publishOwnerUpdate(prepared, action, id, timeout = netTimeout()) {
+  if (!prepared) return 'recorded locally; save the board to share it';
+  const { ctx, rel } = prepared;
+  const add = gitx(['add', '--', rel], ctx.root);
+  if (!add.ok) return 'recorded locally; git add failed';
+  const commit = gitx(['commit', '-q', '-m', `board: ${action} ${id}`, '--', rel], ctx.root);
+  if (!commit.ok) {
+    gitx(['reset', '-q', 'HEAD', '--', rel], ctx.root);
+    return 'recorded locally; git commit failed';
+  }
+  if (!upstreamOf(ctx.root)) return 'committed locally; no upstream';
+  const pending = gitx(['log', '@{u}..HEAD', '--name-only', '--format='], ctx.root);
+  if (!pending.ok || pending.out.split('\n').filter(Boolean).some((p) => p !== rel)) return 'committed locally; other files are unpushed or cannot be checked';
+  const pushed = gitx(['push', '--quiet'], ctx.root, { timeout });
+  return pushed.ok ? 'published' : 'committed locally; push failed, reconcile and save the board';
+}
+
+
 // The file was clean before the operation; undo both the staging and the edit on commit failure.
 function restoreFailedCommit(ctx, rel, file, original) {
   gitx(['reset', '-q', 'HEAD', '--', rel], ctx.root);
@@ -4215,7 +4245,7 @@ TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
 const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
-  boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
+  boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
   const lines = [];

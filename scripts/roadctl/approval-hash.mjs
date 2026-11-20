@@ -48,7 +48,7 @@ export function approvalHash(raw, { questionData = false } = {}) {
     }
     sections.push([name, norm(parts[i + 1] ?? '')]);
   }
-  const body = JSON.stringify({ v: 1, header: Object.keys(header).filter((k) => !OUTSIDE_KEYS.includes(k)).sort().map((k) => [k, header[k]]), scope, sections });
+  const body = JSON.stringify({ v: 1, header: Object.keys(header).filter((k) => !OUTSIDE_KEYS.includes(k) && !(questionData && k === 'inbox_defer')).sort().map((k) => [k, header[k]]), scope, sections });
   return PREFIX + crypto.createHash('sha256').update(body).digest('hex');
 }
 
@@ -61,7 +61,9 @@ export function approvalState(board, routine, api) {
   const stored = routine.header[HASH_KEY];
   let current;
   try {
-    current = approvalHash(fs.readFileSync(path.join(board.dir, routine.file), 'utf8'), { questionData: (api.compareVersions(board.config.requires, '0.13.0') ?? -1) >= 0 });
+    const m = /^v?(\d+)(?:\.(\d+))?(?:\.\d+)?(?:[-+].*)?$/i.exec(String(board.config?.requires ?? ''));
+    const questionData = api ? (api.compareVersions(board.config.requires, '0.13.0') ?? -1) >= 0 : Boolean(m && (Number(m[1]) > 0 || Number(m[2] ?? 0) >= 13));
+    current = approvalHash(fs.readFileSync(path.join(board.dir, routine.file), 'utf8'), { questionData });
   } catch {
     return 'unreadable';
   }

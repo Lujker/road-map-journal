@@ -30,6 +30,7 @@ function boardOf(flags, api) {
   return board;
 }
 function itemOf(board, id) {
+  if (typeof id !== 'string' || !/^[A-Za-z0-9._-]+$/.test(id)) throw new Error('invalid target id');
   const matches = [...board.cards, ...(board.routines ?? [])].filter((x) => x.header.id === id);
   if (matches.length !== 1 || matches[0].errors?.length) throw new Error('target must identify one valid card or routine');
   return { item: matches[0], routine: !board.cards.includes(matches[0]) };
@@ -109,6 +110,7 @@ function resolve({ args, flags, api, env, out }, undo = false) {
   const index = rows.findIndex((q) => q.id === args[2]);
   if (index < 0) throw new Error('question not found');
   const timestamp = when(env, api);
+  const publish = api.ownerUpdateContext(board, item.file);
   try { rows[index] = undo ? undoQuestion(rows[index], data.comment, timestamp) : answerQuestion(rows[index], data.answer, timestamp); }
   catch (e) { if (e.code === 'already-answered') { out('answer: already answered'); return 7; } if (e.code === 'undo-expired') { out('undo: window expired'); return 8; } throw e; }
   if (!routine && !undo && item.header.status === 'blocked' && item.header.blocked === `owner question ${args[2]}` && !rows.some((q) => q.state === 'waiting')) {
@@ -125,7 +127,7 @@ function resolve({ args, flags, api, env, out }, undo = false) {
   if (!routine) raw = changeHeader(raw, 'as_of', timestamp.slice(0, 10));
   raw = log(raw, timestamp.slice(0, 10), flags.by, `${undo ? 'UNDO' : 'ANSWER'} ${args[2]}: ${JSON.stringify(undo ? data.comment : data.answer)}`);
   write(item, putQuestions(raw, rows));
-  out(`${undo ? 'undo' : 'answer'} ${args[1]}/${args[2]}: recorded; not committed`);
+  out(`${undo ? 'undo' : 'answer'} ${args[1]}/${args[2]}: ${api.publishOwnerUpdate(publish, undo ? 'undo' : 'answer', args[1])}`);
   return 0;
 }
 
@@ -136,11 +138,20 @@ function inbox({ args, flags, api, env, out }) {
     const { item } = itemOf(board, args[2]);
     const time = new Date(flags.until);
     if (!Number.isFinite(time.getTime()) || time.getTime() <= api.nowMs(env)) throw new Error('deferral must be a future time');
-    const raw = rawItem(item), rows = questionsFromItem(raw), q = rows.find((x) => x.id === args[3]);
-    if (!q || !['waiting', 'decided'].includes(q.state)) throw new Error('no open question or decision');
-    q.defer_until = time.toISOString();
-    write(item, putQuestions(log(raw, when(env, api).slice(0, 10), flags.by, `DEFER ${q.id} until ${q.defer_until}`), rows));
-    out(`inbox: deferred ${args[2]}/${q.id} until ${q.defer_until}`);
+    let raw = rawItem(item);
+    const rows = questionsFromItem(raw), q = rows.find((x) => x.id === args[3]);
+    const until = time.toISOString();
+    if (q) {
+      if (!['waiting', 'decided'].includes(q.state)) throw new Error('no open question or decision');
+      q.defer_until = until;
+      raw = putQuestions(raw, rows);
+    } else {
+      const type = args[3];
+      if (!['review', 'approval', 'escalation', 'proposed', 'milestone'].includes(type) || !ownerItems(board, Number.MAX_SAFE_INTEGER).some((x) => x.target === args[2] && x.type === type)) throw new Error('no matching inbox item');
+      raw = changeHeader(raw, 'inbox_defer', `${type} ${until}`);
+    }
+    write(item, log(raw, when(env, api).slice(0, 10), flags.by, `DEFER ${args[3]} until ${until}`));
+    out(`inbox: deferred ${args[2]}/${args[3]} until ${until}`);
     return 0;
   }
   if (args.length !== 1) throw new Error('usage: roadctl inbox --board DIR [--json]');
@@ -155,6 +166,7 @@ export function ownerItems(board, time) {
   const items = [];
   for (const item of [...board.cards, ...(board.routines ?? [])]) {
     const raw = rawItem(item);
+    const deferred = (type) => { const m = /^(review|approval|escalation|proposed|milestone) (\S+)$/.exec(item.header.inbox_defer ?? ''); return Boolean(m && m[1] === type && Date.parse(m[2]) > time); };
     for (const q of questionsFromItem(raw)) {
       if (!['waiting', 'decided'].includes(q.state) || (q.defer_until && Date.parse(q.defer_until) > time)) continue;
       const content = JSON.stringify(q);
@@ -163,18 +175,18 @@ export function ownerItems(board, time) {
     }
     if (board.cards.includes(item) && ['review', 'ready', 'proposed'].includes(item.header.status)) {
       const type = item.header.status === 'proposed' ? 'proposed' : item.header.kind === 'milestone' && item.header.status === 'review' ? 'milestone' : item.header.status === 'review' ? 'review' : (!item.header.approved ? 'approval' : null);
-      if (type) items.push({ type, target: item.header.id, title: item.header.title, hash: sha(raw), confirmation: `${type}: ${item.header.id} ${item.header.title}` });
+      if (type && !deferred(type)) items.push({ type, target: item.header.id, title: item.header.title, hash: sha(raw), confirmation: `${type}: ${item.header.id} ${item.header.title}` });
     }
     if (!board.cards.includes(item)) {
       const lastRun = [...(item.log ?? [])].reverse().find((l) => /^RUN (ok|escalated|failed):/.test(l.text));
-      if (lastRun && /^RUN escalated:/.test(lastRun.text)) items.push({ type: 'escalation', target: item.header.id, text: lastRun.text, hash: sha(JSON.stringify(lastRun)), confirmation: `Review escalation ${item.header.id}: ${lastRun.text}` });
+      if (lastRun && /^RUN escalated:/.test(lastRun.text) && !deferred('escalation')) items.push({ type: 'escalation', target: item.header.id, text: lastRun.text, hash: sha(JSON.stringify(lastRun)), confirmation: `Review escalation ${item.header.id}: ${lastRun.text}` });
     }
   }
   return items;
 }
 export default {
   name: 'owner-questions',
-  cardSections: ['Questions'], routineSections: ['Questions'],
+  cardSections: ['Questions'], routineSections: ['Questions'], headerKeys: ['inbox_defer'], routineKeys: ['inbox_defer'],
   tickKinds: { RESUME: { prompt: ({ agent }) => `RESUME read the owner's answer; if delegated, claim the card with roadctl claim <id> --as ${agent}; continue`, text: (item) => `owner answered: ${item.title}` } },
   hooks: {
     'tick-items'({ board, agent, api }) {
@@ -202,7 +214,8 @@ export default {
         if ((api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) continue;
         const routine = board.routines.find((r) => r.header.id === item.id);
         if (!routine) continue;
-        const answers = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered').map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
+        const last = Date.parse(item.routine.last_run ?? '');
+        const answers = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && (!Number.isFinite(last) || Date.parse(q.answered) >= last)).map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
         if (answers.length) run[`${item.project}/${item.id}`] = { owner_answers: answers };
       }
       return { run };

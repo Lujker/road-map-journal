@@ -60,6 +60,7 @@ test('P5.24 a2/a8: a claimed card needs a checkpoint, releases its lease and res
   r = f.run(['ask', 'W-3', '--as', 'worker'], { ...q('block'), checkpoint: { did: 'changed code', next: 'wait', in_flight: 'none' } });
   assert.equal(r.status, 0, r.stderr); assert.match(f.read(), /checkpoint: did: changed code/); assert.match(f.read(), /## Handoff[\s\S]*checkpoint: did: changed code/);
   assert.doesNotMatch(f.read(), /^claim:/m); assert.match(f.read(), /state=open/);
+  const waiting = f.run(['claim', 'W-3', '--as', 'worker']); assert.equal(waiting.status, 1); assert.match(waiting.stdout + waiting.stderr, /waiting for an owner answer/);
   r = f.run(['tick', '--as', 'worker', '--no-pull', '--json'], undefined, { ROADCTL_NOW: '2026-11-20T12:00:00.000Z' });
   let tick = JSON.parse(r.stdout); assert.ok(!tick.items.some((x) => x.id === 'W-3'));
   assert.equal(f.run(['answer', 'W-3', 'block', '--by', 'Owner'], { answer: true }).status, 0);
@@ -91,6 +92,8 @@ test('P5.24 a7: routine question blocks its RUN and the next RUN prompt includes
   r = f.run(['tick', '--as', 'worker', '--routine', 'r1', '--no-pull', '--json']); assert.ok(!JSON.parse(r.stdout).items.some((i) => i.id === 'r1'));
   r = f.run(['answer', 'r1', 'rq', '--by', 'Owner'], { answer: true }); assert.equal(r.status, 0, r.stderr);
   r = f.run(['tick', '--as', 'worker', '--routine', 'r1', '--no-pull', '--prompt']); assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /owner answers \(data\).*"answer":true/);
+  r = f.run(['routine', 'done', 'r1', '--as', 'worker', '--result', 'ok', 'done'], undefined, { ROADCTL_NOW: '2026-11-20T10:01:00.000Z' }); assert.equal(r.status, 0, r.stderr);
+  r = f.run(['tick', '--as', 'worker', '--routine', 'r1', '--no-pull', '--prompt'], undefined, { ROADCTL_NOW: '2026-11-20T13:00:00.000Z' }); assert.equal(r.status, 0, r.stderr); assert.doesNotMatch(r.stdout, /owner answers \(data\)/);
 });
 
 test('P5.24 a1: the CLI round-trips confirmation, choice points and free text', (t) => {
@@ -219,4 +222,93 @@ test('P5.24 a3: inbox discovers the board from the current project without --boa
   const f = fixture(t);
   const r = spawnSync(process.execPath, [cli, 'inbox', '--json'], { cwd: f.root, encoding: 'utf8', env: { ...process.env, HOME: f.root, ROADCTL_REGISTRY: path.join(f.root, 'registry.json') } });
   assert.equal(r.status, 0, r.stderr); assert.deepEqual(inboxProblems(JSON.parse(r.stdout)), []);
+});
+
+
+test('P5.24 a8: a reversible question retains the claim and the worker can report', (t) => {
+  const f = fixture(t);
+  const claim = 'claim: worker at=2026-11-20T09:00:00Z until=2026-11-20T10:30:00Z';
+  fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=claimed at=2026-11-20T09:00:00Z\n${claim}`));
+  const ask = f.run(['ask', 'W-3', '--as', 'worker'], { ...q('q', 'reversible'), checkpoint: { did: 'ready', next: 'continue', in_flight: 'none' } });
+  assert.equal(ask.status, 0, ask.stderr); assert.ok(f.read().includes(claim)); assert.match(f.read(), /state=claimed/); assert.match(f.read(), /status: doing/);
+  const report = f.run(['report', 'W-3', '--as', 'worker', 'completed']);
+  assert.equal(report.status, 0, report.stderr); assert.match(f.read(), /REPORT: completed/);
+});
+
+test('P5.24 a10: owner may defer a review without resolving it or hiding another item', (t) => {
+  const f = fixture(t);
+  const before = JSON.parse(f.run(['inbox', '--json']).stdout).items;
+  const review = before.find((i) => i.type === 'review'); assert.ok(review);
+  const r = f.run(['inbox', 'defer', review.target, 'review', '--by', 'Owner', '--until', '2026-11-20T12:00:00Z']);
+  assert.equal(r.status, 0, r.stderr);
+  const now = JSON.parse(f.run(['inbox', '--json']).stdout).items;
+  assert.ok(!now.some((i) => i.target === review.target && i.type === 'review'));
+  assert.ok(now.some((i) => i.target !== review.target));
+  const later = JSON.parse(f.run(['inbox', '--json'], undefined, { ROADCTL_NOW: '2026-11-20T12:00:00.000Z' }).stdout).items;
+  assert.ok(later.some((i) => i.target === review.target && i.type === 'review'));
+  const card = fs.readdirSync(path.join(f.board, 'cards')).find((name) => name.startsWith(`${review.target}-`));
+  assert.match(fs.readFileSync(path.join(f.board, 'cards', card), 'utf8'), /status: review/);
+});
+
+test('P5.24 a10: deferring a routine escalation does not change its approval hash', async (t) => {
+  const f = fixture(t);
+  let r = f.run(['routine', 'new', 'r1', 'Collect', '--agent', 'worker', '--model', 'none', '--env', 'local', '--every', '2h']); assert.equal(r.status, 0, r.stderr);
+  r = f.run(['routine', 'on', 'r1', '--by', 'Owner', '--source', 'test']); assert.equal(r.status, 0, r.stderr);
+  const file = path.join(f.board, 'routines', 'r1.md');
+  fs.appendFileSync(file, '\n## Log\n- 2026-11-20 [worker] RUN escalated: review\n');
+  r = f.run(['inbox', 'defer', 'r1', 'escalation', '--by', 'Owner', '--until', '2026-11-20T12:00:00Z']); assert.equal(r.status, 0, r.stderr);
+  const rows = JSON.parse(f.run(['routine', 'list', '--json']).stdout);
+  assert.ok(!rows.find((row) => row.id === 'r1').reasons.some((reason) => /changed after approval/.test(reason)));
+  const { loadBoard } = await import('../roadctl.mjs');
+  const { approvalState } = await import('./approval-hash.mjs');
+  const board = loadBoard(f.board); const routine = board.routines.find((item) => item.header.id === 'r1');
+  assert.equal(approvalState(board, { ...routine, file: path.relative(board.dir, routine.file) }), 'ok');
+  assert.ok(!JSON.parse(f.run(['inbox', '--json']).stdout).items.some((item) => item.target === 'r1' && item.type === 'escalation'));
+});
+
+test('P5.24 a5: a blocking question does not prevent an independent delegated card from being offered', (t) => {
+  const f = fixture(t);
+  const file = path.join(f.board, 'cards', 'other.md');
+  fs.writeFileSync(file, '---\nid: X-1\ntitle: Independent\nstatus: doing\napproved: Owner, 2026-11-20, scope=implementation\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=open at=2026-11-20T09:00:00Z\n---\n\n## Goal\nIndependent\n');
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('block')).status, 0);
+  const r = f.run(['tick', '--as', 'worker', '--no-pull', '--json']);
+  const tick = JSON.parse(r.stdout);
+  assert.ok(!tick.items.some((i) => i.id === 'W-3')); assert.ok(tick.items.some((i) => i.kind === 'TAKE' && i.id === 'X-1'));
+});
+
+test('P5.24 a4: answer publishes only its file through a fake git, refuses dirty targets and reports a failed push', (t) => {
+  const f = fixture(t);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q')).status, 0);
+  const bin = path.join(f.root, 'fake-bin'); fs.mkdirSync(bin);
+  const log = path.join(f.root, 'fake-git.log');
+  const fake = `#!${process.execPath}
+const fs = require('fs');
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.FAKE_GIT_LOG, JSON.stringify(args) + '\\n');
+if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) console.log(process.env.FAKE_GIT_ROOT);
+else if (args[0] === 'rev-parse' && args.includes('--abbrev-ref')) console.log('origin/main');
+else if (args[0] === 'remote') console.log('origin');
+else if (args[0] === 'status' && process.env.FAKE_GIT_DIRTY) console.log(' M board/cards/W-3-eksport-csv.md');
+else if (args[0] === 'log') console.log(process.env.FAKE_GIT_FOREIGN ? 'board/cards/other.md' : 'board/cards/W-3-eksport-csv.md');
+else if (args[0] === 'push' && process.env.FAKE_GIT_FAIL) process.exit(1);
+`;
+  fs.writeFileSync(path.join(bin, 'git'), fake, { mode: 0o755 });
+  const over = { PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_GIT_ROOT: f.root, FAKE_GIT_LOG: log };
+  const before = f.read();
+  let r = f.run(['answer', 'W-3', 'q', '--by', 'Owner'], { answer: true }, { ...over, FAKE_GIT_DIRTY: '1' });
+  assert.equal(r.status, 2); assert.equal(f.read(), before);
+  r = f.run(['answer', 'W-3', 'q', '--by', 'Owner'], { answer: true }, { ...over, FAKE_GIT_FAIL: '1' });
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /committed locally; push failed/);
+  const calls = fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse);
+  assert.ok(calls.some((args) => args[0] === 'add' && args.at(-1) === 'board/cards/W-3-eksport-csv.md'));
+  assert.ok(calls.some((args) => args[0] === 'commit' && args.at(-1) === 'board/cards/W-3-eksport-csv.md'));
+  assert.ok(calls.some((args) => args[0] === 'push'));
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q2')).status, 0);
+  r = f.run(['answer', 'W-3', 'q2', '--by', 'Owner'], { answer: true }, over);
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /published/);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q3')).status, 0);
+  fs.writeFileSync(log, '');
+  r = f.run(['answer', 'W-3', 'q3', '--by', 'Owner'], { answer: true }, { ...over, FAKE_GIT_FOREIGN: '1' });
+  assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /other files are unpushed/);
+  assert.ok(!fs.readFileSync(log, 'utf8').trim().split('\n').map(JSON.parse).some((args) => args[0] === 'push'));
 });
