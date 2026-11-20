@@ -63,8 +63,10 @@ const xdgDir = STATE?.xdgDir ?? ((env, name, fallback) => (env[name]?.trim() ? e
 
 // P5.41 slice 1: resolve `--as`/`--to` against the registry's agent_profiles (profile, executor, orchestrator/profile). A lone copy without the folder falls back to plain agent names and roles.
 let WHO = { resolveAs: (s) => ({ kind: 'executor', executor: String(s ?? ''), display: String(s ?? '') }), resolveTo: (s) => (/[@:]/.test(String(s ?? '')) ? { kind: 'executor', executor: String(s) } : { kind: 'role', role: String(s) }), hintOf: () => '' };
+let WHO_LOADED = false; // a copy that lost roadctl/who-takes.mjs reads names as before, so it must not read a board that needs profiles (boardRequires)
 try {
   WHO = await import('./roadctl/who-takes.mjs');
+  WHO_LOADED = true;
 } catch (e) {
   if (e?.code !== 'ERR_MODULE_NOT_FOUND' || !/roadctl[\\/]who-takes\.mjs/.test(String(e.message))) throw e;
 }
@@ -328,8 +330,10 @@ export function boardRequires(config, version = VERSION) {
   if (c < 0) return `board requires roadctl ${sanitize(req, 30)} or newer; this is ${version}`;
   // a copy that carries the version number but lost the modules folder must not run what only a module checks (P5.15: the approval hash)
   for (const [v, name] of REQUIRES_MODULE) if (compareVersions(req, v) >= 0 && !MODULE_REG.modules.includes(name)) return `board requires the module ${name} (roadctl ${v}, scripts/roadctl/), which this copy does not have; install the whole roadctl folder`;
+  if (compareVersions(req, WHO_REQUIRES) >= 0 && !WHO_LOADED) return `board requires the module who-takes (roadctl ${WHO_REQUIRES}, scripts/roadctl/who-takes.mjs), which this copy does not have; install the whole roadctl folder`; // P5.41
   return null;
 }
+const WHO_REQUIRES = '0.14.0'; // the first roadctl that reads profiles and orchestrator/profile pairs in --as and --to
 const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy'], ['0.13.0', 'owner-questions']]; // required modules for board format versions
 
 const statusOf = (board, card) => {
@@ -1762,7 +1766,9 @@ function writeReport(board, id, info, as, text) {
  * merge conflicts the report is applied again on the server's card as long as the claim there is still this agent's.
  * Statuses: reported (pushed), reported-local (offline, no remote or no git: not yet visible to others), lost (the claim was taken over), refused, error.
  */
-export function reportCard(board, id, { as, text, commit = null, timeout = netTimeout(), registry = loadRegistry() }) {
+/** The registry, or null when it cannot be read: `report` ends the work and must not be lost to a broken registry file (the name is then taken as it is, like before P5.41). */
+const registryOrNull = () => { try { return loadRegistry(); } catch { return null; } };
+export function reportCard(board, id, { as, text, commit = null, timeout = netTimeout(), registry = registryOrNull() }) {
   const who = WHO.resolveAs(as, registry); // P5.41: --as/ROADCTL_AS accept an executor, a profile or orchestrator/profile
   if (who.error) return { status: 'refused', message: `${who.error}${who.hint ? `; ${who.hint}` : ''}` };
   const e = checkAgent(who.executor, '--as');
@@ -4322,7 +4328,7 @@ TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
 const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
-  boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
+  boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits, resolveAs: (name, reg) => WHO.resolveAs(name, reg) }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
   const lines = [];

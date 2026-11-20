@@ -14,7 +14,6 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { readRuns } from './run-store.mjs';
-import { resolveAs } from './who-takes.mjs';
 import { acquireLock, stateDir } from './state.mjs';
 
 export const MARK = 'limit-checkpoint';
@@ -38,10 +37,10 @@ export function agentOf(flags, env) {
   return v && AGENT_RE.test(v.trim()) ? v.trim() : null;
 }
 /** The executor behind a session name (P5.41): an executor stays itself; a profile, a variant and `orchestrator/profile` become the executor of the profile in the registry, which is what `claim` writes. A name the registry does not resolve stays as it is. */
-export function executorOf(name, reg) {
+export function executorOf(name, reg, api) {
   if (!name) return null;
   try {
-    const r = resolveAs(name, reg);
+    const r = api.resolveAs(name, reg); // the core's resolver (who-takes.mjs, or the plain-name fallback of a copy without it)
     return r.error ? name : r.executor;
   } catch { return name; }
 }
@@ -203,7 +202,7 @@ export default {
         const cwd = typeof flags.cwd === 'string' ? flags.cwd : process.cwd();
         let reg = null;
         try { reg = api.loadRegistry(env); } catch { /* no registry */ }
-        const agent = executorOf(agentOf(flags, env), reg); // the claim names the executor, so the session's profile or pair is resolved first
+        const agent = executorOf(agentOf(flags, env), reg, api); // the claim names the executor, so the session's profile or pair is resolved first
         const now = api.nowMs(env);
         const signal = readSignal({ reg, provider: providerOf({ agent, host: null, env, reg, api }), env, api, now });
         const r = writeCheckpoint({ board, agent, cwd, signal, stopped: flags.stopped === true, env, api, now, dryRun: flags['dry-run'] === true });
@@ -220,7 +219,7 @@ export default {
         if (api.boardRequires(board.config)) return {}; // a board that needs a newer roadctl is not touched
         let reg = null;
         try { reg = api.loadRegistry(env); } catch { /* none */ }
-        const agent = executorOf(agentOf({}, env), reg); // the claim names the executor, so the session's profile or pair is resolved first
+        const agent = executorOf(agentOf({}, env), reg, api); // the claim names the executor, so the session's profile or pair is resolved first
         const cwd = payload?.cwd || process.cwd();
         const lines = [];
         if (event === 'session-start' || event === 'hermes-pre-llm') lines.push(...resumeLines({ board, agent, cwd, api }));
