@@ -466,6 +466,26 @@ test('P5.24 a10: the confirmation is built from roadctl data and the agent wordi
   assert.equal(waiting.quote, 'Proceed?');
 });
 
+test('P5.24 a11: an older undo does not hide a newer owner answer on the same delegated card: undo, new blocking question, answer, tick gives RESUME', (t) => {
+  const f = fixture(t);
+  fs.writeFileSync(f.card, f.read().replace('status: doing', 'status: doing\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=open at=2026-11-20T09:00:00Z'));
+  const tick = () => JSON.parse(f.run(['tick', '--as', 'worker', '--no-pull', '--json']).stdout);
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('q1', 'reversible')).status, 0);
+  assert.equal(f.run(['undo', 'W-3', 'q1', '--by', 'Owner'], { comment: 'not like that' }).status, 0);
+  assert.equal(tick().items.find((i) => i.id === 'W-3')?.undo, 'not like that', 'the undo is a RESUME with its comment');
+  // the worker asks again (a blocking question) and the owner answers it: the card is blocked with the answer marker
+  let r = f.run(['ask', 'W-3', '--as', 'worker'], q('q2')); assert.equal(r.status, 0, r.stderr);
+  assert.match(f.read(), /status: blocked/);
+  r = f.run(['answer', 'W-3', 'q2', '--by', 'Owner'], { answer: true }); assert.equal(r.status, 0, r.stderr);
+  assert.match(f.read(), /^blocked: owner answer q2$/m);
+  const t2 = tick();
+  assert.deepEqual(tickJsonProblems(t2), []);
+  const item = t2.items.find((i) => i.id === 'W-3');
+  assert.equal(item?.kind, 'RESUME', JSON.stringify(t2.items));
+  assert.equal(item.undo, undefined, 'it is the answer, not the old undo');
+  assert.match(f.run(['tick', '--as', 'worker', '--no-pull', '--prompt']).stdout, /RESUME .*W-3.*owner answered/);
+});
+
 test('P5.24 a5/a11: the undo window is the board daily overview; without a schedule it is 24 hours', (t) => {
   const f = fixture(t);
   const cfg = path.join(f.board, 'config.json');

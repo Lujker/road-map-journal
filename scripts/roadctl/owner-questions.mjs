@@ -364,6 +364,13 @@ export default {
         let rows;
         // P5.24 a11: a card with unreadable Questions is skipped here (lint names it); the other cards keep their items
         try { rows = questionsFromItem(rawItem(card)); } catch { return []; }
+        // the CURRENT owner answer (the card waits with `blocked: owner answer ID`) goes first: an older undo on the same card must not hide it
+        const answered = card.header.status === 'blocked' && /^owner answer /.test(card.header.blocked ?? '');
+        if (answered) {
+          const id = card.header.blocked.slice('owner answer '.length);
+          const question = rows.find((q) => q.id === id && q.state === 'answered' && q.agent === agent);
+          return question ? [{ kind: 'RESUME', id: card.header.id, title: card.header.title }] : [];
+        }
         // after an undo the item is a rework task for whoever holds the work now, delegated or not, with the owner's comment
         const undone = rows.find((q) => q.state === 'undone');
         if (undone) {
@@ -372,11 +379,9 @@ export default {
           if (gets && ['doing', 'review'].includes(statusOf(card))) return [{ kind: 'RESUME', id: card.header.id, title: card.header.title, undo: undone.undo_comment }];
           return [];
         }
-        const answered = card.header.status === 'blocked' && /^owner answer /.test(card.header.blocked ?? '');
         const undelegated = card.header.status === 'doing' && !card.header.delegate;
-        if (!answered && !undelegated) return [];
-        const id = answered ? card.header.blocked.slice('owner answer '.length) : null;
-        const question = rows.find((q) => (!id || q.id === id) && q.state === 'answered' && q.agent === agent);
+        if (!undelegated) return [];
+        const question = rows.find((q) => q.state === 'answered' && q.agent === agent);
         return question ? [{ kind: 'RESUME', id: card.header.id, title: card.header.title }] : [];
       }) };
     },
