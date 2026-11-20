@@ -442,10 +442,11 @@ export function checkAgentName(ctx, loaded) {
   return res('agent-name', 'ok', `ROADCTL_AS=${name} resolves to ${who}`);
 }
 
+/** `install`: the hook-install flags that write the file this check reads (Claude: --user, the project-local file is not what is checked; Codex and Hermes hooks are user-level already). */
 const HOOK_KINDS = [
-  { kind: 'claude', exe: 'claude', dir: (ctx) => path.join(ctx.env.CLAUDE_CONFIG_DIR?.trim() || ctx.home, '.claude'), file: 'settings.json', marker: 'session-start' },
-  { kind: 'codex', exe: 'codex', dir: (ctx) => path.join(ctx.env.CODEX_HOME?.trim() || ctx.home, '.codex'), file: 'hooks.json', marker: 'roadctl' },
-  { kind: 'hermes', exe: 'hermes', dir: (ctx) => path.join(ctx.env.HERMES_HOME?.trim() || ctx.home, '.hermes'), file: 'config.yaml', marker: '# roadctl-managed begin' },
+  { kind: 'claude', install: '--claude --user', exe: 'claude', dir: (ctx) => path.join(ctx.env.CLAUDE_CONFIG_DIR?.trim() || ctx.home, '.claude'), file: 'settings.json', marker: 'session-start' },
+  { kind: 'codex', install: '--codex', exe: 'codex', dir: (ctx) => path.join(ctx.env.CODEX_HOME?.trim() || ctx.home, '.codex'), file: 'hooks.json', marker: 'roadctl' },
+  { kind: 'hermes', install: '--hermes', exe: 'hermes', dir: (ctx) => path.join(ctx.env.HERMES_HOME?.trim() || ctx.home, '.hermes'), file: 'config.yaml', marker: '# roadctl-managed begin' },
 ];
 
 /** The roadctl hooks (session-start / pre-compact / stop, and the limit-stop observer) for each harness whose command is in PATH; missing hooks mean a session runs without the brief and the stop handoff. */
@@ -453,14 +454,14 @@ export function checkHooks(ctx) {
   const out = [];
   for (const h of HOOK_KINDS) {
     if (!which(h.exe, ctx.env, ctx.platform)) {
-      out.push(res('hooks', 'skip', `${h.exe} is not in PATH: no ${h.kind} hooks to check`, `install ${h.exe}, or run roadctl hook-install --${h.kind} --apply on the machine where it runs`));
+      out.push(res('hooks', 'skip', `${h.exe} is not in PATH: no ${h.kind} hooks to check`, `install ${h.exe}, or run roadctl hook-install ${h.install} --apply on the machine where it runs`));
       continue;
     }
     const file = path.join(h.dir(ctx), h.file);
     const installed = (() => { try { return fs.readFileSync(file, 'utf8').includes(h.marker); } catch { return false; } })();
     out.push(installed
       ? res('hooks', 'ok', `${h.kind} hooks are installed (${tilde(file, ctx.home)})`, null, h.kind)
-      : res('hooks', 'warn', `${h.kind} is in PATH but its roadctl hooks are not installed at ${tilde(file, ctx.home)}`, `roadctl hook-install --${h.kind} --apply`, h.kind));
+      : res('hooks', 'warn', `${h.kind} is in PATH but its roadctl hooks are not installed at ${tilde(file, ctx.home)}`, `roadctl hook-install ${h.install} --apply`, h.kind));
   }
   return out;
 }

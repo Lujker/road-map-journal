@@ -469,7 +469,15 @@ test('P5.47 a3: hooks — a harness in PATH without its hooks is a warning with 
   const r = rig({ git: false });
   const claude = () => r.json(['doctor']).all('hooks').find((c) => c.subject === 'claude');
   assert.equal(claude().status, 'warn', 'claude (the fake) is in PATH but has no settings.json');
-  assert.match(claude().hint, /hook-install --claude --apply/);
+  assert.match(claude().hint, /^roadctl hook-install --claude --user --apply$/, 'user-level: the file the check reads, not the project-local one');
+  const codex = r.json(['doctor']).all('hooks').find((c) => c.subject === 'codex');
+  assert.match(codex.hint, /^roadctl hook-install --codex --apply$/, 'Codex hooks are user-level already: no --user');
+  // the hint is the command that fixes it: follow it (on this temp HOME) and the check turns ok
+  const fix = r.run(['hook-install', '--claude', '--user', '--apply']);
+  assert.equal(fix.status, 0, fix.stderr + fix.stdout);
+  assert.equal(claude().status, 'ok', 'doctor accepts what its own hint installed');
+  fs.rmSync(path.join(r.home, '.claude'), { recursive: true, force: true });
+  assert.equal(claude().status, 'warn');
   fs.mkdirSync(path.join(r.home, '.claude'), { recursive: true });
   fs.writeFileSync(path.join(r.home, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node', args: ['roadctl.mjs', 'hook', 'session-start'] }] }] } }));
   assert.equal(claude().status, 'ok');
