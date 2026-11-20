@@ -6,6 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { wallClock } from '../testkit/time.mjs';
 import { lockFile, spanSeconds, WAIT_EXIT } from './lock.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -91,8 +92,8 @@ test('P5.41 a6: usage errors, the board config names the lock file, and the lock
     assert.equal(spawnSync(process.execPath, [SELF, 'lock', '--board', board, '--', 'true'], { cwd: r.dir, env, encoding: 'utf8' }).status, 0);
     assert.equal(fs.existsSync(named), hasFlock, 'with flock the named file exists (the fallback keeps its own .roadctl file)');
     // free again: a second call right after does not wait
-    const t0 = Date.now();
+    const t0 = wallClock();
     assert.equal(r.run(['--wait', '1s', '--', 'true']).status, 0);
-    assert.ok(Date.now() - t0 < 5000);
+    assert.ok(wallClock() - t0 < 5000);
   } finally { r.cleanup(); }
 });
