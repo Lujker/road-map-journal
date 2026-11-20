@@ -320,6 +320,8 @@ test('P5.13 a7: run done of the duty orchestrator and report of a delegated task
   // report
   assert.equal(r.run(['delegate', 'W-3', '--to', WORKER, '--by', ME]).status, 0);
   r.ok(['claim', 'W-3', '--as', WORKER, '--lease', '30m'], r.at(20));
+  const w3 = path.join(r.board, 'cards', fs.readdirSync(path.join(r.board, 'cards')).find((x) => x.startsWith('W-3')));
+  fs.writeFileSync(w3, fs.readFileSync(w3, 'utf8').replace('- [ ] a2:', '- [x] a2:').replace('## Log', '- a2: checked by the worker\n\n## Log')); // P5.41 a4
   const rep = r.ok(['report', 'W-3', '--as', WORKER, '--did', 'changed the exporter', '--did', 'ran the tests', '--problem', 'transient: flaky: one test flaked', '--ask', 'ok to merge?'], r.at(25));
   const p = lines(rep.stdout);
   assert.match(p[0], /^roadctl report: reported/);

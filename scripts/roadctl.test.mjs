@@ -46,6 +46,11 @@ const edit = (root, name, fn) => {
   return p;
 };
 const rules = (f, level) => f.filter((x) => x.level === level).map((x) => x.rule).sort((a, b) => a - b);
+/** Mark criteria as met and add an Evidence line for each (P5.41 a4: report needs Evidence for the delegated criteria). */
+const evidenceOf = (root, name, ids, text = 'checked by the worker, tests pass') => edit(root, name, (t) => {
+  for (const id of ids) t = t.replace(new RegExp(`- \\[ \\] ${id}:`), `- [x] ${id}:`);
+  return t.replace('## Log', `- ${ids.join(', ')}: ${text}, 2026-11-10, агент\n\n## Log`);
+});
 
 test('the committed example board has no lint errors or warnings', () => {
   const root = project();
@@ -1023,6 +1028,7 @@ test('report, accept and return: claimant only, acceptor rules, scripts never ac
   assert.match(dcli(root, ['report', 'W-3', '--as', ME, 'not mine'], reg).stderr, /only the claimant/);
   assert.equal(dcli(root, ['report', 'W-3', '--as', CODEX], reg).status, 2, 'usage: text is required');
   assert.match(dcli(root, ['accept', 'W-3', '--as', ME], reg).stderr, /expected reported/);
+  evidenceOf(root, 'W-3', ['a2']); // P5.41 a4: report needs Evidence for the delegated criterion
   const rep = dcli(root, ['report', 'W-3', '--as', CODEX, 'changed export.js; tests: 3 pass <b>x</b>'], reg);
   assert.equal(rep.status, 0, rep.stderr);
   let t = cardText(root);
@@ -1044,13 +1050,13 @@ test('report, accept and return: claimant only, acceptor rules, scripts never ac
   assert.match(t, new RegExp(`\\[${ME}\\] RETURNED: a2: the BOM is missing`));
   assert.equal(dcli(root, ['claim', 'W-3', '--as', CODEX], reg).status, 0, 'open again');
   assert.equal(dcli(root, ['report', 'W-3', '--as', CODEX, 'fixed'], reg).status, 0);
-  // accept: the delegation disappears; criterion a2 still open, so the card stays doing and says why
+  // accept: the delegation disappears; every criterion has evidence, so the card moves to review
   const acc = dcli(root, ['accept', 'W-3', '--as', ME], reg);
   assert.equal(acc.status, 0, acc.stderr);
-  assert.match(acc.stdout, /stays doing; criteria without evidence: a2: still open/);
+  assert.match(acc.stdout, /moved to review/);
   t = cardText(root);
   assert.doesNotMatch(t, /^(delegate|claim):/m);
-  assert.match(t, /status: doing/);
+  assert.match(t, /status: review/);
   assert.match(t, new RegExp(`\\[${ME}\\] ACCEPTED`));
   assert.equal(dcli(root, ['tasks']).stdout, '', 'no active delegations');
 });
@@ -1061,6 +1067,7 @@ test('accept moves the card to review when every criterion has evidence; accept=
   const cycle = (accept, as, env = reg) => {
     assert.equal(dcli(root, ['delegate', 'W-3', '--to', 'worker', '--by', ME, '--accept', accept, '--criteria', 'a2'], env).status, 0);
     assert.equal(dcli(root, ['claim', 'W-3', '--as', 'hermes@windows'], env).status, 0);
+    evidenceOf(root, 'W-3', ['a2']); // P5.41 a4: report needs Evidence for the delegated criterion
     assert.equal(dcli(root, ['report', 'W-3', '--as', 'hermes@windows', 'done'], env).status, 0);
     return dcli(root, ['accept', 'W-3', '--as', as], env);
   };
@@ -1086,6 +1093,7 @@ test('accept moves the card to review when every criterion has evidence; accept=
   const solo = project();
   assert.equal(dcli(solo, ['delegate', 'W-3', '--to', 'worker', '--by', ME, '--accept', 'reviewer']).status, 0);
   assert.equal(dcli(solo, ['claim', 'W-3', '--as', CODEX]).status, 0);
+  evidenceOf(solo, 'W-3', ['a2']); // P5.41 a4
   assert.equal(dcli(solo, ['report', 'W-3', '--as', CODEX, 'ok']).status, 0);
   assert.equal(dcli(solo, ['accept', 'W-3', '--as', 'script:ci@box']).status, 1);
   assert.equal(dcli(solo, ['accept', 'W-3', '--as', 'cron:nightly@box']).status, 1);
@@ -1098,6 +1106,7 @@ test('a script can delegate, but cannot accept or return; the acceptor must be a
   const cron = 'cron:hermes-nightly@windows';
   assert.equal(dcli(root, ['delegate', 'W-3', '--to', 'worker', '--by', cron, '--accept', 'reviewer'], reg).status, 0);
   assert.equal(dcli(root, ['claim', 'W-3', '--as', CODEX], reg).status, 0, 'the delegating script is in the registry');
+  evidenceOf(root, 'W-3', ['a2']); // P5.41 a4
   assert.equal(dcli(root, ['report', 'W-3', '--as', CODEX, 'done'], reg).status, 0);
   assert.match(dcli(root, ['accept', 'W-3', '--as', cron], reg).stderr, /a script can delegate but not accept/);
   assert.match(dcli(root, ['return', 'W-3', '--as', cron, 'x'], reg).stderr, /a script can delegate but not accept/);
@@ -1335,6 +1344,9 @@ function claimed2(accept = 'by') {
   const env = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 };
   const run = (w, args, e = {}) => p.run(w, args, '', { ...env, ...e });
   assert.equal(run(p.a, ['delegate', 'W-3', '--to', 'worker', '--by', ME, '--criteria', 'a2', '--accept', accept]).status, 0);
+  // P5.41 a4: report needs Evidence for the delegated criterion a2; the worker records it before the hand-over
+  const f = path.join(p.bd(p.a), 'cards', 'W-3-eksport-csv.md');
+  fs.writeFileSync(f, fs.readFileSync(f, 'utf8').replace('- [ ] a2:', '- [x] a2:').replace('## Log', '- a2: checked by the worker, tests pass, 2026-11-10, агент\n\n## Log'));
   assert.equal(out(run(p.a, ['save', '--json'])).status, 'pushed');
   assert.equal(out(run(p.b, ['pull', '--json'])).status, 'pulled');
   assert.equal(out(run(p.b, ['claim', 'W-3', '--as', CODEX, '--json'])).status, 'claimed');
@@ -1382,6 +1394,7 @@ test('report offline stays local ("not yet visible to others", exit 0); save pus
   const root = project();
   assert.equal(dcli(root, ['delegate', 'W-3', '--to', 'worker', '--by', ME]).status, 0);
   assert.equal(dcli(root, ['claim', 'W-3', '--as', CODEX]).status, 0);
+  evidenceOf(root, 'W-3', ['a2']); // P5.41 a4
   assert.match(dcli(root, ['report', 'W-3', '--as', CODEX, 'ok']).stdout, /reported-local — .*not yet visible to others/);
 });
 
@@ -1452,6 +1465,7 @@ test('undelegate: by the delegating agent only; open or expired freely, otherwis
   assert.match(cardText(root), /UNDELEGATED \(forced\): worker is stuck/);
   delegated(root);
   dcli(root, ['claim', 'W-3', '--as', CODEX]);
+  evidenceOf(root, 'W-3', ['a2']); // P5.41 a4
   dcli(root, ['report', 'W-3', '--as', CODEX, 'done']);
   assert.match(U(['--by', ME, 'x']).stderr, /the delegation is reported/);
   assert.equal(U(['--by', ME, '--force', 'drop it']).status, 0);
@@ -1467,6 +1481,7 @@ test('report and return keep underscores, asterisks and brackets, drop backticks
   const root = project();
   delegated(root);
   assert.equal(dcli(root, ['claim', 'W-3', '--as', CODEX]).status, 0);
+  evidenceOf(root, 'W-3', ['a2']); // P5.41 a4
   const long = `${'x'.repeat(1400)} END`;
   const r = dcli(root, ['report', 'W-3', '--as', CODEX, `file_name.mjs *bold* [x] \`rm -rf\` <script>alert(1)</script>\n## Acceptance\u0007 ${long}`]);
   assert.equal(r.status, 0, r.stderr);
@@ -2017,6 +2032,7 @@ test('tick with a registry: TAKE, ACCEPT, START and STALE per agent; scripts and
   assert.deepEqual(lines(t.run(ME)), [head(ME, 'work'), `START my-app/W-5 ${W5}`, 'limits: claude allowed']);
   assert.equal(t.run(CODEX).status, 4);
   // reported: accept=reviewer, so every non-script agent with can_accept (not CODEX, not the script) gets ACCEPT
+  t.card('W-3', (x) => x.replace('- [ ] a2:', '- [x] a2:').replace('## Log', '- a2: checked by the worker, 2026-11-10, агент\n\n## Log')); // P5.41 a4
   assert.equal(t.bcli(['report', 'W-3', '--as', CODEX, 'done a2']).status, 0);
   assert.deepEqual(lines(t.run(ME)), [head(ME, 'work'), `ACCEPT my-app/W-3 ${W3}`, `START my-app/W-5 ${W5}`, 'limits: claude allowed']);
   assert.equal(t.run(HERMES).stdout, `${head(HERMES, 'work')}\nACCEPT my-app/W-3 ${W3}\nlimits: some-api not-applicable\n`);
@@ -2059,6 +2075,7 @@ test('tick without a registry: the agent has every role but a script is never an
   assert.equal(s.stdout, `${head(SCRIPT, 'blocked-unknown')}\nTAKE my-app/W-3 ${W3}\nlimits: - unknown\n`, 'a script takes a role-addressed task without a registry, but gets no START; its provider is unknown here');
   assert.equal(s.status, 3);
   assert.equal(t.bcli(['claim', 'W-3', '--as', CODEX]).status, 0);
+  t.card('W-3', (x) => x.replace('- [ ] a2:', '- [x] a2:').replace('## Log', '- a2: checked by the worker, 2026-11-10, агент\n\n## Log')); // P5.41 a4
   assert.equal(t.bcli(['report', 'W-3', '--as', CODEX, 'done']).status, 0);
   assert.match(t.run(ME).stdout, new RegExp(`^ACCEPT my-app/W-3 ${W3}$`, 'm'), 'accept=reviewer: any real agent without a registry');
   assert.doesNotMatch(t.run(SCRIPT).stdout, /ACCEPT|START|STALE/);
@@ -3708,6 +3725,7 @@ test('claim --workdir: stored in the claim header (valid for lint, spaces encode
   }
   edit(root, 'W-3', (x) => x.replace(/^claim: .*$/m, `claim: ${CODEX} at=${T0} until=2026-11-10T12:00:00Z workdir=${wd.replace(/ /g, '%20')}`));
   // report and accept work as before
+  evidenceOf(root, 'W-3', ['a2']); // P5.41 a4
   assert.equal(cli(root, ['report', 'W-3', '--as', CODEX, 'done'], '', env).status, 0);
   assert.doesNotMatch(cardText(root), /^claim:/m);
   assert.equal(cli(root, ['accept', 'W-3', '--as', ME], '', env).status, 0);
@@ -3716,6 +3734,148 @@ test('claim --workdir: stored in the claim header (valid for lint, spaces encode
   assert.equal(cli(root2, ['delegate', 'W-3', '--to', 'worker', '--by', ME], '', env).status, 0);
   assert.equal(cli(root2, ['claim', 'W-3', '--as', CODEX], '', env).status, 0);
   assert.equal(cardText(root2).match(/^claim: (.*)$/m)[1], `${CODEX} at=${T0} until=2026-11-10T12:00:00Z`);
+});
+
+// ---------------------------------------------------------------- P5.41 slice 1: who takes the work
+
+const PROFILE_REG = () => writeRegistry({
+  ...REGISTRY,
+  agents: { ...REGISTRY.agents, 'pi-worker@home-wsl': { host: 'pi', roles: ['worker'] } },
+  agent_profiles: {
+    'claude-developer': { executor: ME, openbot: { name: 'claude-developer', id: 'ob-1' } },
+    'codex-developer': { executor: CODEX, openbot: { name: 'codex-developer', id: 'ob-2' } },
+    'pi-developer': { executor: 'pi-worker@home-wsl', openbot: { name: 'pi-developer', id: 'ob-3' }, openbot_variants: [{ name: 'pi-developer-small', id: 'ob-4' }] },
+  },
+});
+
+test('P5.41 a1: --as and ROADCTL_AS accept an executor, a profile and orchestrator/profile; a variant maps to its base; unknown is refused with a hint; a direct harness works as before', () => {
+  const reg = PROFILE_REG();
+  // executor (as before)
+  const r1 = project();
+  delegated(r1);
+  assert.equal(dcli(r1, ['claim', 'W-3', '--as', CODEX], { ROADCTL_REGISTRY: reg }).status, 0);
+  // profile -> its executor; the Log writes both names
+  const r2 = project();
+  delegated(r2);
+  const c2 = dcli(r2, ['claim', 'W-3', '--as', 'pi-developer', '--json'], { ROADCTL_REGISTRY: reg });
+  assert.equal(c2.status, 0, c2.stderr);
+  assert.equal(JSON.parse(c2.stdout).claim.agent, 'pi-worker@home-wsl');
+  assert.match(cardText(r2), /CLAIMED by pi-developer \(pi-worker@home-wsl\)/);
+  // orchestrator/profile
+  const r3 = project();
+  delegated(r3);
+  const c3 = dcli(r3, ['claim', 'W-3', '--as', 'openbot@home-wsl/pi-developer', '--json'], { ROADCTL_REGISTRY: reg });
+  assert.equal(c3.status, 0, c3.stderr);
+  assert.equal(JSON.parse(c3.stdout).claim.agent, 'pi-worker@home-wsl');
+  assert.match(cardText(r3), /CLAIMED by openbot@home-wsl\/pi-developer \(pi-worker@home-wsl\)/);
+  // a variant of a profile maps to the same executor
+  const r4 = project();
+  delegated(r4);
+  const c4 = dcli(r4, ['claim', 'W-3', '--as', 'pi-developer-small', '--json'], { ROADCTL_REGISTRY: reg });
+  assert.equal(c4.status, 0, c4.stderr);
+  assert.equal(JSON.parse(c4.stdout).claim.agent, 'pi-worker@home-wsl');
+  // unknown name: refused with a hint that lists the profiles and executors
+  const r5 = project();
+  delegated(r5);
+  const bad = dcli(r5, ['claim', 'W-3', '--as', 'nonsense'], { ROADCTL_REGISTRY: reg });
+  assert.equal(bad.status, 1);
+  assert.match(bad.stderr, /unknown nonsense/);
+  assert.match(bad.stderr, /profiles: claude-developer, codex-developer, pi-developer/);
+  // a bare orchestrator is not an --as value; a bad orchestrator part is refused
+  const r6 = project();
+  delegated(r6);
+  assert.equal(dcli(r6, ['claim', 'W-3', '--as', 'openbot@home-wsl'], { ROADCTL_REGISTRY: reg }).status, 1);
+  assert.match(dcli(r6, ['claim', 'W-3', '--as', 'no-at/pi-developer'], { ROADCTL_REGISTRY: reg }).stderr, /bad orchestrator/);
+  // ROADCTL_AS sets the value once per session (--as wins, but none is given here)
+  const r7 = project();
+  delegated(r7);
+  const e7 = dcli(r7, ['claim', 'W-3', '--json'], { ROADCTL_REGISTRY: reg, ROADCTL_AS: 'pi-developer' });
+  assert.equal(e7.status, 0, e7.stderr);
+  assert.equal(JSON.parse(e7.stdout).claim.agent, 'pi-worker@home-wsl');
+  // a direct harness without a registry works as before
+  const r8 = project();
+  delegated(r8);
+  assert.equal(dcli(r8, ['claim', 'W-3', '--as', CODEX]).status, 0);
+});
+
+test('P5.41 a2: delegate --to takes role, profile, executor and orchestrator; claim matches by the rules; the Log writes both names', () => {
+  const reg = PROFILE_REG();
+  const env = { ROADCTL_REGISTRY: reg };
+  const dg = (root, to) => dcli(root, ['delegate', 'W-3', '--to', to, '--by', ME, '--criteria', 'a2'], env);
+  // role (as before): a profile takes it through its executor's role
+  const r0 = project();
+  assert.equal(dg(r0, 'worker').status, 0);
+  assert.equal(dcli(r0, ['claim', 'W-3', '--as', 'codex-developer'], env).status, 0);
+  // profile: this profile from any orchestrator or harness, or its variant
+  const r1 = project();
+  assert.equal(dg(r1, 'pi-developer').status, 0);
+  assert.equal(dcli(r1, ['claim', 'W-3', '--as', 'pi-developer'], env).status, 0);
+  const r1b = project();
+  assert.equal(dg(r1b, 'pi-developer').status, 0);
+  assert.equal(dcli(r1b, ['claim', 'W-3', '--as', 'openbot@home-wsl/pi-developer'], env).status, 0);
+  const r1c = project();
+  assert.equal(dg(r1c, 'pi-developer').status, 0);
+  assert.equal(dcli(r1c, ['claim', 'W-3', '--as', 'pi-developer-small'], env).status, 0, 'a variant of the profile');
+  const r1d = project();
+  assert.equal(dg(r1d, 'pi-developer').status, 0);
+  assert.match(dcli(r1d, ['claim', 'W-3', '--as', 'codex-developer'], env).stderr, /addressed to profile pi-developer/);
+  // orchestrator: any of its profiles
+  const r2 = project();
+  assert.equal(dg(r2, 'openbot@home-wsl').status, 0);
+  assert.equal(dcli(r2, ['claim', 'W-3', '--as', 'openbot@home-wsl/pi-developer'], env).status, 0);
+  const r2b = project();
+  assert.equal(dg(r2b, 'openbot@home-wsl').status, 0);
+  assert.match(dcli(r2b, ['claim', 'W-3', '--as', 'pi-developer'], env).stderr, /addressed to orchestrator openbot@home-wsl/);
+  // executor: itself or a profile whose executor it is (the iteration 0.13 scenarios)
+  const r3 = project();
+  assert.equal(dg(r3, 'codex@home-wsl').status, 0);
+  assert.match(dcli(r3, ['claim', 'W-3', '--as', 'pi-developer'], env).stderr, /addressed to codex@home-wsl/, 'pi-developer is not linked to codex@home-wsl: refused');
+  const r3b = project();
+  assert.equal(dg(r3b, 'codex@home-wsl').status, 0);
+  assert.equal(dcli(r3b, ['claim', 'W-3', '--as', 'codex-developer'], env).status, 0, 'the profile whose executor is codex@home-wsl takes it');
+  const r4 = project();
+  assert.equal(dg(r4, 'pi-worker@home-wsl').status, 0);
+  assert.equal(dcli(r4, ['claim', 'W-3', '--as', 'pi-developer'], env).status, 0, 'pi-developer is pi-worker@home-wsl by profile');
+  assert.match(cardText(r4), /CLAIMED by pi-developer \(pi-worker@home-wsl\)/);
+});
+
+test('P5.41 a3: claim moves ready -> doing when approved; without approval it refuses', () => {
+  const root = project();
+  edit(root, 'W-5', (t) => t.replace('depends_on: W-2', `depends_on: W-2\n${APPROVED}`));
+  assert.equal(dcli(root, ['delegate', 'W-5', '--to', 'worker', '--by', ME]).status, 0);
+  assert.equal(dcli(root, ['claim', 'W-5', '--as', CODEX]).status, 0);
+  assert.match(cardText(root, 'W-5'), /status: doing/);
+  // an unapproved card with a delegation: refused, status unchanged
+  const root2 = project();
+  edit(root2, 'W-5', (t) => t.replace('as_of:', `delegate: to=worker host=any criteria=all by=${ME} accept=by state=open at=${T0}\nas_of:`));
+  const r2 = dcli(root2, ['claim', 'W-5', '--as', CODEX]);
+  assert.equal(r2.status, 1);
+  assert.match(r2.stderr, /no approved record/);
+  assert.match(cardText(root2, 'W-5'), /status: ready/);
+});
+
+test('P5.41 a4: report refuses without Evidence for the delegated criteria; --commit verifies the commit exists in the claim workdir', () => {
+  const root = project();
+  delegated(root);
+  assert.equal(dcli(root, ['claim', 'W-3', '--as', CODEX]).status, 0);
+  assert.match(dcli(root, ['report', 'W-3', '--as', CODEX, 'done']).stderr, /no Evidence for a2/);
+  evidenceOf(root, 'W-3', ['a2']);
+  assert.equal(dcli(root, ['report', 'W-3', '--as', CODEX, 'done']).status, 0);
+  // --commit: the project repository is the claim's workdir
+  const root2 = project();
+  delegated(root2);
+  const wd = gitRepo({ name: 'repo' });
+  const sha = gq(wd, 'rev-parse', 'HEAD').trim();
+  assert.equal(dcli(root2, ['claim', 'W-3', '--as', CODEX, '--workdir', wd]).status, 0);
+  evidenceOf(root2, 'W-3', ['a2']);
+  assert.match(dcli(root2, ['report', 'W-3', '--as', CODEX, '--commit', 'deadbeef', 'done']).stderr, /is not a commit/);
+  assert.equal(dcli(root2, ['report', 'W-3', '--as', CODEX, '--commit', sha, 'done']).status, 0);
+  // --commit without a workdir: refused with a hint
+  const root3 = project();
+  delegated(root3);
+  assert.equal(dcli(root3, ['claim', 'W-3', '--as', CODEX]).status, 0);
+  evidenceOf(root3, 'W-3', ['a2']);
+  assert.match(dcli(root3, ['report', 'W-3', '--as', CODEX, '--commit', sha, 'done']).stderr, /--commit needs the project repository/);
 });
 
 test('taking over an expired claim: a WARNING on stderr when the previous workdir is here and dirty (the claim still goes ahead); none when clean, missing or not named', () => {
@@ -3842,6 +4002,9 @@ test('failed commits restore claim, report and routine files and index', { skip:
   };
   fail(card, ['claim', 'W-3', '--as', CODEX]);
   assert.equal(run(['claim', 'W-3', '--as', CODEX]).status, 0);
+  // P5.41 a4: evidence for a2, committed, so the report reaches its own commit step (the pre-commit hook then fails it)
+  fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace('- [ ] a2:', '- [x] a2:').replace('## Log', '- a2: checked by the worker\n\n## Log'));
+  assert.equal(out(run(['save', '--json'])).status, 'pushed');
   fail(card, ['report', 'W-3', '--as', CODEX, 'checked']);
   fail(routine, ['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'checked']);
 });
@@ -3906,6 +4069,7 @@ test('tick --json contract: every decision and every item kind fits the schema o
   const work = json(t);
   assert.deepEqual(work.items.map((i) => i.kind), ['RUN', 'TAKE', 'START'], 'sorted by card id, then kind');
   assert.equal(t.bcli(['claim', 'W-3', '--as', CODEX, '--lease', '30m']).status, 0);
+  t.card('W-3', (x) => x.replace('- [ ] a2:', '- [x] a2:').replace('## Log', '- a2: checked by the worker, 2026-11-10, агент\n\n## Log')); // P5.41 a4
   assert.equal(t.bcli(['report', 'W-3', '--as', CODEX, 'done a2']).status, 0);
   assert.ok(json(t).items.some((i) => i.kind === 'ACCEPT'));
   const t2 = tenv();

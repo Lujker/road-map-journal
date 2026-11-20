@@ -61,7 +61,15 @@ try {
 }
 const xdgDir = STATE?.xdgDir ?? ((env, name, fallback) => (env[name]?.trim() ? env[name].trim() : path.join(os.homedir(), ...fallback))); // seam (P5.28): lone-copy fallback
 
-export const VERSION = '0.13.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+// P5.41 slice 1: resolve `--as`/`--to` against the registry's agent_profiles (profile, executor, orchestrator/profile). A lone copy without the folder falls back to plain agent names and roles.
+let WHO = { resolveAs: (s) => ({ kind: 'executor', executor: String(s ?? ''), display: String(s ?? '') }), resolveTo: (s) => (/[@:]/.test(String(s ?? '')) ? { kind: 'executor', executor: String(s) } : { kind: 'role', role: String(s) }), hintOf: () => '' };
+try {
+  WHO = await import('./roadctl/who-takes.mjs');
+} catch (e) {
+  if (e?.code !== 'ERR_MODULE_NOT_FOUND' || !/roadctl[\\/]who-takes\.mjs/.test(String(e.message))) throw e;
+}
+
+export const VERSION = '0.14.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -471,7 +479,7 @@ export function loadRegistry(env = process.env) {
     if (!obj(pv)) throw new Error(`registry ${p}: provider ${id} must be an object`);
     checkReserve(pv.reserve, `providers.${id}.reserve`);
   }
-  return { path: p, version: r.version ?? 1, roles: r.roles ?? {}, agents: r.agents ?? {}, limits: r.limits ?? {}, providers: r.providers ?? {}, environments: r.environments ?? {}, preference: r.preference ?? {} };
+  return { path: p, version: r.version ?? 1, roles: r.roles ?? {}, agents: r.agents ?? {}, agent_profiles: r.agent_profiles ?? {}, openbot: r.openbot ?? {}, limits: r.limits ?? {}, providers: r.providers ?? {}, environments: r.environments ?? {}, preference: r.preference ?? {} };
 }
 
 const scriptName = (a) => /^(cron|script):/.test(a);
@@ -479,26 +487,37 @@ export const hostOfAgent = (agent, reg) => reg?.agents?.[agent]?.host ?? (script
 export const isScriptAgent = (agent, reg) => scriptName(agent) || hostOfAgent(agent, reg) === 'script';
 const looksLikeAgent = (x) => /[@:]/.test(x);
 
-/** May `agent` take this delegation? `to` is the agent itself or a role the registry gives it; without a registry a role cannot be checked. */
+/** May `agent` (an executor, a profile or `orchestrator/profile`) take this delegation? P5.41: profile delegations go to that profile from any orchestrator or harness; orchestrator delegations to any of its profiles; executor delegations to the executor itself or a profile whose executor it is. */
 export function eligibility(d, agent, reg) {
-  const h = hostOfAgent(agent, reg);
-  if (d.host !== 'any' && h !== d.host) return { ok: false, reason: `the delegation needs host ${d.host}, ${agent} runs on ${h}` };
-  if (d.to === agent) return { ok: true };
-  if (looksLikeAgent(d.to)) return { ok: false, reason: `the delegation is addressed to ${d.to}` };
-  if (!reg) return { ok: true };
-  return reg.agents[agent]?.roles?.includes(d.to) ? { ok: true } : { ok: false, reason: `${agent} does not have the role ${d.to} in the registry` };
+  const who = typeof agent === 'object' && agent !== null ? agent : WHO.resolveAs(agent, reg);
+  if (who.error) return { ok: false, reason: who.error + (who.hint ? `; ${who.hint}` : '') };
+  const executor = who.executor;
+  const h = hostOfAgent(executor, reg);
+  if (d.host !== 'any' && h !== d.host) return { ok: false, reason: `the delegation needs host ${d.host}, ${executor} runs on ${h}` };
+  const t = WHO.resolveTo(d.to, reg);
+  if (t.kind === 'role') {
+    if (!reg) return { ok: true };
+    return reg.agents[executor]?.roles?.includes(t.role) ? { ok: true } : { ok: false, reason: `${executor} does not have the role ${t.role} in the registry` };
+  }
+  if (t.kind === 'executor') return who.executor === t.executor ? { ok: true } : { ok: false, reason: `the delegation is addressed to ${d.to}` };
+  if (t.kind === 'profile') return who.profile === t.profile ? { ok: true } : { ok: false, reason: `the delegation is addressed to profile ${d.to}` };
+  if (t.kind === 'orchestrator') return who.orchestrator === t.orchestrator ? { ok: true } : { ok: false, reason: `the delegation is addressed to orchestrator ${d.to}` };
+  return { ok: false, reason: t.error ?? `the delegation is addressed to ${d.to}` };
 }
 
 /** May `agent` accept or return this delegation? Never a script; never the owner's own decision. */
 export function acceptorCheck(d, agent, reg) {
-  if (isScriptAgent(agent, reg)) return { ok: false, reason: `${agent} is a script; a script can delegate but not accept` };
+  const who = typeof agent === 'object' && agent !== null ? agent : WHO.resolveAs(agent, reg);
+  if (who.error) return { ok: false, reason: who.error + (who.hint ? `; ${who.hint}` : '') };
+  const executor = who.executor;
+  if (isScriptAgent(executor, reg)) return { ok: false, reason: `${executor} is a script; a script can delegate but not accept` };
   if (d.accept === 'owner') return { ok: false, reason: 'accept=owner: the owner accepts by hand (roadctl done, after review); an agent cannot accept or return this delegation' };
-  if (d.accept === 'by') return agent === d.by ? { ok: true } : { ok: false, reason: `accept=by: only ${d.by} may accept or return` };
+  if (d.accept === 'by') return executor === d.by ? { ok: true } : { ok: false, reason: `accept=by: only ${d.by} may accept or return` };
   if (d.accept === 'reviewer') {
     if (!reg) return { ok: true };
-    return reg.agents[agent]?.can_accept === true ? { ok: true } : { ok: false, reason: `accept=reviewer: ${agent} has no can_accept in the registry` };
+    return reg.agents[executor]?.can_accept === true ? { ok: true } : { ok: false, reason: `accept=reviewer: ${executor} has no can_accept in the registry` };
   }
-  return agent === d.accept ? { ok: true } : { ok: false, reason: `accept=${d.accept}: only ${d.accept} may accept or return` };
+  return executor === d.accept ? { ok: true } : { ok: false, reason: `accept=${d.accept}: only ${d.accept} may accept or return` };
 }
 
 /** Delegation rows (one per card with a `delegate` header): the view shared by tasks, brief, status and next. */
@@ -1540,7 +1559,7 @@ function ensureDelegationSection(text) {
 const refuse = (...reasons) => ({ ok: false, reasons });
 const checkAgent = (name, what) => (AGENT_RE.test(String(name ?? '')) ? null : `${what} must be an agent name like claude-code@home-wsl (letters, digits, . _ : @ -)`);
 
-export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by, accept = 'by' }) {
+export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by, accept = 'by', registry = loadRegistry() }) {
   const c = findCard(board, id);
   const st = statusOf(board, c);
   const reasons = [];
@@ -1551,10 +1570,10 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
   }
   if (CLOSED.has(st)) reasons.push(`the card is ${st}`);
   if ('delegate' in c.header || 'claim' in c.header) reasons.push('a delegation is already active on this card (one at a time); accept or return it first');
-  for (const [v, what] of [[to, '--to'], [by, '--by']]) {
-    const e = checkAgent(v, what);
-    if (e) reasons.push(e);
-  }
+  const tgt = WHO.resolveTo(to, registry); // P5.41: role, profile, executor or orchestrator
+  if (tgt.kind === 'unknown') reasons.push(tgt.error + (tgt.hint ? `; ${tgt.hint}` : ''));
+  const e = checkAgent(by, '--by');
+  if (e) reasons.push(e);
   const d = { to, host, criteria: criteria === 'all' ? 'all' : String(criteria).split(',').map((x) => x.trim()), by, accept, state: 'open', at: isoAt() };
   const parsed = parseDelegate(formatDelegate(d), c.criteria.map((x) => x.id));
   if (!reasons.length && parsed.errors.length) reasons.push(...parsed.errors);
@@ -1576,7 +1595,7 @@ export function parseLease(s = '2h') {
   return ms;
 }
 
-/** Look at the delegation of a card and say whether `as` may claim it now. */
+/** Look at the delegation of a card and say whether `as` (an executor, a profile or `orchestrator/profile`) may claim it now. */
 function claimable(board, c, as, reg) {
   const info = delegationInfo(c);
   if (!info.present) return { reasons: ['the card has no delegation'] };
@@ -1587,10 +1606,15 @@ function claimable(board, c, as, reg) {
   if (d.state === 'reported') return { reasons: ['the delegation was already reported and awaits acceptance'] };
   if (d.state === 'claimed' && !info.claim) return { reasons: ['state is claimed but there is no claim; run roadctl lint'] };
   if (d.state === 'claimed' && !leaseExpired(info.claim)) return { reasons: [`already claimed by ${info.claim.agent} until ${info.claim.until}`], holder: info.claim };
+  let basis = null;
+  if (!scopesOf(c.header.approved).includes('implementation')) {
+    basis = approvalBasis(board, c, 'work'); // P5.41 a3: claiming needs the owner's approval, or a current by_mandate (recorded by delegate)
+    if (!basis.ok) return { reasons: ['the card has no approved record (scope=implementation); the owner approves before work is claimed', ...basis.reasons] };
+  }
   const el = eligibility(d, as, reg);
   if (!el.ok) return { reasons: [el.reason] };
   if (reg && !reg.agents[d.by]) return { reasons: [`the delegating agent ${d.by} is not in the registry (${reg.path}); add it or ask the owner`] };
-  return { d, info };
+  return { d, info, basis };
 }
 
 /**
@@ -1599,7 +1623,9 @@ function claimable(board, c, as, reg) {
  * Statuses: claimed (pushed, exclusive), claimed-local (offline, no remote or no git: not yet exclusive), lost, refused, error.
  */
 export function claimCard(board, id, { as, lease = '2h', workdir, registry = loadRegistry(), timeout = netTimeout() }) {
-  const e = checkAgent(as, '--as');
+  const who = WHO.resolveAs(as, registry); // P5.41: --as/ROADCTL_AS accept an executor, a profile or orchestrator/profile; the claim stores the executor
+  if (who.error) return { status: 'refused', message: `${who.error}${who.hint ? `; ${who.hint}` : ''}` };
+  const e = checkAgent(who.executor, '--as');
   if (e) return { status: 'refused', message: e };
   const ms = parseLease(lease);
   let wd;
@@ -1610,21 +1636,25 @@ export function claimCard(board, id, { as, lease = '2h', workdir, registry = loa
     if (!fs.existsSync(wd) || !fs.statSync(wd).isDirectory()) return { status: 'refused', message: `--workdir ${sanitize(wd, 120)} is not a directory on this machine` };
   }
   const c = findCard(board, id);
-  const chk = claimable(board, c, as, registry);
+  const chk = claimable(board, c, who, registry);
   if (!chk.d) return { status: 'refused', message: chk.reasons.join('; '), holder: chk.holder ?? null };
   const ctx = syncContext(board);
   const remote = ctx && gitx(['remote'], ctx.root).out;
   const rel = ctx ? path.relative(ctx.root, real(c.file)).split(path.sep).join('/') : null;
   if (remote && pendingIn(ctx).some((l) => l.replace(/\\/g, '/').endsWith(` ${rel}`) || l.replace(/\\/g, '/') === rel)) return { status: 'refused', message: `the card file has uncommitted changes; run roadctl save first so the claim is the only change pushed` };
-  const claim = { agent: as, at: isoAt(), until: isoAt(nowMs() + ms), ...(wd ? { workdir: wd } : {}) };
+  const claim = { agent: who.executor, at: isoAt(), until: isoAt(nowMs() + ms), ...(wd ? { workdir: wd } : {}) };
   // taking over an expired claim: the previous holder may have left unfinished changes in its working directory (when that is on this machine)
   const prev = chk.d.state === 'claimed' ? chk.info.claim : null;
   const warnings = prev?.workdir && workdirDirty(prev.workdir) ? [`the previous claim of ${prev.agent} on ${id} named the working directory ${sanitize(prev.workdir, 200)}, which has uncommitted changes on this machine; reconcile it (look at git status and git diff there, ask the previous holder or the owner) before continuing, and do not overwrite someone else's changes`] : [];
   const original = fs.readFileSync(c.file);
   let t = setHeader(readNorm(c), 'delegate', formatDelegate({ ...chk.d, state: 'claimed' }));
-  if (statusOf(board, c) === 'blocked' && /^owner answer /.test(c.header.blocked ?? '')) { t = setHeader(t, 'status', 'doing'); t = removeHeader(t, 'blocked'); }
+  if (statusOf(board, c) === 'ready') t = setHeader(t, 'status', 'doing'); // P5.41 a3: claiming starts the work
+  else if (statusOf(board, c) === 'blocked' && /^owner answer /.test(c.header.blocked ?? '')) { t = setHeader(t, 'status', 'doing'); t = removeHeader(t, 'blocked'); }
+  for (const [k, v] of chk.basis?.header ?? []) t = setHeader(t, k, v);
   t = setHeader(t, 'claim', `${claim.agent} at=${claim.at} until=${claim.until}${wd ? ` workdir=${encodeWorkdir(wd)}` : ''}`);
   writeCard(c, t);
+  if (chk.basis?.log) appendLog(board, id, chk.basis.log, { author: who.display });
+  appendLog(board, id, `CLAIMED by ${who.display} (until ${claim.until})`, { author: who.display }); // P5.41 a2: both names in the Log
   const base = { id, claim, ...(warnings.length ? { warnings } : {}) };
   if (!ctx) return { ...base, status: 'claimed-local', message: 'claimed on the local board only (not a git repository): not yet exclusive' };
   if (!remote) return { ...base, status: 'claimed-local', message: 'claimed locally (the repository has no remote): not yet exclusive' };
@@ -1724,35 +1754,49 @@ function writeReport(board, id, info, as, text) {
   appendLog(board, id, `REPORT: ${text}`, { author: as, loose: true });
 }
 
+/** The criteria the delegation handed over: `all` is every criterion of the card. Returns the list of ids. */
+
 /**
  * The claimant hands in a result: Log entry `REPORT: text`, state reported, claim removed; then the card (only) is committed and pushed,
  * like a claim, so the delegating side sees it after a pull. If the server has other changes to the card, they are merged; when the
  * merge conflicts the report is applied again on the server's card as long as the claim there is still this agent's.
  * Statuses: reported (pushed), reported-local (offline, no remote or no git: not yet visible to others), lost (the claim was taken over), refused, error.
  */
-export function reportCard(board, id, { as, text, timeout = netTimeout() }) {
-  const e = checkAgent(as, '--as');
+export function reportCard(board, id, { as, text, commit = null, timeout = netTimeout(), registry = loadRegistry() }) {
+  const who = WHO.resolveAs(as, registry); // P5.41: --as/ROADCTL_AS accept an executor, a profile or orchestrator/profile
+  if (who.error) return { status: 'refused', message: `${who.error}${who.hint ? `; ${who.hint}` : ''}` };
+  const e = checkAgent(who.executor, '--as');
   if (e) return { status: 'refused', message: e };
   if (!String(text ?? '').trim()) return { status: 'refused', message: 'a report needs text: roadctl report <id> --as AGENT "what was done, checked, left"' };
-  const info = delegationInfo(findCard(board, id));
+  const c = findCard(board, id);
+  const info = delegationInfo(c);
   const bad = need(info, 'claimed');
   if (bad) return { status: 'refused', message: bad };
-  if (!info.claim || info.claim.agent !== as) return { status: 'refused', message: `only the claimant may report (claimed by ${info.claim?.agent ?? 'nobody'})` };
-  const c = findCard(board, id);
+  if (!info.claim || info.claim.agent !== who.executor) return { status: 'refused', message: `only the claimant may report (claimed by ${info.claim?.agent ?? 'nobody'})` };
+  // P5.41 a4: every criterion the delegation handed over must have an Evidence line
+  const crits = info.delegate.criteria === 'all' ? c.criteria.map((x) => x.id) : (info.delegate.criteria ?? []);
+  const missing = crits.filter((x) => !c.evidence.has(x));
+  if (missing.length) return { status: 'refused', message: `no Evidence for ${missing.join(', ')}; add an Evidence line for each criterion before reporting` };
+  if (commit !== null && commit !== undefined && commit !== true) { // P5.41 a4: --commit <sha> must exist in the project repository (the claim's workdir)
+    const wd = info.claim?.workdir;
+    if (!wd) return { status: 'refused', message: '--commit needs the project repository: claim the card with --workdir DIR so roadctl can verify the commit' };
+    const v = gitx(['-C', wd, 'rev-parse', '--verify', '--quiet', `${String(commit)}^{commit}`], wd);
+    if (!v.ok) return { status: 'refused', message: `--commit ${sanitize(String(commit), 40)} is not a commit in ${sanitize(wd, 120)}` };
+  }
   const ctx = syncContext(board);
   const remote = ctx && gitx(['remote'], ctx.root).out;
   const rel = ctx ? path.relative(ctx.root, real(c.file)).split(path.sep).join('/') : null;
   if (remote && cardPending(ctx, rel)) return { status: 'refused', message: 'the card file has uncommitted changes besides the report; run roadctl save first so the report is the only change pushed' };
   let original = fs.readFileSync(c.file);
-  writeReport(board, id, info, as, text);
+  writeReport(board, id, info, who.display, text);
   const base = { id };
   if (!ctx) return { ...base, status: 'reported-local', message: 'reported on the local board only (not a git repository): not yet visible to others' };
   if (!remote) return { ...base, status: 'reported-local', message: 'reported locally (the repository has no remote): not yet visible to others' };
-  const commit = () => {
+  const commitFn = () => {
     gitx(['add', '--', rel], ctx.root);
-    return gitx(['commit', '-q', '-m', `board ${path.basename(board.project)}: report ${id} by ${as}`, '--', rel], ctx.root);
+    return gitx(['commit', '-q', '-m', `board ${path.basename(board.project)}: report ${id} by ${who.executor}`, '--', rel], ctx.root);
   };
-  const cm = commit();
+  const cm = commitFn();
   if (!cm.ok) { restoreFailedCommit(ctx, rel, c.file, original); return { status: 'error', message: `git commit failed: ${failureHint(cm)}` }; }
   if (!upstreamOf(ctx.root)) return { ...base, status: 'reported-local', message: 'reported and committed locally (the branch has no upstream): not yet visible to others; the next roadctl save pushes it' };
   const local = (why) => ({ ...base, status: 'reported-local', message: `${why}; the report is committed locally and NOT yet visible to others; the next roadctl save pushes it` });
@@ -1761,7 +1805,7 @@ export function reportCard(board, id, { as, text, timeout = netTimeout() }) {
     const foreign = unpushed.filter((x) => !inScope(ctx, x));
     if (foreign.length) return local(`unpushed commits touch paths outside the board (${foreign.slice(0, 3).join(', ')})`);
     const p = gitx(['push', '--quiet'], ctx.root, { timeout });
-    if (p.ok) return { ...base, status: 'reported', message: `reported ${id} as ${as} (pushed; the delegating side sees it after roadctl pull)` };
+    if (p.ok) return { ...base, status: 'reported', message: `reported ${id} as ${who.display} (pushed; the delegating side sees it after roadctl pull)` };
     if (looksOffline(p)) return local(`could not push (${failureHint(p) || 'timeout'})`);
     if (!/rejected|non-fast-forward|fetch first/i.test(p.err)) return { status: 'error', ...base, message: `git push failed: ${failureHint(p)}; the report is committed locally and not visible to others` };
     const i = integrate(ctx, board, timeout);
@@ -1773,10 +1817,10 @@ export function reportCard(board, id, { as, text, timeout = netTimeout() }) {
       integrate(ctx, board, timeout);
       const b2 = loadBoard(board.dir);
       const inf = delegationInfo(findCard(b2, id));
-      if (inf.delegate?.state === 'claimed' && inf.claim?.agent === as) {
+      if (inf.delegate?.state === 'claimed' && inf.claim?.agent === who.executor) {
         original = fs.readFileSync(c.file);
-        writeReport(b2, id, inf, as, text);
-        const again = commit();
+        writeReport(b2, id, inf, who.display, text);
+        const again = commitFn();
         if (!again.ok) { restoreFailedCommit(ctx, rel, c.file, original); return { status: 'error', ...base, message: `git commit failed: ${failureHint(again)}` }; }
         continue;
       }
@@ -4049,9 +4093,9 @@ export const COMMANDS = {
   },
   delegate: {
     group: 'Delegate', effect: 'write', summary: 'hand a card or criteria to another executor',
-    purpose: 'Put a delegation into the card: who should do it (a role or an agent), on which host, for which criteria, who accepts the result. Adds a Delegation section template (allowed changes, checks, stop conditions, budget, report format) to fill in. One active delegation per card; for parallel work use separate cards with depends_on. Refuses without an approved record, on done or dropped cards and when a delegation is active.',
-    usage: ['roadctl delegate <id> --to ROLE-OR-AGENT --by AGENT [--host any|claude-code|codex|hermes|script] [--criteria a2,a3|all] [--accept by|reviewer|owner|AGENT]'],
-    flags: [['--to X', 'a role (worker, reviewer) or an agent such as codex@home-wsl'], ['--by AGENT', 'the delegating agent, for example claude-code@home-wsl'], ['--host H', 'host the executor must run on (default any)'], ['--criteria LIST', 'criterion ids, or all (default)'], ['--accept WHO', 'by (the delegating agent, default), reviewer, owner (the owner by hand) or an agent name']],
+    purpose: 'Put a delegation into the card: who should do it (a role, a profile, an executor or an orchestrator), on which host, for which criteria, who accepts the result. Adds a Delegation section template (allowed changes, checks, stop conditions, budget, report format) to fill in. One active delegation per card; for parallel work use separate cards with depends_on. Refuses without an approved record, on done or dropped cards and when a delegation is active.',
+    usage: ['roadctl delegate <id> --to ROLE|PROFILE|EXECUTOR|ORCHESTRATOR --by AGENT [--host any|claude-code|codex|hermes|script] [--criteria a2,a3|all] [--accept by|reviewer|owner|AGENT]'],
+    flags: [['--to X', 'a role (worker, reviewer), a profile (pi-developer), an executor (codex@home-wsl) or an orchestrator (openbot@home-wsl)'], ['--by AGENT', 'the delegating agent, for example claude-code@home-wsl'], ['--host H', 'host the executor must run on (default any)'], ['--criteria LIST', 'criterion ids, or all (default)'], ['--accept WHO', 'by (the delegating agent, default), reviewer, owner (the owner by hand) or an agent name']],
     examples: ['roadctl delegate P4.2 --to worker --host codex --criteria a2,a3 --by claude-code@home-wsl', 'roadctl delegate P4.2 --to worker --by cron:hermes-nightly@windows --accept reviewer'],
     changes: 'The delegate header, the Delegation section (if missing) and one Log line of that card. Not committed: run roadctl save so executors see it.', exits: '0 ok; 1 refused (reasons on stderr); 2 usage error, unknown card or no board found',
   },
@@ -4065,17 +4109,17 @@ export const COMMANDS = {
   },
   claim: {
     group: 'Delegate', effect: 'git', summary: 'take an open delegation (git decides a race)',
-    purpose: 'Take an open (or expired) delegation: writes claim and state claimed, commits only that card and pushes. If someone else changed the card on the server first the claim is lost and the board is left as the server has it. Offline the claim stays local and is reported as not yet exclusive. With a registry the delegating agent must be listed in it. --workdir DIR records the working directory (the git worktree of autonomous code work) in the claim header; when an expired claim is taken over and the previous claim named a directory that exists on this machine with uncommitted changes (git status --porcelain), a WARNING on stderr names the directory and the previous holder (the claim still goes ahead; reconcile that directory first), and tick marks the STALE line "(workdir dirty)".',
-    usage: ['roadctl claim <id> --as AGENT [--lease 2h] [--workdir DIR] [--json]'],
-    flags: [['--as AGENT', 'who takes it'], ['--lease L', 'how long the claim holds: 30m, 2h, 1d (default 2h, at most 7d)'], ['--workdir DIR', 'the working directory (an existing directory, stored as an absolute path) where the work happens, for example the git worktree of the task'], J],
+    purpose: 'Take an open (or expired) delegation: writes claim and state claimed, moves a ready card to doing, commits only that card and pushes. --as (or ROADCTL_AS) accepts an executor, a profile from the registry agent_profiles, or orchestrator/profile; the claim stores the executor and the Log writes both names. Refuses without the owner\'s approval (scope=implementation, or a current by_mandate). If someone else changed the card on the server first the claim is lost and the board is left as the server has it. Offline the claim stays local and is reported as not yet exclusive. With a registry the delegating agent must be listed in it. --workdir DIR records the working directory (the git worktree of autonomous code work) in the claim header; when an expired claim is taken over and the previous claim named a directory that exists on this machine with uncommitted changes (git status --porcelain), a WARNING on stderr names the directory and the previous holder (the claim still goes ahead; reconcile that directory first), and tick marks the STALE line "(workdir dirty)".',
+    usage: ['roadctl claim <id> --as EXECUTOR|PROFILE|ORCHESTRATOR/PROFILE [--lease 2h] [--workdir DIR] [--json]'],
+    flags: [['--as X', 'who takes it: an executor, a profile or orchestrator/profile'], ['--lease L', 'how long the claim holds: 30m, 2h, 1d (default 2h, at most 7d)'], ['--workdir DIR', 'the working directory (an existing directory, stored as an absolute path) where the work happens, for example the git worktree of the task'], J],
     examples: ['roadctl claim P4.2 --as codex@home-wsl', 'roadctl claim P4.2 --as codex@home-wsl --workdir ~/work/my-app-wt-p42', 'roadctl claim P4.2 --as claude-code@home-wsl --lease 4h'],
     changes: 'The delegate and claim headers of that card and a git commit and push of that card only (needs the network; offline keeps the commit local).', exits: '0 claimed or claimed-local; 1 refused, lost or failed; 2 usage error, unknown card or no board found',
   },
   report: {
     group: 'Delegate', effect: 'git', summary: 'the claimant hands in a result and publishes it',
-    purpose: 'The agent that holds the claim reports: appends a Log entry "REPORT: text" by that agent (up to 1500 characters), sets state reported and removes the claim, then commits only that card and pushes it, so the delegating side sees it after a pull. Offline the report stays local ("not yet visible to others"; the next save pushes it). If the card changed on the server the report is merged, or applied again on the server\'s card while the claim there is still yours; if the claim was taken over it is refused. Refuses when the card has other uncommitted changes. The report is data to verify, not evidence.',
-    usage: ['roadctl report <id> --as AGENT "text" [--json]'],
-    flags: [['--as AGENT', 'the claimant (required)'], J],
+    purpose: 'The agent that holds the claim reports: appends a Log entry "REPORT: text" by that agent (up to 1500 characters), sets state reported and removes the claim, then commits only that card and pushes it, so the delegating side sees it after a pull. Refuses when a criterion the delegation handed over has no Evidence line, and, with --commit SHA, when that commit does not exist in the claim\'s workdir. Offline the report stays local ("not yet visible to others"; the next save pushes it). If the card changed on the server the report is merged, or applied again on the server\'s card while the claim there is still yours; if the claim was taken over it is refused. Refuses when the card has other uncommitted changes. The report is data to verify, not evidence.',
+    usage: ['roadctl report <id> --as AGENT "text" [--commit SHA] [--json]'],
+    flags: [['--as AGENT', 'the claimant (required)'], ['--commit SHA', 'a commit in the claim\'s workdir that the work produced (verified it exists)'], J],
     examples: ['roadctl report P4.2 --as codex@home-wsl "changed scripts/roadctl.mjs; node --test: 60 pass; a4 not done"'],
     changes: 'The delegate and claim headers and one Log line of that card, and a git commit and push of that card only (needs the network; offline keeps the commit local).', exits: '0 reported or reported-local; 1 refused (not the claimant, wrong state, claim taken over) or failed; 2 usage error, unknown card or no board found',
   },
@@ -4360,6 +4404,7 @@ async function mainRun(argv, io, audit) {
   const { _: args, flags, rest } = parse(argv);
   const cmd = args[0];
   if (flags.date) process.env.ROADCTL_DATE = flags.date;
+  if (flags.as === undefined && process.env.ROADCTL_AS?.trim()) flags.as = process.env.ROADCTL_AS.trim(); // P5.41: the value once per session; --as wins
   const out = (s) => io.out(`${s}\n`);
   if (flags.version && !cmd) return out(await import('./roadctl/fingerprint.mjs').then((m) => m.versionLine(VERSION, import.meta.url), () => `roadctl ${VERSION}`)), 0; // P5.9: `roadctl --version` = version and sha of this copy
   const wantsHelp = flags.help || args.includes('-h');
@@ -4549,7 +4594,7 @@ async function mainRun(argv, io, audit) {
         const reportCtx = { board, id: args[1], as: flags.as, text: args[2], flags, env: process.env, api: moduleApi() };
         const before = MODULE_REG.callHook('report-before', reportCtx, io); // seam (P5.13): summary fields make the report text; may refuse
         const refusal = before.find((h) => h.value?.refuse)?.value.refuse;
-        const r = refusal ? { status: 'refused', message: refusal } : reportCard(board, args[1], { as: flags.as, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? args[2] });
+        const r = refusal ? { status: 'refused', message: refusal } : reportCard(board, args[1], { as: flags.as, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? args[2], commit: flags.commit });
         const after = MODULE_REG.callHook('report-after', { ...reportCtx, r }, io, before); // seam (P5.1): a report ends the run
         const ok = ['reported', 'reported-local'].includes(r.status);
         if (flags.json) out(JSON.stringify(r, null, 2));

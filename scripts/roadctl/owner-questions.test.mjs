@@ -233,6 +233,7 @@ test('P5.24 a8: a reversible question retains the claim and the worker can repor
   fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=claimed at=2026-11-20T09:00:00Z\n${claim}`));
   const ask = f.run(['ask', 'W-3', '--as', 'worker'], { ...q('q', 'reversible', ['implementation']), checkpoint: { did: 'ready', next: 'continue', in_flight: 'none' } });
   assert.equal(ask.status, 0, ask.stderr); assert.ok(f.read().includes(claim)); assert.match(f.read(), /state=claimed/); assert.match(f.read(), /status: doing/);
+  fs.writeFileSync(f.card, f.read().replace('- [ ] a2:', '- [x] a2:').replace('## Log', '- a2: checked by the worker\n\n## Log')); // P5.41 a4
   const report = f.run(['report', 'W-3', '--as', 'worker', 'completed']);
   assert.equal(report.status, 0, report.stderr); assert.match(f.read(), /REPORT: completed/);
 });
@@ -518,6 +519,7 @@ test('P5.24 a8: ask leaves the card uncommitted, so a report with a remote needs
   fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=claimed at=2026-11-20T09:00:00Z\n${claim}`));
   const ask = f.run(['ask', 'W-3', '--as', 'worker'], { ...q('q', 'reversible', ['implementation']), checkpoint: { did: 'ready', next: 'continue', in_flight: 'none' } });
   assert.equal(ask.status, 0, ask.stderr);
+  fs.writeFileSync(f.card, f.read().replace('- [ ] a2:', '- [x] a2:').replace('## Log', '- a2: checked by the worker\n\n## Log')); // P5.41 a4: evidence before the report, so the uncommitted-change refusal is what fires
   const bin = path.join(f.root, 'fake-bin'); fs.mkdirSync(bin);
   const fake = `#!${process.execPath}
 const args = process.argv.slice(2);

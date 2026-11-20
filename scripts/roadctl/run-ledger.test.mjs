@@ -215,6 +215,7 @@ test('P5.1 a10: claim and report of a delegated task make the run record by them
   const [t] = r.runs(['--open']);
   assert.deepEqual([t.kind, t.project, t.id, t.agent, t.outcome, t.started, t.deadline, t.host], ['task', 'my-app', 'W-3', WORKER, 'started', shift(1), shift(31), HOST], 'the deadline is the end of the lease');
   r.ok(['run', 'note', 'half the criteria', '--as', WORKER], r.at(10)); // no id: the one open run of this agent
+  fs.writeFileSync(path.join(r.board, 'cards', 'W-3-eksport-csv.md'), fs.readFileSync(path.join(r.board, 'cards', 'W-3-eksport-csv.md'), 'utf8').replace('- [ ] a2:', '- [x] a2:').replace('## Log', '- a2: checked by the worker\n\n## Log')); // P5.41 a4
   r.ok(['report', 'W-3', '--as', WORKER, 'changed the exporter, ran the tests'], r.at(20));
   const done = r.runs().find((x) => x.run_id === t.run_id);
   assert.deepEqual([done.outcome, done.finished, done.duration_s, done.did, done.writes, done.note], ['ok', shift(20), 19 * 60, ['changed the exporter, ran the tests'], ['card:W-3'], 'half the criteria']);
@@ -460,6 +461,7 @@ test('P5.1 a6: a state directory that cannot be used does not break routine done
   same(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'works without a ledger']);
   assert.match(logLines(bad.routineFile()).at(-1), /RUN ok: works without a ledger \[run=r-[0-9a-f]+ host=test-host\]$|RUN ok: works without a ledger$/);
   for (const x of [good, bad]) assert.equal(x.run(['delegate', 'W-3', '--to', WORKER, '--by', ME]).status, 0);
+  for (const x of [good, bad]) { const w3 = path.join(x.board, 'cards', 'W-3-eksport-csv.md'); fs.writeFileSync(w3, fs.readFileSync(w3, 'utf8').replace('- [ ] a2:', '- [x] a2:').replace('## Log', '- a2: checked by the worker\n\n## Log')); } // P5.41 a4
   same(['claim', 'W-3', '--as', WORKER]);
   same(['report', 'W-3', '--as', WORKER, 'text']);
   const t = bad.tick([], broken);
