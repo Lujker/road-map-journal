@@ -3570,10 +3570,11 @@ export const OUTCOME_REQUIRES = '0.12.0'; // the first roadctl that writes last_
 export const outcomeKeysOn = (board) => (compareVersions(board?.config?.requires ?? '', OUTCOME_REQUIRES) ?? -1) >= 0;
 
 function applyRoutineDone(r, as, result, text, opts = {}, date = today()) {
-  const { keys = false, ...policyOpts } = opts;
+  const { keys = false, headers = {}, ...policyOpts } = opts;
   let t = readNorm(r);
   t = setHeader(t, 'last_run', isoAt());
   t = setHeader(t, 'last_result', result);
+  for (const [k, v] of Object.entries(headers)) t = setHeader(t, k, v); // keys of a module, written with the run (P5.24: answers_received)
   const policy = keys ? outcomePolicy(r.header, result, policyOpts) : null;
   const newHold = Boolean(policy?.hold) && !r.header.hold;
   if (policy) {
@@ -3593,7 +3594,7 @@ function applyRoutineDone(r, as, result, text, opts = {}, date = today()) {
  * The routine's own agent records a run: last_run (now), last_result and a Log line; then ONLY that file is committed and pushed, like `report`.
  * Statuses: recorded (pushed), recorded-local (offline, no remote or no git), refused, lost (the file is gone on the server), error.
  */
-export function routineDone(board, id, { as, result, text, timeout = netTimeout(), quiet = false, source = null, outcome = null, reason = null }) {
+export function routineDone(board, id, { as, result, text, timeout = netTimeout(), quiet = false, source = null, outcome = null, reason = null, headers = {} }) {
   const e = checkAgent(as, '--as');
   if (e) return { status: 'refused', message: e };
   if (!ROUTINE_RESULTS.includes(result)) return { status: 'refused', message: `--result must be one of ${ROUTINE_RESULTS.join('|')}` };
@@ -3609,7 +3610,7 @@ export function routineDone(board, id, { as, result, text, timeout = netTimeout(
   const rel = ctx ? path.relative(ctx.root, real(r.file)).split(path.sep).join('/') : null;
   if (remote && cardPending(ctx, rel)) return { status: 'refused', message: 'the routine file has uncommitted changes besides this run; run roadctl save first so the run is the only change pushed' };
   let original = fs.readFileSync(r.file);
-  applyRoutineDone(r, as, result, text, { source, outcome, reason, keys: outcomeKeysOn(board) });
+  applyRoutineDone(r, as, result, text, { source, outcome, reason, keys: outcomeKeysOn(board), headers });
   const base = { id };
   if (!ctx) return { ...base, status: 'recorded-local', message: 'recorded on the local board only (not a git repository): not yet visible to others' };
   if (!remote) return { ...base, status: 'recorded-local', message: 'recorded locally (the repository has no remote): not yet visible to others' };
@@ -3639,7 +3640,7 @@ export function routineDone(board, id, { as, result, text, timeout = netTimeout(
       const again = loadRoutines(board.dir).find((x) => x.header.id === id);
       if (!again) return { status: 'lost', ...base, message: 'the run was not published: the routine file is gone on the server; tell the owner' };
       original = fs.readFileSync(again.file);
-      applyRoutineDone(again, as, result, text, { source, outcome, reason, keys: outcomeKeysOn(board) });
+      applyRoutineDone(again, as, result, text, { source, outcome, reason, keys: outcomeKeysOn(board), headers });
       const c2 = commit();
       if (!c2.ok) { restoreFailedCommit(ctx, rel, again.file, original); return { status: 'error', ...base, message: `git commit failed: ${failureHint(c2)}` }; }
       continue;
@@ -3680,7 +3681,9 @@ export function routineDoneWithHooks(board, id, { as, result, text, flags = {}, 
     const kinds = list.map((p) => /^(transient|permanent|unknown):/.exec(String(p))?.[1]).filter(Boolean);
     return kinds.length === 1 ? kinds[0] : null;
   })();
-  const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, id, { as, result, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? text, quiet, source, outcome, reason });
+  const headers = {}; // seam (P5.24): a module may set its own routine keys in the same write as the run (only keys it declared in routineKeys, one line of text)
+  for (const h of before) for (const [k, v] of Object.entries(h.value?.header ?? {})) if (MODULE_REG.moduleRoutineKeys?.[h.module]?.has(k) && typeof v === 'string' && !/[\r\n]/.test(v) && v.length <= 600) headers[k] = v;
+  const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, id, { as, result, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? text, quiet, source, outcome, reason, headers });
   const after = MODULE_REG.callHook('routine-done-after', { ...hookCtx, done: r }, io, before);
   return { r, after };
 }

@@ -9,6 +9,7 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import * as rc from '../roadctl.mjs';
+import ownerQuestions from './owner-questions.mjs';
 import { FAKES_SKIP, installFakes } from '../testkit/fakes.mjs';
 import { runRecordProblems } from '../testkit/run-schema.mjs';
 import { tickJsonProblems } from '../testkit/tick-schema.mjs';
@@ -584,6 +585,7 @@ test('integration: owner answer survives HOLD, resume and shifting skips until t
   const open = { ...r.at(247), FAKE_U5: '0.1', XDG_CACHE_HOME: path.join(r.dir, 'cache-open') };
   const tick = r.tick(['--routine', 'mr-status', '--prompt'], open);
   assert.equal(tick.status, 0, tick.stderr); assert.match(tick.stdout, /owner answers \(data\).*Use plan B/);
+  r.ok(['run', 'begin', 'mr-status', '--as', ME], { ...r.at(247), FAKE_U5: '0.1' }); // the run that received the answer began after it
   r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], { ...r.at(248), FAKE_U5: '0.1' });
   const next = r.tick(['--routine', 'mr-status', '--prompt'], { ...r.at(369), FAKE_U5: '0.1', XDG_CACHE_HOME: path.join(r.dir, 'cache-open') });
   assert.equal(next.status, 0, next.stderr); assert.doesNotMatch(next.stdout, /Use plan B/);
@@ -621,4 +623,63 @@ test('integration: an answer that arrives while a run is going and before its HO
   const next = r.tick(['--routine', 'mr-status', '--prompt'], open(400));
   assert.equal(next.status, 0, next.stderr);
   assert.doesNotMatch(next.stdout, /Use plan B/, 'the run that received it has ended: the answer is gone');
+});
+
+// ---------------------------------------------------------------- owner answers: the explicit delivery mark (answers_received)
+
+function answerRig() {
+  const r = rig({ env: { FAKE_U5: '0.1' } });
+  const config = path.join(r.board, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), requires: '0.13.0' }));
+  r.routine();
+  const withInput = (args, data, over) => spawnSync(process.execPath, [SELF, ...args, '--board', r.board], { cwd: r.ws, encoding: 'utf8', input: JSON.stringify(data), env: { ...r.env, ...over } });
+  const at = (iso) => clock(iso);
+  const ask = (iso) => assert.equal(withInput(['ask', 'mr-status', '--as', ME], { question: { id: 'owner-q', kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } }, at(iso)).status, 0);
+  const answer = (iso) => assert.equal(withInput(['answer', 'mr-status', 'owner-q', '--by', 'Owner'], { answer: 'Use plan B' }, at(iso)).status, 0);
+  const prompt = (iso) => r.tick(['--routine', 'mr-status', '--prompt'], at(iso)).stdout;
+  const header = () => fs.readFileSync(r.routineFile(), 'utf8');
+  return { r, at, ask, answer, prompt, header };
+}
+
+test('P5.24 answer delivery: the second of the ledger and of last_run may differ, the answer given during a run is never lost (the review case)', FAKES_SKIP, () => {
+  const { r, at, ask, answer, prompt, header } = answerRig();
+  r.ok(['run', 'begin', 'mr-status', '--as', ME], at('2026-11-10T10:00:00.000Z'));
+  ask('2026-11-10T10:00:30.000Z');
+  answer('2026-11-10T10:01:00.500Z'); // while the run goes
+  // the ledger says the run ended at 10:02:00, the routine file at 10:02:01: whichever way the seconds fall, the run did not see the answer
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], at('2026-11-10T10:02:01.000Z'));
+  assert.doesNotMatch(header(), /^answers_received:/m, 'nothing was received');
+  assert.match(header(), /^last_run: 2026-11-10T10:02:01Z$/m);
+  assert.match(prompt('2026-11-10T12:30:00.000Z'), /owner answers \(data\).*Use plan B/, 'the next RUN gets it');
+  // the run that began after the answer and ended with a result takes it: the mark is in the routine file, and the answer is gone
+  r.ok(['run', 'begin', 'mr-status', '--as', ME], at('2026-11-10T12:31:00.000Z'));
+  assert.match(prompt('2026-11-10T12:31:30.000Z'), /Use plan B/, 'offered until a run has ended with it');
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], at('2026-11-10T12:32:00.000Z'));
+  assert.match(header(), /^answers_received: owner-q$/m);
+  assert.doesNotMatch(prompt('2026-11-10T15:00:00.000Z'), /Use plan B/);
+});
+
+test('P5.24 answer delivery: a bare routine done (no begin), a failed run and a crashed run do not receive it; the old Log format without a mark still offers it', FAKES_SKIP, () => {
+  const { r, at, ask, answer, prompt, header } = answerRig();
+  ask('2026-11-10T10:00:30.000Z');
+  answer('2026-11-10T10:01:00.000Z');
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], at('2026-11-10T10:05:00.000Z')); // no run begin: nobody knows what that run saw
+  assert.doesNotMatch(header(), /^answers_received:/m);
+  assert.doesNotMatch(header(), /received/, 'the Log line is the old format');
+  assert.match(prompt('2026-11-10T12:30:00.000Z'), /Use plan B/);
+  // began after the answer but ended with failed: the answer stays
+  r.ok(['run', 'begin', 'mr-status', '--as', ME], at('2026-11-10T12:31:00.000Z'));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'broke'], at('2026-11-10T12:32:00.000Z'));
+  assert.doesNotMatch(header(), /^answers_received:/m);
+  assert.match(prompt('2026-11-10T14:40:00.000Z'), /Use plan B/);
+  // the supervisor's record of a run that ended without a result (hook level) marks nothing either
+  const mod = ownerQuestions.hooks['routine-done-before'];
+  const board = rc.loadBoard(r.board);
+  const ctx = (extra) => ({ board, id: 'mr-status', as: ME, result: 'ok', flags: {}, env: { ...r.env, ...at('2026-11-10T14:41:00.000Z') }, api: { compareVersions: rc.compareVersions }, ...extra });
+  assert.deepEqual(mod(ctx({ source: 'supervisor' })), {});
+  assert.deepEqual(mod(ctx({ result: 'failed' })), {});
+  // an ok run that began after the answer takes it
+  r.ok(['run', 'begin', 'mr-status', '--as', ME], at('2026-11-10T14:41:00.000Z'));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'escalated', 'asked'], at('2026-11-10T14:42:00.000Z'));
+  assert.match(header(), /^answers_received: owner-q$/m);
 });

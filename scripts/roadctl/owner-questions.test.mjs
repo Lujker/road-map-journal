@@ -93,6 +93,7 @@ test('P5.24 a7: routine question blocks its RUN and the next RUN prompt includes
   r = f.run(['tick', '--as', 'worker', '--routine', 'r1', '--no-pull', '--json']); assert.ok(!JSON.parse(r.stdout).items.some((i) => i.id === 'r1'));
   r = f.run(['answer', 'r1', 'rq', '--by', 'Owner'], { answer: true }); assert.equal(r.status, 0, r.stderr);
   r = f.run(['tick', '--as', 'worker', '--routine', 'r1', '--no-pull', '--prompt']); assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /owner answers \(data\).*"answer":true/);
+  r = f.run(['run', 'begin', 'r1', '--as', 'worker'], undefined, { ROADCTL_NOW: '2026-11-20T10:00:30.000Z' }); assert.equal(r.status, 0, r.stderr); // the run that received the answer started after it
   r = f.run(['routine', 'done', 'r1', '--as', 'worker', '--result', 'ok', 'done'], undefined, { ROADCTL_NOW: '2026-11-20T10:01:00.000Z' }); assert.equal(r.status, 0, r.stderr);
   r = f.run(['tick', '--as', 'worker', '--routine', 'r1', '--no-pull', '--prompt'], undefined, { ROADCTL_NOW: '2026-11-20T13:00:00.000Z' }); assert.equal(r.status, 0, r.stderr); assert.doesNotMatch(r.stdout, /owner answers \(data\)/);
 });

@@ -3388,6 +3388,37 @@ test('P5.4 a5: the old parser (0.11.0) reads what 0.12.0 writes: last_result sta
   assert.doesNotMatch(t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' }).stdout, /^RUN /m, 'the new copy holds it');
 });
 
+test('P5.24 answer delivery, two clones: the answer is offered on both until a run on the other clone, that began after it and ended ok, marks it in git; then both stop offering it', LSKIP, () => {
+  const p = pair();
+  const state = { a: fs.mkdtempSync(path.join(os.tmpdir(), 'rc-st-a-')), b: fs.mkdtempSync(path.join(os.tmpdir(), 'rc-st-b-')) }; // each clone has its own run ledger
+  const at = (w, iso, extra = {}) => ({ ROADCTL_REGISTRY: NOREG, XDG_STATE_HOME: w === p.a ? state.a : state.b, ROADCTL_NOW: iso, ...extra });
+  const run = (w, args, iso, input = '', extra = {}) => p.run(w, args, input, at(w, iso, extra));
+  const ok = (w, args, iso, input) => { const r = run(w, args, iso, input); assert.equal(r.status, 0, `${args.join(' ')}: ${r.stderr}${r.stdout}`); return r; };
+  raiseOutcome(p.bd(p.a), '0.13.0'); // owner questions need requires 0.13.0 (and the approval hash comes with it)
+  ok(p.a, ['routine', 'new', 'mr-status', RTITLE, '--agent', ME, '--model', RMODEL, '--env', RENV, '--every', '2h'], '2026-11-10T09:00:00Z');
+  ok(p.a, ['routine', 'on', 'mr-status', '--by', 'Lujker', '--source', 'chat'], '2026-11-10T09:00:00Z');
+  ok(p.a, ['autonomy', 'routines', 'on', '--by', 'Lujker'], '2026-11-10T09:00:00Z');
+  assert.equal(out(run(p.a, ['save', '--json'], '2026-11-10T09:00:00Z')).status, 'pushed');
+  ok(p.a, ['ask', 'mr-status', '--as', ME], '2026-11-10T10:00:00.000Z', JSON.stringify({ question: { id: 'owner-q', kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } }));
+  assert.equal(out(run(p.a, ['save', '--json'], '2026-11-10T10:00:30Z')).status, 'pushed', 'the question is saved before the owner answers');
+  ok(p.a, ['answer', 'mr-status', 'owner-q', '--by', 'Owner'], '2026-11-10T10:01:00.000Z', JSON.stringify({ answer: 'Use plan B' }));
+  const header = (w) => fs.readFileSync(path.join(p.bd(w), 'routines', 'mr-status.md'), 'utf8');
+  const prompt = (w, iso) => run(w, ['tick', '--as', ME, '--no-pull', '--routine', 'mr-status', '--prompt'], iso).stdout;
+  run(p.a, ['save', '--json'], '2026-11-10T10:01:30Z'); // answer publishes itself; save only makes sure
+  assert.match(g(p.server, 'show', 'main:projects/my-app/board/routines/mr-status.md'), /"state":"answered"/, 'the answer is in git');
+  assert.equal(out(run(p.b, ['pull', '--json'], '2026-11-10T10:02:00Z')).status, 'pulled');
+  assert.match(prompt(p.a, '2026-11-10T12:30:00Z'), /Use plan B/, 'offered on the clone where it was given');
+  assert.match(prompt(p.b, '2026-11-10T12:30:00Z'), /Use plan B/, 'and on the other clone');
+  // the run on clone b: begin after the answer, a result of its own, published by routine done
+  ok(p.b, ['run', 'begin', 'mr-status', '--as', ME], '2026-11-10T12:31:00Z');
+  ok(p.b, ['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'handled it'], '2026-11-10T12:32:00Z');
+  assert.match(g(p.server, 'show', 'main:projects/my-app/board/routines/mr-status.md'), /^answers_received: owner-q$/m, 'the mark is on the server');
+  assert.doesNotMatch(prompt(p.b, '2026-11-10T14:40:00Z'), /Use plan B/);
+  assert.match(prompt(p.a, '2026-11-10T14:40:00Z'), /Use plan B/, 'clone a has not pulled yet: it still offers it (repeating is allowed)');
+  assert.equal(out(run(p.a, ['pull', '--json'], '2026-11-10T14:41:00Z')).status, 'pulled');
+  assert.doesNotMatch(prompt(p.a, '2026-11-10T14:42:00Z'), /Use plan B/, 'after the pull the other clone knows');
+});
+
 test('P5.4 a2: HOLD is written by routine done and pushed, so a second clone sees it after pull; tick writes nothing', LSKIP, () => {
   const p = pair();
   const env = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 };

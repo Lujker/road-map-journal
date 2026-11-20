@@ -4,7 +4,7 @@ import path from 'node:path';
 const pathFor = (dir, file) => path.join(dir, file);
 import { makeQuestion, answerQuestion, undoQuestion, addQuestion, putQuestions, questionsFromItem } from './owner-questions-data.mjs';
 import { admission, readMandate, TELL_OWNER_FLOOR } from './mandate.mjs';
-import { readRuns, runKey } from './run-store.mjs';
+import { locateRun } from './run-store.mjs';
 
 const REQUIRES = '0.13.0';
 const DAY_MS = 864e5;
@@ -15,34 +15,14 @@ const when = (env, api) => new Date(api.nowMs(env)).toISOString();
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
 /**
- * Delivery of an answer to a routine: a run gets the answers its prompt carried, and a run carries only what was answered BEFORE it started. The start of the last
- * finished run comes from the local run ledger (a run that began with `run begin` or `supervise`); an answer given later than that start is still waiting, even when the
- * run ends after the answer and writes `last_run` after it. Without a known start (a run recorded by a bare `routine done`, no ledger, a later run of another machine)
- * the old rule stays: an answer is waiting while it is not older than the git `last_run`. Returns { start: ms|null }.
+ * Delivery of owner answers to a routine is an explicit mark in git, not a comparison of times. The routine header `answers_received` lists the ids of the answers that a
+ * FINISHED run received (written by `routine done` in the same commit as the run, so every clone sees it after a pull). An answered question whose id is not listed is
+ * offered in the prompt of every RUN again: repeating is allowed, losing is not. `routine done` marks an answer only when the run is known to have started after it
+ * (the begin of the run in the local run ledger: `run begin` or `supervise`, the same machine that is running) and ended with a result of its own (ok or escalated, not
+ * failed, not the supervisor's record of a run without a result, a timeout or a crash). A bare `routine done` with no begin cannot tell what the run saw: it marks nothing.
  */
-export function lastRunStart(env, project, id, lastRun) {
-  let latest = null;
-  try {
-    const key = `routine:${project}/${id}`;
-    for (const r of readRuns(env).values()) {
-      if (runKey(r) !== key || r.outcome === 'started' || r.outcome === 'skipped') continue;
-      const f = Date.parse(r.finished ?? '');
-      if (Number.isFinite(f) && (latest === null || f > Date.parse(latest.finished))) latest = r;
-    }
-  } catch { return null; }
-  const start = Date.parse(latest?.started ?? '');
-  if (!latest || !Number.isFinite(start)) return null;
-  const last = Date.parse(lastRun ?? '');
-  if (Number.isFinite(last) && Date.parse(latest.finished) < last) return null; // the git last_run is of a later run that this ledger does not know
-  return start;
-}
-/** An answered question that no run has received yet. */
-export const answerWaiting = (q, start, lastRun) => {
-  const answered = Date.parse(q.answered);
-  if (start !== null) return answered > start;
-  const last = Date.parse(lastRun ?? '');
-  return !Number.isFinite(last) || answered >= last;
-};
+export const receivedIds = (header) => new Set(String(header?.answers_received ?? '').split(',').map((x) => x.trim()).filter(Boolean));
+export const MAX_RECEIVED = 40;
 
 function input() {
   const buffer = Buffer.alloc(16385);
@@ -346,7 +326,7 @@ export function ownerItems(board, time) {
 }
 export default {
   name: 'owner-questions',
-  cardSections: ['Questions'], routineSections: ['Questions'], headerKeys: ['inbox_defer'], routineKeys: ['inbox_defer'],
+  cardSections: ['Questions'], routineSections: ['Questions'], headerKeys: ['inbox_defer'], routineKeys: ['inbox_defer', 'answers_received'],
   tickKinds: {
     RESUME: {
       prompt: ({ agent, items }) => [
@@ -400,6 +380,23 @@ export default {
       }
       return { findings };
     },
+    /** The answers this finished run received: see `receivedIds`. */
+    'routine-done-before'({ board, id, as, result, flags, env, api, source }) {
+      if ((api.compareVersions(board.config?.requires, REQUIRES) ?? -1) < 0 || source === 'supervisor' || !['ok', 'escalated'].includes(result)) return {};
+      try {
+        const routine = board.routines.find((r) => r.header.id === id);
+        if (!routine) return {};
+        const project = path.basename(board.project);
+        const explicit = flags?.run ?? (/^[A-Za-z0-9._:-]{1,64}$/.test(env.ROADCTL_RUN_ID ?? '') ? env.ROADCTL_RUN_ID : undefined);
+        const run = locateRun(env, { kind: 'routine', project, id, runId: explicit, anchor: routine.header.last_run ?? null }).run;
+        const started = Date.parse(run?.started ?? '');
+        if (!Number.isFinite(started) || run?.outcome !== 'started') return {}; // no begin: nothing is known about what the run saw
+        const got = receivedIds(routine.header);
+        const fresh = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && !got.has(q.id) && Date.parse(q.answered) < started).map((q) => q.id);
+        if (!fresh.length) return {};
+        return { header: { answers_received: [...got, ...fresh].slice(-MAX_RECEIVED).join(',') } };
+      } catch { return {}; }
+    },
     'tick-before'({ agent, items, boardDirs, env, api }) {
       const run = {};
       for (const item of items.filter((x) => x.kind === 'RUN')) {
@@ -407,8 +404,8 @@ export default {
         if ((api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) continue;
         const routine = board.routines.find((r) => r.header.id === item.id);
         if (!routine) continue;
-        const start = lastRunStart(env, item.project, item.id, item.routine.last_run);
-        const answers = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && answerWaiting(q, start, item.routine.last_run)).map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
+        const got = receivedIds(routine.header);
+        const answers = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && !got.has(q.id)).map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
         if (answers.length) run[`${item.project}/${item.id}`] = { owner_answers: answers };
       }
       // P5.24 a11: a card whose decision the owner undid is a RESUME task for its current holder, not a plain TAKE —

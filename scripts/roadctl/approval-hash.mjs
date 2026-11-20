@@ -24,7 +24,7 @@ import { readQuestions } from './owner-questions-data.mjs';
 export const HASH_KEY = 'approved_hash';
 export const ID_KEY = 'approval_id'; // written by every `routine on` that writes a hash: unique per approval, so the digest can tell approvals apart without the (trimmed) Log
 export const HASH_REQUIRES = '0.6.0'; // the first roadctl that writes and checks the hash: a board raises `requires` to it
-export const OUTSIDE_KEYS = ['enabled', 'notify', 'last_run', 'last_result', 'last_reason', 'fails', 'hold', 'hold_id', 'approved', HASH_KEY, ID_KEY]; // header keys that are not in the hash (`approved` counts through its scope); a new key is in the hash unless a card adds it here; last_reason, fails, hold (P5.4) are run state, not instructions
+export const OUTSIDE_KEYS = ['enabled', 'notify', 'last_run', 'last_result', 'last_reason', 'fails', 'hold', 'hold_id', 'answers_received', 'approved', HASH_KEY, ID_KEY]; // header keys that are not in the hash (`approved` counts through its scope); a new key is in the hash unless a card adds it here; last_reason, fails, hold (P5.4) are run state, not instructions
 const PREFIX = 'sha256-v1:';
 const norm = (s) => s.split('\n').map((l) => l.replace(/\s+$/, '')).join('\n').replace(/^\n+|\n+$/g, '');
 
