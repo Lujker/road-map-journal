@@ -6,13 +6,32 @@
 // Everything here degrades quietly: a state directory that cannot be used never stops routine done, claim, report or tick.
 import {
   badAttempts, beginRun, clearSkips, DEFAULT_TIMEOUT_MS, finishRun, hostName, isOverdue, ledgerPaths, locateRun, noteRun, nowMs, readRuns, readState,
-  reconcileCrashed, recordSkip, recordTick, RUNS_ROTATE_BYTES, rotateIfLarge, runIdFor, cleanText, usable, isoAt,
+  reconcileCrashed, recordSkip, recordTick, RUNS_ROTATE_BYTES, rotateIfLarge, runIdFor, runKey, cleanText, usable, isoAt,
 } from './run-store.mjs';
+import fs from 'node:fs';
 import { collectFields, formatLogText, renderSummary } from './run-summary.mjs';
 
 const RUN_ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
 const RUN_USAGE = 'usage: roadctl run begin <routine|card> --as AGENT [--run ID]   |   roadctl run note [RUN_ID] "what was done" [--as AGENT]   |   roadctl run done --as AGENT --result ok|escalated|failed --did "what was done" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]';
 const RUN_RESULTS = ['ok', 'escalated', 'failed'];
+/** P5.4 a4: only a skip that refused a run that was due and could not go (the limits gate, an unreachable environment) starts the term again. Not `not-due` (a frequent tick would postpone a RUN for ever), not `busy` (a live run writes its own last_run), not `paused` (the owner's decision: after resume the routine is due at once). */
+export const SHIFTING_SKIPS = ['limits', 'unreachable'];
+/** P5.4 a4: the last shifting skip per routine key, folded from the ledger; remembered by the size and mtime of the files, because `routineRows` runs several times in one command. */
+let skipCache = { sig: null, last: new Map() };
+export function lastSkips(env) {
+  const p = ledgerPaths(env);
+  const sig = [p.runs, p.runsPrev, p.state].map((f) => { try { const st = fs.statSync(f); return `${st.size}:${st.mtimeMs}`; } catch { return '-'; } }).join('|') + `|${p.dir}`;
+  if (skipCache.sig === sig) return skipCache.last;
+  const last = new Map();
+  for (const r of readRuns(env).values()) {
+    if (r.outcome !== 'skipped' || !SHIFTING_SKIPS.includes(r.reason) || r.kind !== 'routine') continue;
+    const t = Date.parse(r.finished ?? r.started ?? '');
+    const key = runKey(r);
+    if (Number.isFinite(t) && t > (last.get(key) ?? -Infinity)) last.set(key, t);
+  }
+  skipCache = { sig, last };
+  return last;
+}
 const projectOf = (board) => String(board.project).split(/[\\/]/).filter(Boolean).pop();
 
 // ---------------------------------------------------------------- the line `routine done` leaves in the routine's Log
@@ -213,6 +232,17 @@ export default {
   },
 
   hooks: {
+    /** P5.4 a4: a skipped run that refused a due run (limits, unreachable; not not-due, busy or paused, see SHIFTING_SKIPS) starts the term of `every` again, like a run that did nothing. Only the local journal: skips are never in git. */
+    'routine-last-run'({ board, routine, env }) {
+      const id = routine.header.id;
+      if (!id) return {};
+      try {
+        const t = lastSkips(env).get(`routine:${projectOf(board)}/${id}`);
+        return t === undefined ? {} : { last_run: isoAt(t) };
+      } catch {
+        return {}; // an unreadable ledger never changes what is due
+      }
+    },
     /** Before the decision of a tick: mark overdue unsupervised runs crashed (time threshold only), rotate runs.jsonl, tell the RUN items their attempt. */
     'tick-before'({ env, items }) {
       const now = nowMs(env);

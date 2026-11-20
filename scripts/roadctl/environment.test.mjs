@@ -101,7 +101,18 @@ test('P5.23 a6: env check says unreachable when ssh fails; supervise records ski
   assert.equal(fs.existsSync(marker), false);
   const runs = JSON.parse(r.run(['runs', '--json', '-n', '10']).stdout || '[]');
   assert.ok(runs.some((x) => x.outcome === 'skipped' && x.reason === 'unreachable'), JSON.stringify(runs));
-  assert.equal(r.run(['supervise', '--routine', 'mr-status', '--as', ME, '--board', r.board, '--', 'sh', '-c', `touch ${marker}`]).status, 1); // reachable: the command runs (it reports no result, so: failed)
+  // P5.4 a4: the skipped:unreachable starts the term of `every` (2h) again, so the tick is not a retry loop; the skip is not lost
+  const sup = (over) => r.run(['supervise', '--routine', 'mr-status', '--as', ME, '--board', r.board, '--', 'sh', '-c', `touch ${marker}`], over);
+  const again = sup({});
+  assert.equal(again.status, 4, 'right after the skip the routine is not due: reachable or not, nothing starts');
+  assert.match(again.stderr + again.stdout, /not due/);
+  assert.equal(fs.existsSync(marker), false);
+  const later = (minutes) => clock(new Date(Date.parse(T0) + minutes * 60000).toISOString().replace(/\.\d{3}Z$/, 'Z'));
+  const second = sup({ ...later(121), ...crash });
+  assert.equal(second.status, 4, 'a term later it is due again and the environment is still unreachable: skipped again');
+  assert.match(second.stdout + second.stderr, /skipped: unreachable/);
+  assert.equal(JSON.parse(r.run(['runs', '--json', '-n', '10']).stdout || '[]').filter((x) => x.outcome === 'skipped' && x.reason === 'unreachable').length >= 1, true);
+  assert.equal(sup(later(242)).status, 1, 'a term after that the environment is reachable: the command runs (it reports no result, so: failed)');
   assert.equal(fs.existsSync(marker), true);
 }));
 

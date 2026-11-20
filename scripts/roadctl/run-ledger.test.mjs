@@ -246,21 +246,23 @@ test('P5.1 a10: claim and report of a delegated task make the run record by them
 test('P5.1 a3: ten identical blocked-reserve ticks are one line with a counter in ticks.state.json; tick --ledger keeps its format; rotation inside tick leaves one previous file', FAKES_SKIP, () => {
   const r = rig({ env: { FAKE_U5: '0.9' } });
   r.routine();
+  const term = 121; // minutes: a skipped run starts the term of `every` (2h) again (P5.4 a4), so the routine is a RUN item, and the gate blocks it, once per term
   for (let i = 0; i < 10; i++) {
-    const t = r.tick([], r.at(i));
+    const t = r.tick([], r.at(i * term));
     assert.equal(t.status, 1, t.stderr + t.stdout);
   }
   assert.equal(rawLines(r.paths.ticks).length, 1);
   assert.deepEqual(rawLines(r.paths.ticks)[0], { time: T0, agent: ME, decision: 'blocked-reserve', counts: { take: 0, accept: 0, start: 0, stale: 0, run: 1 }, limits: { provider: 'claude', state: 'reserve' } }, 'the line is what the old ledger wrote');
   const st = JSON.parse(fs.readFileSync(r.paths.state, 'utf8'));
-  assert.deepEqual(Object.values(st.ticks).map((x) => [x.decision, x.count, x.first, x.last]), [['blocked-reserve', 10, T0, shift(9)]]);
+  assert.deepEqual(Object.values(st.ticks).map((x) => [x.decision, x.count, x.first, x.last]), [['blocked-reserve', 10, T0, shift(9 * term)]]);
   assert.match(r.run(['tick', '--ledger', '-n', '5']).stdout, new RegExp(`^${T0} ${ME} blocked-reserve take=0 accept=0 start=0 stale=0 run=1 limits=claude:reserve$`, 'm'));
   // a different decision is a new line (the gate opened); idle and work are not folded: one line per tick, as before
+  const after = 10 * term; // the term after the last limits skip is over: the routine is due again
   const open = { FAKE_U5: '0.1', XDG_CACHE_HOME: path.join(r.dir, 'cache2') };
-  const w = r.tick([], { ...r.at(10), ...open });
+  const w = r.tick([], { ...r.at(after + 0), ...open });
   assert.equal(w.status, 0, w.stderr);
   assert.deepEqual(rawLines(r.paths.ticks).map((l) => l.decision), ['blocked-reserve', 'work']);
-  r.tick([], { ...r.at(11), ...open });
+  r.tick([], { ...r.at(after + 1), ...open });
   assert.equal(rawLines(r.paths.ticks).length, 3, 'a second identical work tick is a line again');
   assert.equal(JSON.parse(fs.readFileSync(r.paths.state, 'utf8')).ticks[`${ME}|`].count, 2, 'the state still counts the streak');
   // rotation: only inside tick, one previous generation
@@ -268,11 +270,11 @@ test('P5.1 a3: ten identical blocked-reserve ticks are one line with a counter i
   fs.writeFileSync(r.paths.ticks, filler);
   assert.ok(fs.statSync(r.paths.ticks).size > store.TICKS_ROTATE_BYTES);
   assert.equal(fs.existsSync(r.paths.ticksPrev), false);
-  r.tick([], { ...r.at(12), ...open });
+  r.tick([], { ...r.at(after + 2), ...open });
   assert.equal(fs.readFileSync(r.paths.ticksPrev, 'utf8'), filler, 'the whole old file is the previous generation');
   assert.ok(fs.statSync(r.paths.ticks).size < 1000, 'a fresh file with the new line');
   fs.writeFileSync(r.paths.ticks, filler);
-  r.tick([], { ...r.at(13), ...open });
+  r.tick([], { ...r.at(after + 3), ...open });
   assert.deepEqual(fs.readdirSync(r.paths.dir).filter((f) => f.startsWith('ticks.jsonl')).sort(), ['ticks.jsonl', 'ticks.jsonl.1'], 'never more than one previous file');
   assert.equal(r.run(['tick', '--ledger', '-n', '1', '--json']).status, 0);
 });
@@ -281,7 +283,7 @@ test('P5.1 a11: skipped runs with their reason are recorded (limits, busy, not-d
   const r = rig({ env: { FAKE_U5: '0.9' } });
   r.routine();
   // limits: the reserve is reached, the RUN item is skipped
-  for (let i = 0; i < 4; i++) r.tick([], r.at(i));
+  for (let i = 0; i < 4; i++) r.tick([], r.at(i * 121)); // one term apart (P5.4 a4: a limits skip starts the term of `every` again; ticks inside it are not-due, see the test of a4)
   assert.deepEqual(r.runs().filter((x) => x.outcome === 'skipped').map((x) => [x.reason, x.kind, x.id, x.count, x.source]), [['limits', 'routine', 'mr-status', 4, 'tick']]);
   // busy: another tick of this agent holds the lock, seen by a general job and by a routine job
   fs.writeFileSync(rc.tickLockPath(ME, r.env), '{}');
@@ -310,6 +312,64 @@ test('P5.1 a11: skipped runs with their reason are recorded (limits, busy, not-d
   n.tick(['--routine', 'mr-status'], n.at(140));
   assert.equal(n.runs().filter((x) => x.outcome === 'skipped').length, 2);
   for (const rec of [...r.runs(), ...n.runs()]) assert.deepEqual(runRecordProblems(rec), [], JSON.stringify(rec));
+});
+
+// ---------------------------------------------------------------- P5.4 a4: what a skipped run does to the term of `every`
+
+const dueAt = (r, minutes) => {
+  const t = r.tick(['--routine', 'mr-status'], r.at(minutes));
+  return /^RUN my-app\/mr-status/m.test(t.stdout);
+};
+
+test('P5.4 a4: a skipped run (limits, the real path) starts the term of `every` again; last_run stays the real one; the tick inside the term is not-due and the RUN comes one term later', FAKES_SKIP, () => {
+  const r = rig({ env: { FAKE_U5: '0.9' } });
+  r.routine(); // every 2h, never run: due
+  const t0 = r.tick(['--routine', 'mr-status'], r.at(0));
+  assert.equal(t0.status, 1, 'the limits gate blocks the RUN: skipped: limits');
+  assert.deepEqual(r.runs().filter((x) => x.outcome === 'skipped').map((x) => [x.reason, x.count]), [['limits', 1]]);
+  const row = () => JSON.parse(r.ok(['routine', 'list', '--json'], r.at(60)).stdout).find((x) => x.id === 'mr-status');
+  assert.equal(row().last_run, null, 'last_run is not invented: no run happened');
+  assert.equal(row().skipped_at, T0, 'the skip is the start of the term');
+  assert.equal(row().due, false);
+  // the limits open at once; still nothing for a term, then the RUN
+  const open = { FAKE_U5: '0.1', XDG_CACHE_HOME: path.join(r.dir, 'cache2') };
+  const inside = r.tick(['--routine', 'mr-status'], { ...r.at(60), ...open });
+  assert.equal(inside.status, 4, inside.stdout);
+  assert.doesNotMatch(inside.stdout, /^RUN /m);
+  assert.deepEqual(r.runs().filter((x) => x.outcome === 'skipped').map((x) => [x.reason, x.count]).sort(), [['limits', 1], ['not-due', 1]], 'no new limits record while inside the term');
+  const due = r.tick(['--routine', 'mr-status'], { ...r.at(121), ...open });
+  assert.match(due.stdout, /^RUN my-app\/mr-status/m);
+  // a real run later moves last_run; the older skip does not matter any more
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'fine'], r.at(125));
+  assert.equal(JSON.parse(r.ok(['routine', 'list', '--json'], r.at(130)).stdout).find((x) => x.id === 'mr-status').skipped_at, undefined);
+});
+
+test('P5.4 a4: ticks that find the routine not due never postpone its RUN (a frequent tick)', FAKES_SKIP, () => {
+  const r = rig();
+  r.routine();
+  r.ok(['run', 'begin', 'mr-status', '--as', ME]);
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'fine']); // last_run = T0
+  for (let m = 5; m < 120; m += 5) assert.equal(dueAt(r, m), false, `minute ${m}: not due`);
+  assert.equal(r.runs().filter((x) => x.outcome === 'skipped').every((x) => x.reason === 'not-due'), true);
+  assert.equal(dueAt(r, 120), true, 'last_run + every: the RUN is offered although 23 ticks found it not due');
+});
+
+test('P5.4 a4: busy and paused skips do not move the term: after the pause is lifted the routine is due at once', FAKES_SKIP, () => {
+  const r = rig();
+  r.routine();
+  // busy: the lock of another tick; the skip is recorded, the term is not touched
+  fs.writeFileSync(rc.tickLockPath(ME, r.env, 'mr-status'), '{}');
+  assert.equal(r.tick(['--routine', 'mr-status'], r.at(0)).status, 5);
+  fs.rmSync(rc.tickLockPath(ME, r.env, 'mr-status'));
+  assert.equal(r.runs().filter((x) => x.reason === 'busy').length, 1);
+  assert.equal(dueAt(r, 1), true, 'busy: due at once');
+  // paused for a day: the owner's decision, not a failed attempt
+  r.ok(['pause', '--reason', 'weekend', '--by', 'Owner'], r.at(2));
+  const p = r.tick(['--routine', 'mr-status'], r.at(60 * 24));
+  assert.equal(p.status, 6);
+  assert.equal(r.runs().filter((x) => x.reason === 'paused').length, 1);
+  r.ok(['resume'], r.at(60 * 24 + 1));
+  assert.equal(dueAt(r, 60 * 24 + 2), true, 'after resume the routine is due at once, not after one more `every`');
 });
 
 test('P5.1 a11: the text of tick does not change between two ticks without an event, and changes after crashed (attempt 2), then is stable again', FAKES_SKIP, () => {

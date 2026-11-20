@@ -45,6 +45,7 @@
 //                        `tick` START offers the admitted ready card with the lowest rank; `delegate` on a card without `approved` needs it, writes `header` (only keys the module declared in `headerKeys`) and the Log line `log`; lint rule 6 accepts a `doing` card that has it (mode 'work')
 //   routine-show         (P5.23) { board, routine, env, api } -> { lines: ['text'] } extra lines of `routine show` (the environment and the way to it); also `environment` in `routine show --json`
 //   board-lint           (P5.33) { board, env, api } -> { findings: [{ level: 'warning'|'error', file?, text }] } extra `lint` findings of the board as a whole (rule 33)
+//   routine-last-run     (P5.4) { board, routine, env, api } -> { last_run: 'ISO time' } a later start of the term of `every` than the git last_run: the last skipped run of this machine that refused a due run (limits, unreachable; not not-due, busy, paused). `routineRows` takes the latest of git last_run, observe and these; `last_run` shown stays the real one (`skipped_at` is the shift)
 //   pause-state          { env, api } -> { paused: { since, by, reason, until }, line } while the machine is paused, else {} (`tick` stops before any lock, pull or limits gate and exits 6; `status` and `routine list` show the line)
 //
 // `tickKinds` (P5.28): { KIND: { prompt, text? } } with KIND like RESUME (capital letters, not a core kind, appended to the order of kinds). Items of that kind come from
@@ -65,7 +66,7 @@ const KIND_RE = /^[A-Z][A-Z_]*$/;
 const EFFECTS = ['read', 'write', 'git'];
 const STRING_FIELDS = ['summary', 'purpose', 'changes', 'exits'];
 const ARRAY_FIELDS = ['usage', 'flags', 'examples'];
-export const HOOK_NAMES = ['tick-before', 'tick-ledger', 'routine-done-before', 'routine-done-after', 'claim-after', 'report-before', 'report-after', 'pause-state', 'routine-reasons', 'tick-items', 'start-admit', 'dep-satisfied', 'routine-on', 'routine-lint', 'approval-basis', 'board-lint', 'routine-show']; // the last four of P5.28, then routine-on and routine-lint (P5.15), approval-basis and board-lint (P5.33)
+export const HOOK_NAMES = ['tick-before', 'tick-ledger', 'routine-done-before', 'routine-done-after', 'claim-after', 'report-before', 'report-after', 'pause-state', 'routine-reasons', 'routine-last-run', 'tick-items', 'start-admit', 'dep-satisfied', 'routine-on', 'routine-lint', 'approval-basis', 'board-lint', 'routine-show']; // the last four of P5.28, then routine-on and routine-lint (P5.15), approval-basis and board-lint (P5.33)
 
 function fail(mod, msg) {
   throw new Error(`roadctl module ${mod}: ${msg}`);

@@ -3294,6 +3294,17 @@ function localLastRun(board, id, gitRun, env) {
   return seen && ISO_RE.test(seen) && (!gitRun || Date.parse(seen) > Date.parse(gitRun)) ? seen : gitRun;
 }
 
+/** P5.4 a4: the latest skipped run of this machine (hook routine-last-run, the local run ledger) when it is later than `lastRun`, else null. A bad git last_run is left for lint. */
+function skippedSince(board, r, lastRun, env) {
+  if (lastRun && !ISO_RE.test(lastRun)) return null;
+  let best = null;
+  for (const h of MODULE_REG.callHook('routine-last-run', { board, routine: { file: `routines/${r.name}`, header: { ...r.header } }, env, api: moduleApi() })) {
+    const v = h.value?.last_run;
+    if (typeof v === 'string' && ISO_RE.test(v) && (best === null || Date.parse(v) > Date.parse(best))) best = v;
+  }
+  return best && (!lastRun || Date.parse(best) > Date.parse(lastRun)) ? best : null;
+}
+
 export function routineRows(board, ms = nowMs(), env = process.env) {
   const sw = autonomyOf(board).routines;
   const count = new Map();
@@ -3317,13 +3328,15 @@ export function routineRows(board, ms = nowMs(), env = process.env) {
     const every = parseEvery(h.every);
     let due = false;
     const lastRun = localLastRun(board, h.id, h.last_run, env); // P5.6 a7: a quiet observation keeps its last_run in machine state
+    const skippedAt = skippedSince(board, r, lastRun, env); // P5.4 a4: a skipped run of this machine moves the start of the term, not the shown last_run
+    const base = skippedAt ?? lastRun;
     if (!every.error) {
-      if (!lastRun) due = true;
-      else if (ISO_RE.test(lastRun)) due = ms >= Date.parse(lastRun) + every.ms;
+      if (!base) due = true;
+      else if (ISO_RE.test(base)) due = ms >= Date.parse(base) + every.ms;
     }
     const extra = moduleRoutineReasons(board, r, ms, env, { id: h.id ?? null, agent: h.agent ?? null, model: h.model ?? null, env: h.env ?? null, enabled, approved: scopesOf(h.approved), due }, reasons); // seam (P5.28): after the core reasons
     for (const x of extra) reasons.push(x.text);
-    return { ...(extra.length ? { module_reasons: extra } : {}), id: h.id ?? null, title: h.title ?? '', enabled, every: h.every ?? null, ...(h.hours ? { hours: h.hours } : {}), agent: h.agent ?? null, model: h.model ?? null, env: h.env ?? null, approved: scopesOf(h.approved), last_run: lastRun ?? null, last_result: h.last_result ?? null, due, run_now: reasons.length === 0 && due, reasons, file: `routines/${r.name}` };
+    return { ...(extra.length ? { module_reasons: extra } : {}), id: h.id ?? null, title: h.title ?? '', enabled, every: h.every ?? null, ...(h.hours ? { hours: h.hours } : {}), agent: h.agent ?? null, model: h.model ?? null, env: h.env ?? null, approved: scopesOf(h.approved), last_run: lastRun ?? null, ...(skippedAt ? { skipped_at: skippedAt } : {}), last_result: h.last_result ?? null, due, run_now: reasons.length === 0 && due, reasons, file: `routines/${r.name}` };
   });
 }
 
@@ -3332,7 +3345,7 @@ export function routineCounts(rows) {
 }
 
 export function formatRoutineRow(r, prefix = '') {
-  const last = r.last_run ? `${sanitize(r.last_run, 25)} ${sanitize(r.last_result ?? '-', 10)}` : 'never run';
+  const last = (r.last_run ? `${sanitize(r.last_run, 25)} ${sanitize(r.last_result ?? '-', 10)}` : 'never run') + (r.skipped_at ? ` (skipped ${sanitize(r.skipped_at, 25)})` : '');
   const why = r.reasons.length ? ` | would not run: ${sanitize(r.reasons.join('; '), 160)}` : r.due ? ' | would run now' : '';
   return `${prefix}[${sanitize(r.id ?? '?', 40)}] ${r.enabled ? 'on' : 'off'} | every ${sanitize(r.every ?? '?', 10)}${r.hours ? ` | hours ${sanitize(r.hours, 60)}` : ''} | agent ${sanitize(r.agent ?? '-', 60)} | model ${sanitize(r.model ?? '-', 40)} | env ${sanitize(r.env ?? '-', 40)} | ${last} | ${r.due ? 'due' : 'not due'}${why} | ${sanitize(r.title, 70)}`;
 }
