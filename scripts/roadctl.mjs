@@ -2600,6 +2600,15 @@ function writeJsonFile(f, obj) {
   fs.renameSync(tmp, f);
 }
 
+/** A stable text of the reserve, so a cache entry knows the threshold that produced its "closed until" (P5.17 a1). */
+const reserveKey = (reserve) => JSON.stringify(Object.keys(reserve ?? {}).sort().map((k) => [k, reserve[k]]));
+
+/** P5.17 a1: "closed until" — the earliest reset of the windows in reserve, from the same evaluation the check uses (so the boundary cannot drift from `remaining > reserve`). */
+const closedUntilOf = (result, reserve) => {
+  const breached = evaluateLimits(result, reserve).breached;
+  return breached.length && breached.every((w) => w.resets_at) ? [...new Set(breached.map((w) => w.resets_at))].sort()[0] : null;
+};
+
 /** Limits of one provider: from the cache while it is fresh (cache_minutes, default 10), otherwise probed. Only known results are cached. */
 export async function providerLimits(id, reg, { fresh = false, env = process.env } = {}) {
   const cfg = providerTable(reg)[id];
@@ -2610,20 +2619,27 @@ export async function providerLimits(id, reg, { fresh = false, env = process.env
   const file = limitsCachePath(env);
   const store = readJsonFile(file);
   const c = store?.providers?.[id];
+  const reserve = reserveFor(reg, id);
   if (!fresh && cacheMs > 0 && c?.state === 'known' && Array.isArray(c.windows)) {
     const age = nowMs() - Date.parse(c.measured_at);
     const closedUntil = c.closed_until ? Date.parse(c.closed_until) : null;
-    if (closedUntil !== null && Number.isFinite(closedUntil) && closedUntil > nowMs()) return { ...c, cached: true }; // P5.17 a1: in reserve with a known reset, the next probe is not before the reset
+    if (closedUntil !== null && Number.isFinite(closedUntil) && closedUntil > nowMs()) {
+      // P5.17 a1: in reserve with a known reset, the next probe is not before the reset — but only under the reserve that wrote this
+      // entry. A lowered reserve allows sooner, so its answer must not be the old "closed". A raised one still breaches on these numbers:
+      // the used share only grows until the reset, so the older measurement is a lower bound and the deny stands.
+      if (reserveKey(c.reserve) === reserveKey(reserve)) return { ...c, cached: true };
+      const stillClosed = closedUntilOf({ provider: id, state: 'known', windows: c.windows }, reserve);
+      if (stillClosed) return { ...c, closed_until: stillClosed, reserve, cached: true };
+    }
     if (age >= 0 && age <= cacheMs && c.windows.every((w) => !w.resets_at || Date.parse(w.resets_at) > nowMs())) return { ...c, cached: true };
   }
   const r = await probeProvider(id, cfg, { env });
   if (r.state === 'known' && cacheMs > 0) {
-    // P5.17 a1: "closed until" — the earliest reset of the windows that are in reserve; while it is in the future the cache answers without a probe.
-    const reserve = reserveFor(reg, id);
-    const breached = r.windows.filter((w) => (100 - w.used_percent) <= reserveOfWindow(reserve, w.name));
-    const closedUntil = breached.length && breached.every((w) => w.resets_at) ? [...breached.map((w) => w.resets_at)].sort()[0] : null;
+    // P5.17 a1: while the reset in the future, the cache answers without a probe. The boundary comes from `evaluateLimits`, so a
+    // rounded edge (99.8% used, 0.2% reserve) is recorded exactly as the check reads it. The entry keeps the reserve that wrote it.
+    const closedUntil = closedUntilOf(r, reserve);
     try {
-      writeJsonFile(file, { version: 1, providers: { ...(store?.providers ?? {}), [id]: { ...r, ...(closedUntil ? { closed_until: closedUntil } : {}) } } });
+      writeJsonFile(file, { version: 1, providers: { ...(store?.providers ?? {}), [id]: { ...r, reserve, ...(closedUntil ? { closed_until: closedUntil } : {}) } } });
     } catch {
       // a cache that cannot be written only costs another probe
     }

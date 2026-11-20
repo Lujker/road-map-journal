@@ -1685,6 +1685,55 @@ test('P5.17 a1: in reserve with a known resets_at the next probe is not before t
   assert.equal(sb2.calls('codex').length, 2, 'an allowed result is re-probed after cache_minutes');
 });
 
+test('P5.17 a1: a changed reserve is not answered blindly by closed_until', LSKIP, () => {
+  const reset = '1794409200'; // 2026-11-11T15:00:00Z
+  // 8% left under a 10% reserve: breached, so the cache is closed until the reset
+  const sb = sandbox();
+  const low = regFile({ limits: { reserve: { five_hour: 5 } } });
+  const first = lcli(sb, ['limits', '--check', 'codex', '--fresh'], { FAKE_5H: '92', FAKE_RESET: reset, ROADCTL_NOW: '2026-11-11T14:00:00Z' });
+  assert.equal(first.status, 1, first.stderr);
+  assert.equal(sb.calls('codex').length, 1);
+  const cacheFile = path.join(sb.cache, 'road-map-journal', 'limits.json');
+  const cached = JSON.parse(fs.readFileSync(cacheFile, 'utf8')).providers.codex;
+  assert.equal(cached.closed_until, '2026-11-11T15:00:00Z');
+  assert.deepEqual(cached.reserve, { seven_day: 10, five_hour: 10 }, 'the entry records the reserve that wrote it');
+  // the owner lowers the reserve to 5%: 8% left is now above it, so the old "closed" must not stand — the stale numbers are measured again
+  const lowered = lcli(sb, ['limits', '--check', 'codex'], { FAKE_5H: '97', FAKE_RESET: reset, ROADCTL_REGISTRY: low, ROADCTL_NOW: '2026-11-11T14:30:00Z' });
+  assert.equal(sb.calls('codex').length, 2, 'a lowered reserve probes instead of trusting the old closed_until');
+  assert.equal(lowered.status, 1, 'and does not allow blindly: the fresh probe shows 3% left');
+  // the same lowered reserve on a fresh 8% left: allowed, still measured, not taken from the old closed entry
+  const sb2 = sandbox();
+  lcli(sb2, ['limits', '--check', 'codex', '--fresh'], { FAKE_5H: '92', FAKE_RESET: reset, ROADCTL_NOW: '2026-11-11T14:00:00Z' });
+  const allowed = lcli(sb2, ['limits', '--check', 'codex'], { FAKE_5H: '92', FAKE_RESET: reset, ROADCTL_REGISTRY: low, ROADCTL_NOW: '2026-11-11T14:30:00Z' });
+  assert.equal(allowed.status, 0, allowed.stderr);
+  assert.equal(sb2.calls('codex').length, 2, 'the new answer is measured, not remembered from the old reserve');
+  // the owner raises the reserve above the cached numbers: they still breach, so the deny stands without another probe
+  const sb3 = sandbox();
+  const high = regFile({ limits: { reserve: { five_hour: 12 } } });
+  lcli(sb3, ['limits', '--check', 'codex', '--fresh'], { FAKE_5H: '96', FAKE_RESET: reset, ROADCTL_NOW: '2026-11-11T14:00:00Z' });
+  const raised = lcli(sb3, ['limits', '--check', 'codex'], { FAKE_5H: '96', FAKE_RESET: reset, ROADCTL_REGISTRY: high, ROADCTL_NOW: '2026-11-11T14:20:00Z' });
+  assert.equal(raised.status, 1);
+  assert.equal(sb3.calls('codex').length, 1, '4% left is below the new 12% reserve: no probe before the reset');
+});
+
+test('P5.17 a1: closed_until takes its boundary from evaluateLimits, not from raw subtraction (99.8% used, 0.2% reserve)', LSKIP, () => {
+  const edge = regFile({ limits: { reserve: { five_hour: 0.2, seven_day: 0 } } });
+  const sb = sandbox();
+  const first = lcli(sb, ['limits', '--check', 'codex', '--fresh'], { FAKE_5H: '99.8', FAKE_7D: '0', ROADCTL_REGISTRY: edge });
+  assert.equal(first.status, 1, first.stderr);
+  const cached = JSON.parse(fs.readFileSync(path.join(sb.cache, 'road-map-journal', 'limits.json'), 'utf8')).providers.codex;
+  assert.equal(cached.closed_until, '2100-01-01T00:00:00Z', '0.2% left against a 0.2% reserve is a breach, so the entry is closed until the reset');
+  const again = lcli(sb, ['limits', '--check', 'codex'], { FAKE_5H: '99.8', FAKE_7D: '0', ROADCTL_REGISTRY: edge, ROADCTL_NOW: '2026-11-11T10:01:00Z' });
+  assert.equal(again.status, 1);
+  assert.equal(sb.calls('codex').length, 1, 'the same edge as the check: the probe does not repeat before the reset');
+  // the same edge where raw subtraction gives 0.1700000000000017 > 0.17 and would not have closed the entry
+  const frac = regFile({ limits: { reserve: { five_hour: 0.17, seven_day: 0 } } });
+  const sb2 = sandbox();
+  lcli(sb2, ['limits', '--check', 'codex', '--fresh'], { FAKE_5H: '99.83', FAKE_7D: '0', ROADCTL_REGISTRY: frac });
+  const cached2 = JSON.parse(fs.readFileSync(path.join(sb2.cache, 'road-map-journal', 'limits.json'), 'utf8')).providers.codex;
+  assert.equal(cached2.closed_until, '2100-01-01T00:00:00Z');
+});
+
 test('P5.17 a3: docs record that only the main provider of an agent is accounted (the Hermes limit)', () => {
   const docs = fs.readFileSync(path.join(here, '..', 'docs', 'roadctl.md'), 'utf8');
   assert.match(docs, /one provider per agent/i);
