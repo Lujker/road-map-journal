@@ -382,6 +382,9 @@ function reconcileOrphans(ctx, bdir, dir, t, as, now) {
   return persist(ctx.env, dir, (s) => { s[key] = next; }) && good;
 }
 
+/** The `subtype` of the last JSON line of `claude -p --output-format json` when the model ran out of turns: Claude Code 2.1.x says `error_max_turns`, an older or shortened form is `max_turns` (P5.4 a3/a7). */
+const MAX_TURNS_SUBTYPES = ['error_max_turns', 'max_turns'];
+
 /** Everything after the lock is held. Returns { code, text, run_id?, outcome? }. `started(run_id)` is called when the command runs (a detached parent waits for it). */
 async function runLocked(ctx, a, t, bdir, dir, lock, started) {
   const { env, api } = ctx;
@@ -490,7 +493,7 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
   let unsaved = false; // a stop or back-off that could not be saved: the lock stays, marked
   if (outcome) text = `${outcome} (reported by the command; ${exitText}; ${dur}s)`;
   else {
-    const maxTurns = !stopping && usage.claude?.subtype === 'max_turns'; // P5.4 a3/a7: the model ran out of turns mid-work (it may have written outside): an aborted run, never a plain failure that the routine repeats after `every`
+    const maxTurns = !stopping && MAX_TURNS_SUBTYPES.includes(usage.claude?.subtype); // P5.4 a3/a7: the model ran out of turns mid-work (it may have written outside): an aborted run, never a plain failure that the routine repeats after `every`
     outcome = stopping === 'timeout' ? 'timeout' : stopping || maxTurns ? 'aborted' : 'failed';
     const reason = stopping === 'timeout' ? `no result within ${Math.round(t.timeout / 1000)}s` : stopping === 'paused' ? 'stopped by pause --now' : stopping ? 'the supervisor was told to stop' : maxTurns ? `the model stopped at max_turns (${usage.claude.turns ?? '?'} turns) without a result` : 'no result';
     const fields = { ...EMPTY, did: [cleanText(after?.note || t.nodata, 120)], problems: [{ kind: 'unknown', key: maxTurns ? 'max-turns' : outcome === 'failed' ? 'no-result' : outcome, text: `${reason} (${exitText})` }], writes: [`${t.kind}:${t.id}`] };

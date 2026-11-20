@@ -384,6 +384,22 @@ test('P5.2 a7/a12/a18: huge output does not grow the log past its limit; the led
   assert.match(r.routineText('mr-json'), /^last_reason: aborted$/m);
   assert.match(r.routineText('mr-json'), /^hold: aborted$/m, 'a read+board routine is held at once, not offered again after `every`');
   assert.doesNotMatch(r.roadctl(['tick', '--as', ME, '--routine', 'mr-json']).stdout, /^RUN /m);
+  // the real Claude Code (2.1.x) says `error_max_turns`; the shortened `max_turns` above is the older form: both are an aborted run
+  const real = JSON.stringify({ type: 'result', subtype: 'error_max_turns', session_id: 's-2', num_turns: 31, is_error: true, total_cost_usd: 0.7, duration_ms: 1000, permission_denials: [] });
+  r.routine('mr-real');
+  r.roadctl(r.sup('mr-real', ['claude', '-p', 'x', '--output-format', 'json']), { FAKE_STDOUT: `${real}\n` });
+  const realRun = r.runs().find((x) => x.id === 'mr-real');
+  assert.equal(realRun.usage.claude.subtype, 'error_max_turns');
+  assert.deepEqual([realRun.outcome, realRun.source], ['aborted', 'supervisor'], 'P5.4 a3/a7: the real error_max_turns is an aborted run');
+  assert.match(r.routineText('mr-real'), /^last_reason: aborted$/m);
+  assert.match(r.routineText('mr-real'), /^hold: aborted$/m, 'the first failure of a read+board routine is held at once');
+  assert.doesNotMatch(r.roadctl(['tick', '--as', ME, '--routine', 'mr-real']).stdout, /^RUN /m);
+  // other result subtypes are not turned into an abort
+  const other = JSON.stringify({ type: 'result', subtype: 'error_during_execution', session_id: 's-3', num_turns: 2, is_error: true, total_cost_usd: 0.1 });
+  r.routine('mr-other');
+  r.roadctl(r.sup('mr-other', ['claude', '-p', 'x', '--output-format', 'json']), { FAKE_STDOUT: `${other}\n` });
+  assert.equal(r.runs().find((x) => x.id === 'mr-other').outcome, 'failed');
+  assert.doesNotMatch(r.routineText('mr-other'), /^hold:/m);
   r.routine('mr-nodata');
   r.roadctl(r.sup('mr-nodata', ['claude', '-p', 'x', '--output-format=json']), { FAKE_STDOUT: 'plain text\n' });
   assert.equal(r.runs().find((x) => x.id === 'mr-nodata').usage.claude.session_id, 'unknown');
