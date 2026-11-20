@@ -101,13 +101,20 @@ function nextOverview(board, now) {
     if (t.getTime() <= now) t = new Date(p.y, p.mo, p.d + 1, spec.hour, spec.minute, 0, 0);
     return t.toISOString();
   }
+  // the zone offset is refined on the moment it produces, for today and for tomorrow alike: a DST change between the two
+  // dates must not be read with the offset of the other day
+  const resolve = (localMs) => {
+    let at = localMs - zoneOffset(spec.tz, localMs);
+    for (let i = 0; i < 3; i++) {
+      const next = localMs - zoneOffset(spec.tz, at);
+      if (next === at) break;
+      at = next;
+    }
+    return at;
+  };
   const target = Date.UTC(p.y, p.mo, p.d, spec.hour, spec.minute);
-  let at = target - zoneOffset(spec.tz, target);
-  at = target - zoneOffset(spec.tz, at);
-  if (at <= now) {
-    const next = target + DAY_MS;
-    at = next - zoneOffset(spec.tz, next);
-  }
+  let at = resolve(target);
+  if (at <= now) at = resolve(target + DAY_MS);
   return new Date(at).toISOString();
 }
 

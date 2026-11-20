@@ -617,3 +617,17 @@ test('P5.24 a11: one unreadable Questions section does not remove the other RESU
   assert.match(lint.stdout, /Questions section cannot be read/);
 });
 
+test('P5.24 a5/a11: the undo window follows the zone offset across a DST change', (t) => {
+  const f = fixture(t);
+  const cfg = path.join(f.board, 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg, 'utf8')), digest: { daily: '03:30', tz: 'America/New_York' } }));
+  const askAt = (id, now) => {
+    const r = f.run(['ask', 'W-3', '--as', 'worker'], { question: { id, kind: 'confirm', prompt: 'P?', reason: 'reversible', recommended: true, scope: ['implementation'] } }, { ROADCTL_NOW: now });
+    assert.equal(r.status, 0, r.stderr);
+    return JSON.parse(f.run(['inbox', '--json'], undefined, { ROADCTL_NOW: now }).stdout).items.find((i) => i.question?.id === id)?.question.undo_until;
+  };
+  // asked on the evening before the change: 03:30 the next day is already EDT, so 07:30Z, not 08:30Z
+  assert.equal(askAt('q1', '2026-03-07T20:00:00.000Z'), '2026-03-08T07:30:00.000Z');
+  // asked after that moment: the next overview is the following day, and the offset is that of the target moment
+  assert.equal(askAt('q2', '2026-03-08T07:45:00.000Z'), '2026-03-09T07:30:00.000Z');
+});
