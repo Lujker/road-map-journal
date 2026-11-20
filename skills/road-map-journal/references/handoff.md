@@ -11,6 +11,7 @@ For a coordinator that gives cards to other agents and for an agent that takes o
 ## Work a card
 
 - Work in your own worktree and branch: `roadctl worktree add <id>`. Never in the main checkout, never in the worktree of another card.
+- Work under your own name (`ROADCTL_AS` or `--as`) and claim with the worktree: `roadctl claim <id> --as <you> --workdir <worktree>`. Without the claim and its workdir the limit checkpoint cannot bind to your card.
 - Run tests only through the shared lock: `roadctl lock -- <test command>`. Two runs of one project never overlap.
 - Commit in small separate commits. Do not merge into main, push, tag, `approve` or `done`; the coordinator does that after acceptance.
 - Report with `roadctl report <id> --as <you> "<SHA, test result, what is not done>"` after one Evidence line per criterion. A report without code or evidence is a claim, not a result.

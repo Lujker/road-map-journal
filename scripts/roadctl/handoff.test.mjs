@@ -72,7 +72,9 @@ test('P5.41 a5: a worker assignment has the goal, the open criteria, branch and 
     assert.match(t, /worktree of another card or the installed roadctl/);
     assert.match(t, /change anything outside: src\/export\/ and its tests/);
     assert.match(t, /Stop and report instead of going on: stop when the report format has to change/);
-    assert.match(t, /roadctl claim H-1 --as pi-developer/);
+    assert.match(t, /ROADCTL_AS=pi-developer/);
+    assert.match(t, /`roadctl claim H-1 --as pi-developer --workdir \S+-h-1`/, 'the claim names the worktree: the limit checkpoint binds by it');
+    assert.match(t, /Without the claim and its workdir the limit checkpoint \(P5\.43\) cannot find your card/);
     assert.match(t, /roadctl report H-1 --as pi-developer "<commits \(SHA\), the test result, what is not done>"/);
     for (const l of ECONOMY) assert.ok(t.includes(l), l);
     assert.match(t, /caveman/);
@@ -101,6 +103,9 @@ test('P5.41 a5: a reviewer gets the review rule and is read-only; a fixer gets t
     assert.match(fx, /Fix only what the review returned/);
     assert.match(fx, /Findings: a3: an empty report crashes/);
     assert.match(fx, /roadctl worktree add H-1/);
+    assert.match(fx, /ROADCTL_AS=dev/);
+    assert.match(fx, /roadctl claim H-1 --as dev --workdir /);
+    assert.doesNotMatch(rv, /ROADCTL_AS|--workdir/, 'a reviewer claims nothing');
     assert.doesNotMatch(fx, /Review rule/);
     assert.match(r.run(['H-1', '--to', 'dev', '--role', 'fixer']).stdout, /Findings: \(not given: ask the coordinator for the review text\)/);
     assert.deepEqual(ROLES, ['worker', 'reviewer', 'fixer']);
