@@ -588,3 +588,37 @@ test('integration: owner answer survives HOLD, resume and shifting skips until t
   const next = r.tick(['--routine', 'mr-status', '--prompt'], { ...r.at(369), FAKE_U5: '0.1', XDG_CACHE_HOME: path.join(r.dir, 'cache-open') });
   assert.equal(next.status, 0, next.stderr); assert.doesNotMatch(next.stdout, /Use plan B/);
 });
+
+test('integration: an answer that arrives while a run is going and before its HOLD is kept for the first RUN that starts after it; that RUN receives it and its done clears it', FAKES_SKIP, () => {
+  const r = rig({ env: { FAKE_U5: '0.9' } });
+  const config = path.join(r.board, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), requires: '0.13.0' }));
+  r.routine();
+  const withInput = (args, data, over) => spawnSync(process.execPath, [SELF, ...args, '--board', r.board], { cwd: r.ws, encoding: 'utf8', input: JSON.stringify(data), env: { ...r.env, ...over } });
+  const fail = (minute) => r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'failed'], r.at(minute));
+  fail(0);
+  fail(1);
+  // the third run STARTS first, the owner answers while it goes, the run then fails: HOLD, and last_run is later than the answer
+  r.ok(['run', 'begin', 'mr-status', '--as', ME], r.at(2));
+  assert.equal(withInput(['ask', 'mr-status', '--as', ME], { question: { id: 'owner-q', kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } }, r.at(3)).status, 0);
+  assert.equal(withInput(['answer', 'mr-status', 'owner-q', '--by', 'Owner'], { answer: 'Use plan B' }, r.at(4)).status, 0);
+  fail(5);
+  const text = fs.readFileSync(r.routineFile(), 'utf8');
+  assert.match(text, /^hold:/m);
+  assert.match(text, new RegExp(`^last_run: ${shift(5)}$`, 'm'), 'last_run is later than the answer');
+  r.ok(['routine', 'resume', 'mr-status', '--by', 'Owner'], r.at(6));
+  assert.equal(r.tick(['--routine', 'mr-status'], r.at(125)).status, 1, 'skipped: limits');
+  assert.ok(r.runs().some((x) => x.reason === 'limits' && x.id === 'mr-status'));
+  const open = (m) => ({ ...r.at(m), FAKE_U5: '0.1', XDG_CACHE_HOME: path.join(r.dir, 'cache-open') });
+  assert.equal(r.tick(['--routine', 'mr-status', '--prompt'], open(130)).status, 4, 'inside the term after the skip: nothing');
+  const tick = r.tick(['--routine', 'mr-status', '--prompt'], open(250));
+  assert.equal(tick.status, 0, tick.stderr);
+  assert.match(tick.stdout, /owner answers \(data\).*Use plan B/, 'the first RUN that starts after the answer receives it');
+  // the same answer is offered again until a run that started after it has ended
+  assert.match(r.tick(['--routine', 'mr-status', '--prompt'], open(251)).stdout, /Use plan B/);
+  r.ok(['run', 'begin', 'mr-status', '--as', ME], open(252));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], open(255));
+  const next = r.tick(['--routine', 'mr-status', '--prompt'], open(400));
+  assert.equal(next.status, 0, next.stderr);
+  assert.doesNotMatch(next.stdout, /Use plan B/, 'the run that received it has ended: the answer is gone');
+});

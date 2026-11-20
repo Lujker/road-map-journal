@@ -4,6 +4,7 @@ import path from 'node:path';
 const pathFor = (dir, file) => path.join(dir, file);
 import { makeQuestion, answerQuestion, undoQuestion, addQuestion, putQuestions, questionsFromItem } from './owner-questions-data.mjs';
 import { admission, readMandate, TELL_OWNER_FLOOR } from './mandate.mjs';
+import { readRuns, runKey } from './run-store.mjs';
 
 const REQUIRES = '0.13.0';
 const DAY_MS = 864e5;
@@ -12,6 +13,36 @@ const agentPattern = /^[A-Za-z0-9@._:-]{1,100}$/;
 const asLine = (s) => String(s).replace(/[\r\n|]/g, ' ').replace(/[`<>\[\]]/g, '').trim();
 const when = (env, api) => new Date(api.nowMs(env)).toISOString();
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
+
+/**
+ * Delivery of an answer to a routine: a run gets the answers its prompt carried, and a run carries only what was answered BEFORE it started. The start of the last
+ * finished run comes from the local run ledger (a run that began with `run begin` or `supervise`); an answer given later than that start is still waiting, even when the
+ * run ends after the answer and writes `last_run` after it. Without a known start (a run recorded by a bare `routine done`, no ledger, a later run of another machine)
+ * the old rule stays: an answer is waiting while it is not older than the git `last_run`. Returns { start: ms|null }.
+ */
+export function lastRunStart(env, project, id, lastRun) {
+  let latest = null;
+  try {
+    const key = `routine:${project}/${id}`;
+    for (const r of readRuns(env).values()) {
+      if (runKey(r) !== key || r.outcome === 'started' || r.outcome === 'skipped') continue;
+      const f = Date.parse(r.finished ?? '');
+      if (Number.isFinite(f) && (latest === null || f > Date.parse(latest.finished))) latest = r;
+    }
+  } catch { return null; }
+  const start = Date.parse(latest?.started ?? '');
+  if (!latest || !Number.isFinite(start)) return null;
+  const last = Date.parse(lastRun ?? '');
+  if (Number.isFinite(last) && Date.parse(latest.finished) < last) return null; // the git last_run is of a later run that this ledger does not know
+  return start;
+}
+/** An answered question that no run has received yet. */
+export const answerWaiting = (q, start, lastRun) => {
+  const answered = Date.parse(q.answered);
+  if (start !== null) return answered > start;
+  const last = Date.parse(lastRun ?? '');
+  return !Number.isFinite(last) || answered >= last;
+};
 
 function input() {
   const buffer = Buffer.alloc(16385);
@@ -364,15 +395,15 @@ export default {
       }
       return { findings };
     },
-    'tick-before'({ agent, items, boardDirs, api }) {
+    'tick-before'({ agent, items, boardDirs, env, api }) {
       const run = {};
       for (const item of items.filter((x) => x.kind === 'RUN')) {
         const board = api.loadBoard(boardDirs[item.project]);
         if ((api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) continue;
         const routine = board.routines.find((r) => r.header.id === item.id);
         if (!routine) continue;
-        const last = Date.parse(item.routine.last_run ?? '');
-        const answers = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && (!Number.isFinite(last) || Date.parse(q.answered) >= last)).map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
+        const start = lastRunStart(env, item.project, item.id, item.routine.last_run);
+        const answers = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && answerWaiting(q, start, item.routine.last_run)).map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
         if (answers.length) run[`${item.project}/${item.id}`] = { owner_answers: answers };
       }
       // P5.24 a11: a card whose decision the owner undid is a RESUME task for its current holder, not a plain TAKE —
