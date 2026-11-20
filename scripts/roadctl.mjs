@@ -322,7 +322,7 @@ export function boardRequires(config, version = VERSION) {
   for (const [v, name] of REQUIRES_MODULE) if (compareVersions(req, v) >= 0 && !MODULE_REG.modules.includes(name)) return `board requires the module ${name} (roadctl ${v}, scripts/roadctl/), which this copy does not have; install the whole roadctl folder`;
   return null;
 }
-const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy']]; // [version, module]: a board that requires that version or newer needs the module loaded, else the board is refused
+const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy'], ['0.13.0', 'owner-questions']]; // required modules for board format versions
 
 const statusOf = (board, card) => {
   const s = card.header.status ?? '';

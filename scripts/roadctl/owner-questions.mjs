@@ -22,8 +22,9 @@ function input() {
   try { return JSON.parse(buffer.subarray(0, n).toString('utf8')); } catch { throw new Error('expected JSON input'); }
 }
 function boardOf(flags, api) {
-  if (typeof flags.board !== 'string') throw new Error('--board DIR is required');
+  if (flags.board !== undefined && typeof flags.board !== 'string') throw new Error('--board needs a directory');
   const dir = api.findBoard(process.cwd(), flags.board);
+  if (!dir) throw new Error('no board found; use --board DIR');
   const board = api.loadBoard(dir);
   if (api.boardRequires(board.config) || (api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) throw new Error(`board requires must be at least ${REQUIRES} and supported`);
   return board;
@@ -44,6 +45,11 @@ function log(raw, date, by, message) {
   const entry = `- ${date} [${asLine(by)}] ${asLine(message)}`;
   if (!/^## Log$/m.test(raw)) return `${raw.replace(/\n*$/, '\n')}\n## Log\n${entry}\n`;
   return raw.replace(/(^## Log\n)([\s\S]*?)(?=^## |\s*$(?![\s\S]))/m, (_, header, body) => `${header}${body.replace(/\n*$/, '\n')}${entry}\n\n`);
+}
+function recordHandoff(raw, date, by, message) {
+  const entry = `- ${date} [${asLine(by)}] ${asLine(message)}`;
+  if (!/^## Handoff$/m.test(raw)) return `${raw.replace(/\n*$/, '\n')}\n## Handoff\n${entry}\n`;
+  return raw.replace(/(^## Handoff\n)([\s\S]*?)(?=^## |\s*$(?![\s\S]))/m, (_, header, body) => `${header}${body.replace(/\n*$/, '\n')}${entry}\n\n`);
 }
 function write(item, raw) {
   fs.writeFileSync(item.file, item.eol === '\r\n' ? raw.replace(/\n/g, '\r\n') : raw, 'utf8');
@@ -74,7 +80,9 @@ function ask({ args, flags, api, env, out }) {
   if (info?.errors.length) throw new Error('invalid delegation');
   if (info?.delegate?.state === 'claimed') {
     if (info.claim?.agent !== flags.as || api.leaseExpired(info.claim, api.nowMs(env))) throw new Error('only the current claimant may ask');
-    raw = log(raw, timestamp.slice(0, 10), flags.as, handoff(data.checkpoint));
+    const checkpoint = handoff(data.checkpoint);
+    raw = recordHandoff(raw, timestamp.slice(0, 10), flags.as, checkpoint);
+    raw = log(raw, timestamp.slice(0, 10), flags.as, checkpoint);
   }
   if (q.blocking && !routine) {
     raw = changeHeader(raw, 'status', 'blocked');
@@ -84,6 +92,7 @@ function ask({ args, flags, api, env, out }) {
       raw = changeHeader(raw, 'claim', null);
     }
   }
+  if (!routine) raw = changeHeader(raw, 'as_of', timestamp.slice(0, 10));
   raw = log(raw, timestamp.slice(0, 10), flags.as, q.blocking ? `ASK ${q.id}: waiting for owner` : `ASK ${q.id}: decided, can be undone until ${q.undo_until}`);
   raw = putQuestions(raw, addQuestion(rows, q));
   write(item, raw);
@@ -113,6 +122,7 @@ function resolve({ args, flags, api, env, out }, undo = false) {
     if ((board.config.status_map?.[item.header.status] ?? item.header.status) === 'review') raw = changeHeader(raw, 'status', 'doing');
     raw = log(raw, timestamp.slice(0, 10), flags.by, `RETURNED: ${data.comment}`);
   }
+  if (!routine) raw = changeHeader(raw, 'as_of', timestamp.slice(0, 10));
   raw = log(raw, timestamp.slice(0, 10), flags.by, `${undo ? 'UNDO' : 'ANSWER'} ${args[2]}: ${JSON.stringify(undo ? data.comment : data.answer)}`);
   write(item, putQuestions(raw, rows));
   out(`${undo ? 'undo' : 'answer'} ${args[1]}/${args[2]}: recorded; not committed`);
@@ -165,13 +175,16 @@ export function ownerItems(board, time) {
 export default {
   name: 'owner-questions',
   cardSections: ['Questions'], routineSections: ['Questions'],
-  tickKinds: { RESUME: { prompt: ({ agent }) => `RESUME read the owner's answer; claim the card with roadctl claim <id> --as ${agent} and continue`, text: (item) => `owner answered: ${item.title}` } },
+  tickKinds: { RESUME: { prompt: ({ agent }) => `RESUME read the owner's answer; if delegated, claim the card with roadctl claim <id> --as ${agent}; continue`, text: (item) => `owner answered: ${item.title}` } },
   hooks: {
     'tick-items'({ board, agent, api }) {
       if ((api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) return {};
-      return { items: board.cards.filter((card) => card.header.status === 'blocked' && /^owner answer /.test(card.header.blocked ?? '')).flatMap((card) => {
-        const id = card.header.blocked.slice('owner answer '.length);
-        const question = questionsFromItem(rawItem(card)).find((q) => q.id === id && q.state === 'answered' && q.agent === agent);
+      return { items: board.cards.flatMap((card) => {
+        const answered = card.header.status === 'blocked' && /^owner answer /.test(card.header.blocked ?? '');
+        const undelegated = card.header.status === 'doing' && !card.header.delegate;
+        if (!answered && !undelegated) return [];
+        const id = answered ? card.header.blocked.slice('owner answer '.length) : null;
+        const question = questionsFromItem(rawItem(card)).find((q) => (!id || q.id === id) && q.state === 'answered' && q.agent === agent);
         return question ? [{ kind: 'RESUME', id: card.header.id, title: card.header.title }] : [];
       }) };
     },

@@ -5,11 +5,11 @@
 //
 // The hash covers: every header key except the ones listed below (agent, model, env, every, hours, timeout, id, title, and any key a later card adds,
 // such as allow or mcp: a new key is covered until its card decides otherwise); the scope of `approved`; the sections Goal, Steps, May write, Escalate and
-// also any other section or text before the first section (a routine is read as a whole by the model, so an extra section would be a way round).
+// also any other section or text before the first section; on a 0.13.0 board, valid Questions data is outside the routine hash.
 // It does not cover: enabled, notify, last_run, last_result, the Log section, the rest of the `approved` line (who, when, source), the hash itself and
 // `approval_id` (a random id of the approval, new with every `routine on` that writes the hash; the digest tells two approvals of the same text apart by it).
 // Before hashing: line ends are LF, trailing whitespace of a line and blank lines around a section go, header order does not matter; the order of the sections does.
-// The Log section is outside the hash and is not an instruction: the executor must not read it as part of the task.
+// The Log and valid Questions data are records, not instructions; malformed Questions content remains covered.
 // Not covered because it is outside the board: the local watchdog script and the settings file of the agent (docs/roadctl.md).
 //
 // Boards: the hash is written by `routine on` only on a board whose `requires` is at least HASH_REQUIRES (a board that has not raised it behaves as
@@ -29,7 +29,7 @@ const PREFIX = 'sha256-v1:';
 const norm = (s) => s.split('\n').map((l) => l.replace(/\s+$/, '')).join('\n').replace(/^\n+|\n+$/g, '');
 
 /** The approval hash of routine text (header and sections), or null when the text has no header. The same text always gives the same hash. */
-export function approvalHash(raw) {
+export function approvalHash(raw, { questionData = false } = {}) {
   const m = String(raw).replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
   if (!m) return null;
   const header = Object.create(null); // no prototype: a key named __proto__ is just a key
@@ -43,7 +43,7 @@ export function approvalHash(raw) {
   for (let i = 1; i < parts.length; i += 2) {
     const name = parts[i].trim();
     if (name === 'Log') continue;
-    if (name === 'Questions') {
+    if (questionData && name === 'Questions') {
       try { readQuestions(parts[i + 1] ?? ''); continue; } catch { /* Malformed question content remains covered by the approval. */ }
     }
     sections.push([name, norm(parts[i + 1] ?? '')]);
@@ -57,11 +57,11 @@ const raised = (board, api) => (board.config?.requires === undefined ? false : (
 const hasKey = (text) => new RegExp(`^${HASH_KEY}:`, 'm').test(String(text).replace(/\r\n/g, '\n').match(/^---\n([\s\S]*?)\n---/)?.[1] ?? '');
 
 /** The state of one routine: 'ok' | 'changed' | 'missing' | 'unreadable'. */
-export function approvalState(board, routine) {
+export function approvalState(board, routine, api) {
   const stored = routine.header[HASH_KEY];
   let current;
   try {
-    current = approvalHash(fs.readFileSync(path.join(board.dir, routine.file), 'utf8'));
+    current = approvalHash(fs.readFileSync(path.join(board.dir, routine.file), 'utf8'), { questionData: (api.compareVersions(board.config.requires, '0.13.0') ?? -1) >= 0 });
   } catch {
     return 'unreadable';
   }
@@ -82,20 +82,20 @@ export default {
   hooks: {
     /** `routine on`: the hash of the text as it is now, after the approval line and `enabled` were set (neither is part of the hash except the scope). Written on a board that raised `requires` to HASH_REQUIRES, or when the routine already has the key (the owner re-approves it on any board); otherwise nothing is written. */
     'routine-on'({ board, text, api }) {
-      const hash = raised(board, api) || hasKey(text) ? approvalHash(text) : null;
+      const hash = raised(board, api) || hasKey(text) ? approvalHash(text, { questionData: (api.compareVersions(board.config.requires, '0.13.0') ?? -1) >= 0 }) : null;
       return hash ? { header: { [HASH_KEY]: hash, [ID_KEY]: crypto.randomBytes(6).toString('hex') } } : {};
     },
     /** Why an enabled, approved routine does not run: its content changed, or (board requires the hash) it has none. Disabled or unapproved: the core says so. */
     'routine-reasons'({ board, routine, facts, api }) {
       if (!facts.enabled || !facts.approved.length) return {};
-      const st = approvalState(board, routine);
+      const st = approvalState(board, routine, api);
       if (st === 'ok' || (st === 'missing' && !raised(board, api))) return {};
       return { reasons: [WHY[st]], lint: 'error', immediate: true };
     },
     /** `lint`: an approval that predates the hash still works on a board below HASH_REQUIRES, but an edit would go unnoticed. */
     'routine-lint'({ board, routine, api }) {
       const h = routine.header;
-      if (h.enabled !== 'true' || !/scope=/.test(h.approved ?? '') || raised(board, api) || approvalState(board, routine) !== 'missing') return {};
+      if (h.enabled !== 'true' || !/scope=/.test(h.approved ?? '') || raised(board, api) || approvalState(board, routine, api) !== 'missing') return {};
       return { findings: [{ level: 'warning', text: `approved without a content hash: an edit after approval is not detected (the hash needs roadctl ${HASH_REQUIRES} set in config.json, see docs/roadctl.md)` }] };
     },
   },
