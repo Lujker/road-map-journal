@@ -116,10 +116,10 @@ export function needOf(card) {
  * permissions, the data access or the budget of the task: an agent outside the owner's list, or whose path/tools/data do not already fit, is refused, never adapted.
  * chosen = the first eligible one, or null: no candidate means no launch.
  */
-export async function selectCandidates(reg, need, { reach, limits }) {
+export async function selectCandidates(reg, need, { reach, limits, pool: given = null }) {
   const agents = reg?.agents ?? {};
-  const listed = need.role ? reg?.preference?.[need.role] : null;
-  const pool = Array.isArray(listed) ? listed : Object.keys(agents).filter((a) => !need.role || agents[a]?.roles?.includes(need.role));
+  const listed = given ? null : need.role ? reg?.preference?.[need.role] : null;
+  const pool = given ?? (Array.isArray(listed) ? listed : Object.keys(agents).filter((a) => !need.role || agents[a]?.roles?.includes(need.role)));
   const rows = [];
   for (const [i, name] of pool.entries()) {
     const a = agents[name];
@@ -146,6 +146,8 @@ export async function selectCandidates(reg, need, { reach, limits }) {
     }
     const l = await limits(name);
     row.limits = l.verdict;
+    if (l.provider) row.provider = l.provider;
+    if (l.closed_until) row.closed_until = l.closed_until;
     if (l.verdict === 'reserve') reasons.push(`limits: reserve reached (${l.message})`);
     else if (l.verdict === 'unknown') reasons.push(`limits unknown (${l.message}): no guess is made`);
     else if (l.api && !a.budget) reasons.push('a paid API with no agreed budget (agents.<name>.budget)');
@@ -159,11 +161,45 @@ export async function selectCandidates(reg, need, { reach, limits }) {
 export const limitsOf = (api, reg, env) => async (agent) => {
   try {
     const r = await api.checkLimits(agent, reg, { env });
-    return { verdict: r.verdict === 'confirmed' ? 'allowed' : r.verdict, message: String(r.message ?? '').slice(0, 160), api: r.result?.state === 'not-applicable' };
+    return { verdict: r.verdict === 'confirmed' ? 'allowed' : r.verdict, message: String(r.message ?? '').slice(0, 160), api: r.result?.state === 'not-applicable', provider: r.provider ?? null, closed_until: r.result?.closed_until ?? null };
   } catch (e) {
     return { verdict: 'unknown', message: clean(e.message, 120), api: false };
   }
 };
+
+/**
+ * P5.41 a10: a candidate whose provider has no limit left (the reserve of P5.17 reached, `closed_until` ahead) is never offered, and the reader sees what to use instead and why.
+ * The replacement is a profile the registry agrees (`agent_profiles`; with an orchestrator, one that its last reconciliation matched and did not report unavailable): first among the
+ * owner's list that passed every check, else, as ADVICE only, an executor of another profile that has the role and passes the same checks. `chosen` stays the owner's list: an agent outside it is
+ * never launched here (no wider rights, no other environment). Returns null when no candidate is closed by a limit.
+ */
+export async function replacementFor(reg, need, checked, { reach, limits, agreed = () => ({ ok: true }) }) {
+  const closed = checked.candidates.find((c) => !c.eligible && c.reasons.some((x) => x.startsWith('limits: reserve reached')));
+  if (!closed) return null;
+  const profileOf = (agent) => Object.entries(reg?.agent_profiles ?? {}).find(([, p]) => p?.executor === agent)?.[0] ?? null;
+  const because = `${closed.agent}${profileOf(closed.agent) ? ` (profile ${profileOf(closed.agent)})` : ''}: the limit of ${closed.provider ? `provider ${closed.provider}` : 'its provider'} is closed${closed.closed_until ? ` until ${closed.closed_until}` : ' (the owner\'s reserve is reached)'}`;
+  const skipped = [];
+  const take = (rows, source) => {
+    for (const row of rows.filter((c) => c.eligible && c.agent !== closed.agent && !(closed.provider && c.provider === closed.provider))) {
+      const profile = profileOf(row.agent);
+      if (!profile) { skipped.push(`${row.agent}: no profile in the registry (agent_profiles), not agreed`); continue; }
+      const a = agreed(profile);
+      if (!a.ok) { skipped.push(`${row.agent}: ${a.why}`); continue; }
+      return { for: closed.agent, because, use: row.agent, profile, source, ...(source === 'profiles' ? { advice_only: 'outside the owner\'s list: not chosen, nothing is launched; the owner or the mandate decides' } : {}), ...(skipped.length ? { skipped } : {}) };
+    }
+    return null;
+  };
+  const inList = take(checked.candidates, 'list');
+  if (inList) return inList;
+  const taken = new Set(checked.candidates.map((c) => c.agent));
+  const others = Object.values(reg?.agent_profiles ?? {}).map((p) => p?.executor).filter((e) => e && !taken.has(e));
+  if (others.length) {
+    const second = await selectCandidates(reg, need, { reach, limits, pool: [...new Set(others)] });
+    const adv = take(second.candidates, 'profiles');
+    if (adv) return adv;
+  }
+  return { for: closed.agent, because, use: null, note: 'no replacement among the agreed profiles that has the role, the access and a limit left', ...(skipped.length ? { skipped } : {}) };
+}
 
 // ---------------------------------------------------------------- commands
 
@@ -171,6 +207,7 @@ const textOfCandidates = (r) => [
   `candidates for env ${r.env ?? '-'} role ${r.role ?? '-'} needs ${r.needs.join(', ') || '-'}`,
   ...r.candidates.map((c) => `${c.order}. ${c.agent} [${c.rank}] ${c.eligible ? 'eligible' : `refused: ${c.reasons.join('; ')}`}${c.path?.via === 'ssh' ? ` (ssh ${c.path.ssh})` : ''}`),
   r.chosen ? `chosen: ${r.chosen}` : 'no candidate: nothing is launched (no guess, no other environment, no wider rights or budget)',
+  ...(r.replacement ? [r.replacement.use ? `replacement: ${r.replacement.use} (profile ${r.replacement.profile}) instead of ${r.replacement.for}: ${r.replacement.because}${r.replacement.advice_only ? ` [advice only: ${r.replacement.advice_only}]` : ''}` : `replacement: none: ${r.replacement.because}; ${r.replacement.note}`] : []),
   `note: ${r.note}`,
 ].join('\n');
 
@@ -206,7 +243,22 @@ async function candidatesCommand({ flags, out, io, env, api }) {
     out(flags.json ? JSON.stringify(r, null, 2) : [`role: ${need.role ?? '-'}; env: ${need.env ?? '-'}; needs: ${need.needs.join(', ') || '-'}`, ...preferences.map((p) => `${p.order}. ${p.agent}: provider ${p.provider ?? 'unknown'}, model ${p.model ?? 'unspecified'}; ${p.eligible ? 'eligible' : `not eligible: ${p.reasons.join('; ')}`}`), r.advisory].join('\n'));
     return 0;
   }
-  const r = await selectCandidates(reg, need, { reach: async (agent) => reachability(reg, machineOf(agent, reg), need.env, { env }), limits: limitsOf(api, reg, env) });
+  const deps = { reach: async (agent) => reachability(reg, machineOf(agent, reg), need.env, { env }), limits: limitsOf(api, reg, env) };
+  const r = await selectCandidates(reg, need, deps);
+  // P5.41 a10: the orchestrator's reconciliation (optional, never a block) and the replacement for a candidate whose limit is closed
+  let orch = null;
+  try { orch = await import('./orchestrator.mjs'); } catch { /* a copy without the module: candidates as before */ }
+  let cache = null;
+  if (orch) {
+    const id = orch.orchestratorId(flags, env);
+    if (id) {
+      cache = orch.readCache(env, id);
+      r.orchestrator = { id, ...orch.syncState(cache, api.nowMs(env), orch.staleHours(reg)) };
+      if (['stale', 'none'].includes(r.orchestrator.sync)) io.err(`roadctl candidates: warning: orchestrator ${id}: ${r.orchestrator.hint}\n`);
+    }
+  }
+  const rep = await replacementFor(reg, need, r, { ...deps, agreed: (profile) => (orch && r.orchestrator ? orch.profileAgreed(cache, profile) : { ok: true }) });
+  if (rep) r.replacement = rep;
   out(flags.json ? JSON.stringify(r, null, 2) : textOfCandidates(r));
   return r.chosen ? 0 : 1;
 }
@@ -318,9 +370,9 @@ export default {
     },
     candidates: {
       group: 'Look', effect: 'read', hidden: true, summary: 'the ordered executors for a task and why the others are refused (read only)',
-      purpose: 'One read-only choice of an executor for a card (its header keys `env`, `role`, `needs`; the role also from `delegate to=<role>`) or for the values given by flags. It walks the owner\'s list `preference.<role>` of the registry (the first is the main one, the rest the agreed reserve; without a list, every agent with the role) and shows for each: the owner\'s permission (not in the list: not a candidate), the role, the fitness confirmed by checks of similar tasks (`agents.NAME.fit.ROLE.confirmed`), the tools and data (`agents.NAME.tools`, `data`; an MCP server counts when declared in the agent or in the access path of the environment, ssh alone is not MCP), the access path to the environment, availability (`env check`), and the executor\'s own limits with its reserve (an unknown limit is a refusal, not a guess; a paid API needs an agreed `budget`). It never changes the environment, the rights, the data access or the budget, never learns and never picks a model by the size of the task. The first eligible agent is `chosen`; none means exit 1: no launch. A declared MCP path is not proof that the server works now.',
-      usage: ['roadctl candidates --card ID [--multiagent] [--json]', 'roadctl candidates --env NAME [--role ROLE] [--needs a,b,data:x] [--multiagent] [--json]'],
-      flags: [['--card ID', 'take env, role and needs from this card'], ['--env NAME', 'the environment the task works in'], ['--role ROLE', 'the role the task needs'], ['--needs LIST', 'comma-separated tools or MCP servers; data:NAME for data access'], ['--multiagent', 'advisory: static checks only; no availability or limits probes, no executor chosen'], ['--json', 'machine-readable output']],
+      purpose: 'An executor whose provider has no limit left (the owner\'s reserve reached, or `closed_until` of the limits cache ahead) is refused, and `replacement` says what to use instead and why: the first agent of the owner\'s list that passed every check and has an agreed profile (`agent_profiles`; with --orchestrator, one that its last reconciliation matched and did not report unavailable), else, as advice only and never chosen, an executor of another profile with the role. A reconciliation older than 24 h is a warning on stderr, not a block. One read-only choice of an executor for a card (its header keys `env`, `role`, `needs`; the role also from `delegate to=<role>`) or for the values given by flags. It walks the owner\'s list `preference.<role>` of the registry (the first is the main one, the rest the agreed reserve; without a list, every agent with the role) and shows for each: the owner\'s permission (not in the list: not a candidate), the role, the fitness confirmed by checks of similar tasks (`agents.NAME.fit.ROLE.confirmed`), the tools and data (`agents.NAME.tools`, `data`; an MCP server counts when declared in the agent or in the access path of the environment, ssh alone is not MCP), the access path to the environment, availability (`env check`), and the executor\'s own limits with its reserve (an unknown limit is a refusal, not a guess; a paid API needs an agreed `budget`). It never changes the environment, the rights, the data access or the budget, never learns and never picks a model by the size of the task. The first eligible agent is `chosen`; none means exit 1: no launch. A declared MCP path is not proof that the server works now.',
+      usage: ['roadctl candidates --card ID [--multiagent] [--orchestrator ID] [--json]', 'roadctl candidates --env NAME [--role ROLE] [--needs a,b,data:x] [--multiagent] [--orchestrator ID] [--json]'],
+      flags: [['--card ID', 'take env, role and needs from this card'], ['--env NAME', 'the environment the task works in'], ['--role ROLE', 'the role the task needs'], ['--needs LIST', 'comma-separated tools or MCP servers; data:NAME for data access'], ['--multiagent', 'advisory: static checks only; no availability or limits probes, no executor chosen'], ['--orchestrator ID', 'the orchestrator instance (system@machine, or ROADCTL_ORCHESTRATOR): adds its reconciliation state, and a replacement is taken only from profiles that reconciliation matched'], ['--json', 'machine-readable output']],
       examples: ['roadctl candidates --card P5.23', 'roadctl candidates --env Work-notebook-wsl --role worker --needs atom-services,data:atom --json'],
       changes: 'Nothing (it may start ssh with the harmless command true and ask the executor\'s limits, as `limits --check` does).', exits: '0 a candidate is chosen; 1 no candidate, or the registry has problems; 2 usage error, no registry, or no board or card',
       run: candidatesCommand,
