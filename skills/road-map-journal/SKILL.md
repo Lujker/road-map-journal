@@ -35,6 +35,8 @@ When a decision, pause, or order changes, update affected current summaries and 
 
 Unless the owner has authorized a broader scope, work on one item at a time and do not automatically begin the next. A completed substage does not complete the parent item; record the remainder. Keep work mode separate from permissions and budgets: authorization to continue is not blanket permission for production actions or external writes. Keep recorded completion, pending user acceptance and fully accepted work distinct. Keep concise checkpoints at handoffs, decisions, verified results and blockers, including what remains and how to resume; verify uncertain in-flight actions before repeating them. Before a multi-file update in a shared checkout, check the version-control state and dirty paths immediately before writing, apply narrow edits against freshly read content, preserve unrelated work, and verify the scoped changes without committing or publishing unless authorized.
 
+When a decision is irreversible or outside the approved mandate or card, ask the owner and wait for that decision. For a reversible decision within the approved scope, follow the owner’s standing rules: where they permit it, record the recommended choice and continue, making the decision and how to reverse it visible. Ask as a confirmation, a list of points with options and room for a custom answer, or a free-text question, whichever fits. `--ask` on a run summary remains a summary field; it is not a structured question or an owner answer.
+
 For work that spans several items, agents or sessions, has a budget, or where the owner authorizes a track or continuous mode, read [Long-running work](references/long-running.md) first.
 
 ## Status and evidence
