@@ -4095,3 +4095,82 @@ test('tick --json contract: every decision and every item kind fits the schema o
   bad((j) => { j.limits.state = 'maybe'; }, /limits.state/);
   bad((j) => { j.decision = 'idle'; }, /idle with items/);
 });
+
+// ---------------------------------------------------------------- P5.29: one clone, one repository lock; a clone of its own for the service
+
+const asyncIn = (w, p, args, env = {}) => new Promise((resolve) => {
+  const c = spawn(process.execPath, [SELF, ...args, '--board', p.bd(w)], { cwd: w, env: { ...process.env, ROADCTL_DATE: '2026-11-10', ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0, ...env } });
+  let so = '';
+  let se = '';
+  c.stdout.on('data', (d) => (so += d));
+  c.stderr.on('data', (d) => (se += d));
+  c.on('close', (code) => resolve({ status: code, stdout: so, stderr: se }));
+});
+const repoLockOf = (w) => path.join(w, '.git', 'roadctl-repo.lock');
+
+test('P5.29 a1: report and save of one clone run at once; both records reach the server, no index.lock is left, the repository lock is gone', async () => {
+  const { p, run } = claimed2();
+  assert.equal(run(p.b, ['log', 'W-4', 'note written while the report runs', '--author', 'agent']).status, 0);
+  for (let round = 0; round < 2; round++) {
+    const [rep, sav] = await Promise.all([
+      asyncIn(p.b, p, ['report', 'W-3', '--as', CODEX, `report round ${round} [a2]`, '--json']),
+      asyncIn(p.b, p, ['save', `save round ${round}`, '--json']),
+    ]);
+    if (round === 0) assert.equal(out(rep).status, 'reported', rep.stdout + rep.stderr);
+    assert.ok(['pushed', 'nothing-to-save'].includes(out(sav).status), sav.stdout + sav.stderr);
+    assert.equal(fs.existsSync(path.join(p.b, '.git', 'index.lock')), false, 'no index.lock is left');
+    assert.equal(fs.existsSync(repoLockOf(p.b)), false, 'the repository lock is released');
+    if (round === 0) assert.equal(run(p.b, ['log', 'W-4', 'second note', '--author', 'agent']).status, 0);
+  }
+  const files = g(p.server, 'log', '--name-only', '--format=%s', 'main');
+  assert.match(files, /report W-3 by codex@home-wsl/, 'the report commit is on the server');
+  assert.equal(out(run(p.a, ['pull', '--json'])).status, 'pulled');
+  assert.match(card3(p.a, p), /REPORT: report round 0 \[a2\]/, 'the report is in the card');
+  assert.match(fs.readFileSync(path.join(p.bd(p.a), 'cards', 'W-4-integratsiya-postavshchika.md'), 'utf8'), /note written while the report runs/, 'the saved note is in the other card');
+  assert.equal(g(p.b, 'status', '--porcelain', '--', 'projects'), '', 'nothing is left uncommitted');
+});
+
+test('P5.29 a1: a held repository lock makes the second operation wait, then answer busy (nothing changed); a stale lock is taken over', () => {
+  const { p, run } = claimed2();
+  const lock = repoLockOf(p.b);
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, token: 'other' }));
+  const env = { ROADCTL_REPO_LOCK_WAIT_MS: '300' };
+  const before = g(p.b, 'rev-parse', 'HEAD');
+  const r = run(p.b, ['report', 'W-3', '--as', CODEX, 'blocked by the lock [a2]', '--json'], env);
+  assert.equal(r.status, 1);
+  assert.equal(out(r).status, 'busy');
+  assert.equal(g(p.b, 'rev-parse', 'HEAD'), before, 'no commit');
+  assert.doesNotMatch(card3(p.b, p), /blocked by the lock/, 'the card is untouched');
+  assert.equal(fs.existsSync(lock), true, 'the lock of the other process is not removed');
+  const old = new Date(Date.now() - 10 * 60 * 1000);
+  fs.utimesSync(lock, old, old);
+  assert.equal(out(run(p.b, ['report', 'W-3', '--as', CODEX, 'after the takeover [a2]', '--json'], env)).status, 'reported');
+  assert.equal(fs.existsSync(lock), false);
+});
+
+test('P5.29 a2: the service has a clone of its own: its commits and the owner\'s commits in another clone of one bare repository do not disturb each other; a plain pull joins them', () => {
+  const p = pair(); // a: the owner, b: the service clone
+  const env = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 };
+  const sh = (w, args) => p.run(w, args, '', env);
+  // the owner has an uncommitted edit in the working clone; the service works in its own clone meanwhile
+  assert.equal(sh(p.a, ['log', 'W-3', 'owner thinks in the working clone', '--author', 'owner']).status, 0);
+  assert.equal(sh(p.b, ['new', 'W-9', 'Service card']).status, 0);
+  assert.equal(out(sh(p.b, ['save', 'service adds W-9', '--json'])).status, 'pushed');
+  assert.equal(out(sh(p.b, ['pull', '--json'])).status, 'up-to-date', 'the service sees nothing of the owner\'s unsaved edit');
+  assert.match(g(p.a, 'status', '--porcelain'), /W-3/, 'the owner\'s edit is untouched by the service');
+  assert.equal(fs.existsSync(repoLockOf(p.a)) || fs.existsSync(repoLockOf(p.b)), false);
+  // the owner saves; a plain pull in the service clone brings it, no conflict
+  assert.equal(out(sh(p.a, ['save', 'owner decision', '--json'])).status, 'pushed');
+  const pulled = out(sh(p.b, ['pull', '--json']));
+  assert.equal(pulled.status, 'pulled');
+  assert.match(fs.readFileSync(path.join(p.bd(p.b), 'cards', 'W-3-eksport-csv.md'), 'utf8'), /owner thinks in the working clone/);
+  // both sides touch the same card: save in the owner's clone rebases over the service commit (the usual pull), nothing is lost
+  assert.equal(sh(p.b, ['log', 'W-3', 'service line', '--author', 'agent']).status, 0);
+  assert.equal(out(sh(p.b, ['save', '--json'])).status, 'pushed');
+  assert.equal(sh(p.a, ['log', 'W-4', 'owner line elsewhere', '--author', 'owner']).status, 0);
+  assert.equal(out(sh(p.a, ['save', '--json'])).status, 'pushed');
+  assert.equal(out(sh(p.b, ['pull', '--json'])).status, 'pulled');
+  assert.equal(out(sh(p.a, ['pull', '--json'])).status, 'up-to-date', 'the owner\'s save had already joined the service commit');
+  assert.match(card3(p.a, p), /service line/);
+  assert.equal(g(p.a, 'rev-parse', 'HEAD'), g(p.b, 'rev-parse', 'HEAD'), 'the clones agree');
+});

@@ -1345,12 +1345,53 @@ const real = (p) => {
 };
 const netTimeout = () => Number(process.env.ROADCTL_GIT_TIMEOUT_MS) || 15000;
 
+const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const INDEX_BUSY = /index\.lock['"]?:? File exists|Unable to create '[^']*index\.lock'/i;
+
 function gitx(args, cwd, { timeout = 0 } = {}) {
   const env = { ...process.env, GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true' };
   if (!env.GIT_SSH_COMMAND) env.GIT_SSH_COMMAND = 'ssh -o BatchMode=yes -o ConnectTimeout=8';
-  const r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: timeout || undefined, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  let r;
+  for (let i = 0; i < 6; i++) { // P5.29: a git of someone else (an editor, the owner's shell) holds index.lock for a moment: wait a little instead of failing
+    r = spawnSync('git', args, { cwd, encoding: 'utf8', timeout: timeout || undefined, env, stdio: ['ignore', 'pipe', 'pipe'] });
+    if (r.status === 0 || !INDEX_BUSY.test(r.stderr ?? '')) break;
+    sleepMs(100 * (i + 1));
+  }
   return { ok: r.status === 0, code: r.status, out: (r.stdout ?? '').trim(), err: (r.stderr ?? '').trim(), timedOut: r.error?.code === 'ETIMEDOUT' };
 }
+
+// P5.29 a1: one lock per clone for every operation that reads a board file and then commits, rebases or pushes it (pull, save, claim, report, routine done).
+// Two processes of one clone (the service and an agent, two agents) take turns: the second waits, so nobody's autostash, commit or file write is lost and
+// git's own index.lock is never contended by roadctl itself. The lock file is `roadctl-repo.lock` in the git directory of the clone (not in the working
+// tree, so it is never committed). Stale after 5 minutes without a finish; the wait is 60 s (ROADCTL_REPO_LOCK_WAIT_MS). No git or no lock helper: no lock.
+const REPO_LOCK_STALE_MS = 5 * 60 * 1000;
+const heldRepoLocks = new Set();
+const repoLockWaitMs = () => (Number.isFinite(Number(process.env.ROADCTL_REPO_LOCK_WAIT_MS)) && process.env.ROADCTL_REPO_LOCK_WAIT_MS !== undefined && process.env.ROADCTL_REPO_LOCK_WAIT_MS !== '' ? Number(process.env.ROADCTL_REPO_LOCK_WAIT_MS) : 60000);
+
+/** The lock file of the clone that holds the board, or null (not a git repository). */
+export function repoLockFile(board) {
+  const ctx = syncContext(board);
+  if (!ctx) return null;
+  const g = gitx(['rev-parse', '--git-path', 'roadctl-repo.lock'], ctx.root);
+  return g.ok && g.out ? path.resolve(ctx.root, g.out) : null;
+}
+
+/** Run fn while holding the lock of the clone. { status: 'busy', message } when the lock is not free in time (fn did not run). */
+export function withRepoLock(board, fn) {
+  const file = STATE ? repoLockFile(board) : null;
+  if (!file || heldRepoLocks.has(file)) return fn(); // no git, a lone copy, or this process already holds it (an operation inside an operation)
+  const l = STATE.acquireLock(file, { staleMs: REPO_LOCK_STALE_MS, waitMs: repoLockWaitMs(), strict: true });
+  if (!l.ok) return { status: 'busy', message: l.reason === 'held' ? 'another roadctl process is working in this clone (repository lock); try again in a moment' : `the repository lock cannot be used (${l.reason})` };
+  heldRepoLocks.add(file);
+  try {
+    return fn();
+  } finally {
+    heldRepoLocks.delete(file);
+    l.release();
+  }
+}
+// `fresh`: the board the caller loaded before the wait may be stale (the other process committed meanwhile), so the operation starts from the board as it is once the lock is held.
+const repoLocked = (fn, { fresh = false } = {}) => (board, ...rest) => withRepoLock(board, () => fn(fresh ? loadBoard(board.dir) : board, ...rest));
 
 /** Repository root and the board's path scope inside it: the project folder for a central workspace, `board/` for a project-local board. */
 export function syncContext(board) {
@@ -1459,7 +1500,8 @@ function integrate(ctx, board, timeout) {
   return { status: 'pulled', behind: ab.behind, ahead: ab.ahead, board_regenerated: regenerated, message: `pulled ${ab.behind} commit(s)${regenerated ? '; BOARD.md was regenerated and is not committed yet (roadctl save)' : ''}` };
 }
 
-export function pullBoard(board, { timeout = netTimeout() } = {}) {
+export const pullBoard = repoLocked((...a) => pullBoardUnlocked(...a));
+function pullBoardUnlocked(board, { timeout = netTimeout() } = {}) {
   const ctx = syncContext(board);
   if (!ctx) return { status: 'no-git', message: 'the board is not in a git repository' };
   if (!gitx(['remote'], ctx.root).out) return { status: 'no-remote', message: 'the board repository has no git remote' };
@@ -1473,7 +1515,8 @@ const defaultMessage = (ctx, board, pending) => {
 };
 
 /** Commit only the board's paths and push. Never forces; lints first and again after a merge. */
-export function saveBoard(board, message, { timeout = netTimeout() } = {}) {
+export const saveBoard = repoLocked((...a) => saveBoardUnlocked(...a));
+function saveBoardUnlocked(board, message, { timeout = netTimeout() } = {}) {
   const ctx = syncContext(board);
   if (!ctx) return { status: 'no-git', message: 'the board is not in a git repository' };
   regenerateIfStale(board.dir);
@@ -1626,7 +1669,8 @@ function claimable(board, c, as, reg) {
  * when the server already has another change to the card the claim is withdrawn and the card is left as the server has it.
  * Statuses: claimed (pushed, exclusive), claimed-local (offline, no remote or no git: not yet exclusive), lost, refused, error.
  */
-export function claimCard(board, id, { as, lease = '2h', workdir, registry = loadRegistry(), timeout = netTimeout() }) {
+export const claimCard = repoLocked((...a) => claimCardUnlocked(...a), { fresh: true });
+function claimCardUnlocked(board, id, { as, lease = '2h', workdir, registry = loadRegistry(), timeout = netTimeout() }) {
   const who = WHO.resolveAs(as, registry); // P5.41: --as/ROADCTL_AS accept an executor, a profile or orchestrator/profile; the claim stores the executor
   if (who.error) return { status: 'refused', message: `${who.error}${who.hint ? `; ${who.hint}` : ''}` };
   const e = checkAgent(who.executor, '--as');
@@ -1768,7 +1812,8 @@ function writeReport(board, id, info, as, text) {
  */
 /** The registry, or null when it cannot be read: `report` ends the work and must not be lost to a broken registry file (the name is then taken as it is, like before P5.41). */
 const registryOrNull = () => { try { return loadRegistry(); } catch { return null; } };
-export function reportCard(board, id, { as, text, commit = null, timeout = netTimeout(), registry = registryOrNull() }) {
+export const reportCard = repoLocked((...a) => reportCardUnlocked(...a), { fresh: true });
+function reportCardUnlocked(board, id, { as, text, commit = null, timeout = netTimeout(), registry = registryOrNull() }) {
   const who = WHO.resolveAs(as, registry); // P5.41: --as/ROADCTL_AS accept an executor, a profile or orchestrator/profile
   if (who.error) return { status: 'refused', message: `${who.error}${who.hint ? `; ${who.hint}` : ''}` };
   const e = checkAgent(who.executor, '--as');
@@ -3664,7 +3709,8 @@ function applyRoutineDone(r, as, result, text, opts = {}, date = today()) {
  * The routine's own agent records a run: last_run (now), last_result and a Log line; then ONLY that file is committed and pushed, like `report`.
  * Statuses: recorded (pushed), recorded-local (offline, no remote or no git), refused, lost (the file is gone on the server), error.
  */
-export function routineDone(board, id, { as, result, text, timeout = netTimeout(), quiet = false, source = null, outcome = null, reason = null, headers = {} }) {
+export const routineDone = repoLocked((...a) => routineDoneUnlocked(...a), { fresh: true });
+function routineDoneUnlocked(board, id, { as, result, text, timeout = netTimeout(), quiet = false, source = null, outcome = null, reason = null, headers = {} }) {
   const e = checkAgent(as, '--as');
   if (e) return { status: 'refused', message: e };
   if (!ROUTINE_RESULTS.includes(result)) return { status: 'refused', message: `--result must be one of ${ROUTINE_RESULTS.join('|')}` };
