@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { boardRequires } from '../roadctl.mjs';
+import { boardRequires, loadBoard, brief, briefJson, statusSummary, formatStatus } from '../roadctl.mjs';
 import { RULE_REQUIRES } from './rule-acceptance.mjs';
 
 test('P5.35 a8: older copies refuse boards that use rule acceptance', () => {
@@ -27,4 +27,25 @@ test('P5.35 a8: an old copy offers no work on a rule-acceptance board', () => {
   const result = JSON.parse(r.stdout);
   assert.deepEqual(result.items, []);
   assert.match(result.sync.join(' '), /requires roadctl 0\.15\.0/);
+});
+
+test('P5.35 a3: rule acceptance stays in review and is visible in status and brief', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rule-status-'));
+  fs.mkdirSync(path.join(dir, 'cards'));
+  fs.writeFileSync(path.join(dir, 'config.json'), '{}');
+  fs.writeFileSync(path.join(dir, 'cards', 'A.md'), '---\nid: A\ntitle: Alpha\nstatus: review\naccepted: rule\n---\n');
+  fs.writeFileSync(path.join(dir, 'cards', 'B.md'), '---\nid: B\ntitle: Beta\nstatus: done\naccepted: Owner, 2026-11-01\n---\n');
+  const board = loadBoard(dir);
+  const summary = statusSummary('p', board);
+  assert.equal(summary.counts.review, 1);
+  assert.equal(summary.counts.done, 1);
+  assert.equal(summary.review[0].accepted, 'rule');
+  assert.equal(briefJson(board).review[0].accepted, 'rule');
+  assert.match(formatStatus([summary]), /REVIEW \[A\].*accepted by rule/);
+  assert.match(brief(board), /REVIEW \[A\].*accepted by rule/);
+  const bin = fileURLToPath(new URL('../roadctl.mjs', import.meta.url));
+  const r = spawnSync(process.execPath, [bin, 'done', 'A', '--by', 'Owner', '--board', dir], { encoding: 'utf8', env: { ...process.env, HOME: dir, XDG_STATE_HOME: path.join(dir, 'state'), ROADCTL_UNATTENDED: '1' } });
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /unattended run/);
+  assert.equal(loadBoard(dir).cards.find((c) => c.header.id === 'A').header.status, 'review');
 });

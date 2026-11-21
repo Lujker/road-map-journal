@@ -1119,7 +1119,7 @@ export function brief(board) {
   const needs = boardRequires(board.config); // P5.14
   if (needs) l.push(`REQUIRES ${needs}: update roadctl before any unattended work on this board (roadctl tick offers nothing here)`);
   for (const c of by('doing')) l.push(`DOING [${c.header.id}] ${sanitize(c.header.title, 80)} | approved: ${approvedText(c)} | as_of ${sanitize(c.header.as_of, 10)}${nextOpen(c) ? ` | next ${nextOpen(c)}` : ''}`);
-  for (const c of by('review')) l.push(`REVIEW [${c.header.id}] ${sanitize(c.header.title, 80)} | awaiting owner acceptance, do not mark done`);
+  for (const c of by('review')) l.push(`REVIEW [${c.header.id}] ${sanitize(c.header.title, 80)} | ${c.header.accepted === 'rule' ? 'accepted by rule; ' : ''}awaiting owner acceptance, do not mark done`);
   for (const c of by('blocked')) l.push(`BLOCKED [${c.header.id}] ${sanitize(c.header.title, 60)} | ${sanitize(c.header.blocked, 80)}`);
   const ready = by('ready').map((c) => `${c.header.id}${scopesOf(c.header.approved).length ? '*' : ''}${scopesOf(c.header.approved).includes('auto') ? 'auto' : ''}`);
   if (ready.length) l.push(`READY ${ready.join(' ')}  (* = approved; unapproved cards are not permission to start; auto = the owner allowed unattended work)`);
@@ -1169,6 +1169,7 @@ export function cardRow(board, c) {
     id: c.header.id,
     title: c.header.title,
     status: statusOf(board, c),
+    ...(c.header.accepted === 'rule' ? { accepted: 'rule' } : {}),
     approved: scopesOf(c.header.approved),
     auto: scopesOf(c.header.approved).includes('auto'),
     queue: position || null,
@@ -1217,6 +1218,7 @@ export function formatStatus(summaries) {
   const out = [row(head), ...table.map(row)];
   for (const s of summaries) {
     for (const c of s.doing) out.push(`${s.project}: DOING [${c.id}] ${sanitize(c.title, 80)} | approved: ${c.approved.join('+') || 'no'}`);
+    for (const c of s.review.filter((c) => c.accepted === 'rule')) out.push(`${s.project}: REVIEW [${c.id}] ${sanitize(c.title, 80)} | accepted by rule; awaiting owner acceptance`);
     if (s.routines?.total) out.push(`${s.project}: ROUTINES switch ${s.routines.switch ? 'on' : 'off'}, ${s.routines.total} routine(s), ${s.routines.enabled} on, due now ${s.routines.due}`);
     if (s.delegated?.length) {
       const n = s.delegations;
