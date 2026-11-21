@@ -631,3 +631,48 @@ test('help and docs: doctor is in the overview, has complete help, and docs/road
   const schema = fs.readFileSync(path.join(scripts, 'testkit', 'doctor-schema.mjs'), 'utf8');
   assert.ok(docs.includes('scripts/testkit/doctor-schema.mjs') && schema.includes('doctorJsonProblems'));
 });
+
+// ---------------------------------------------------------------- P5.29 a3: the service works in a clone of its own
+
+test('P5.29 a3: doctor warns when the service config points at the working clone of the owner, and is quiet for a clone of its own (both branches, explicit and default owner clone)', FAKES_SKIP, () => {
+  const r = rig();
+  const conductor = (service) => {
+    const dir = path.join(r.env.XDG_CONFIG_HOME, 'road-map-journal');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'conductor.json'), JSON.stringify({ version: 1, templates: {}, ...(service ? { service } : {}) }), { mode: 0o600 });
+  };
+  const line = () => r.json(['doctor']).by('service-clone');
+  assert.equal(line().status, 'skip', 'no conductor.json');
+  conductor(null);
+  assert.equal(line().status, 'skip', 'no service section');
+  // the service clone: a second clone of the same origin
+  const svc = path.join(r.root, 'service-clone');
+  gitIn(r.root, ['clone', '-q', r.origin, svc]);
+  conductor({ workspace: svc, owner_clone: r.ws });
+  const ok = line();
+  assert.equal(ok.status, 'ok');
+  assert.match(ok.detail, /a clone of its own/);
+  // the service config points at the owner's working clone (explicit owner_clone)
+  conductor({ workspace: r.ws, owner_clone: r.ws });
+  const bad = line();
+  assert.equal(bad.status, 'warn');
+  assert.match(bad.detail, /working clone of the owner/);
+  assert.match(bad.hint, /clone of its own/);
+  // a folder inside the owner's clone is the same work tree
+  conductor({ workspace: path.join(r.ws, 'projects'), owner_clone: r.ws });
+  assert.equal(line().status, 'warn');
+  // without owner_clone the owner's clone is the default workspace in the home folder
+  const own = path.join(r.home, 'projects', 'agent-workspace');
+  gitIn(r.root, ['clone', '-q', r.origin, own]);
+  conductor({ workspace: own });
+  assert.equal(line().status, 'warn', 'the default workspace of the owner');
+  conductor({ workspace: svc });
+  assert.equal(line().status, 'ok', 'a clone of its own next to the default workspace');
+  // not a clone at all
+  conductor({ workspace: path.join(r.root, 'nowhere') });
+  assert.equal(line().status, 'warn');
+  assert.match(line().detail, /not a git clone/);
+  // a relative path is a configuration error caught with the file
+  conductor({ workspace: 'relative/clone' });
+  assert.equal(r.json(['doctor']).by('launch-templates').status, 'fail');
+});

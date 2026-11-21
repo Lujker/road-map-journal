@@ -50,6 +50,11 @@ export function validateConductor(c) {
     if (t.max_turns !== undefined) posInt(t.max_turns, `${w}.max_turns`);
     if (t.env !== undefined && (!Array.isArray(t.env) || t.env.some((n) => typeof n !== 'string' || !ENV_NAME_RE.test(n)))) throw new Error(`${w}.env must be an array of environment variable NAMES (values are never kept here)`);
   }
+  if (c.service !== undefined) { // P5.29 a3: where the service works; read by doctor only
+    if (!obj(c.service)) throw new Error('"service" must be an object');
+    absPath(c.service.workspace, 'service.workspace');
+    if (c.service.owner_clone !== undefined) absPath(c.service.owner_clone, 'service.owner_clone');
+  }
   if (!obj(c.profiles ?? {})) throw new Error('"profiles" must be an object');
   for (const [name, p] of Object.entries(c.profiles ?? {})) {
     const w = `profiles.${name}`;

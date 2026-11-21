@@ -4142,7 +4142,7 @@ test('P5.29 a1: a held repository lock makes the second operation wait, then ans
   assert.equal(g(p.b, 'rev-parse', 'HEAD'), before, 'no commit');
   assert.doesNotMatch(card3(p.b, p), /blocked by the lock/, 'the card is untouched');
   assert.equal(fs.existsSync(lock), true, 'the lock of the other process is not removed');
-  const old = new Date(Date.now() - 10 * 60 * 1000);
+  const old = new Date(fs.statSync(lock).mtimeMs - 10 * 60 * 1000);
   fs.utimesSync(lock, old, old);
   assert.equal(out(run(p.b, ['report', 'W-3', '--as', CODEX, 'after the takeover [a2]', '--json'], env)).status, 'reported');
   assert.equal(fs.existsSync(lock), false);
