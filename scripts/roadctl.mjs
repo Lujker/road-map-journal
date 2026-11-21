@@ -4640,6 +4640,12 @@ async function mainRun(argv, io, audit) {
       }
       case 'accept': {
         if (!args[1] || !flags.as) throw new Error('usage: roadctl accept <id> --as AGENT');
+        if (flags.rule) {
+          const { acceptRule } = await import('./roadctl/rule-acceptance.mjs');
+          const r = acceptRule(board, args[1], flags.as, moduleApi());
+          if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
+          return out(`${args[1]}: accepted by rule; awaiting owner. Run roadctl save to publish`), 0;
+        }
         const r = acceptCard(board, args[1], { as: flags.as });
         if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
         return out(`${args[1]}: accepted${r.status === 'review' ? '; every criterion has evidence, moved to review (the owner still accepts the card)' : `; stays ${r.status}; ${r.note}`}. Run roadctl save to publish`), 0;
