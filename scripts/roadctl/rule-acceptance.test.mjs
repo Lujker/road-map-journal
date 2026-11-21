@@ -51,29 +51,58 @@ test('P5.35 a3: rule acceptance stays in review and is visible in status and bri
 });
 
 test('P5.35 a1: rule acceptance requires green tests, every criterion and an unblocked review', async () => {
-  const { acceptRule } = await import('./rule-acceptance.mjs');
+  const { acceptRule, ruleSnapshot } = await import('./rule-acceptance.mjs');
   const { compareVersions, appendLog } = await import('../roadctl.mjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rule-gate-'));
   fs.mkdirSync(path.join(dir, 'cards'));
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ requires: RULE_REQUIRES }));
   const file = path.join(dir, 'cards', 'A.md');
+  const repo = path.join(dir, 'repo');
+  fs.mkdirSync(repo);
+  const git = (...args) => { const r = spawnSync('git', args, { cwd: repo, encoding: 'utf8', env: { ...process.env, GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid' } }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+  git('init', '-q');
+  fs.writeFileSync(path.join(repo, 'code'), 'initial');
+  git('add', 'code');
+  git('commit', '-qm', 'initial');
   const proof = { tests: { result: 'pass', command: 'node --test' }, worker: { agent: 'worker', model: 'model-a', run: 'r1', source: 'run log' }, review: { agent: 'reviewer', model: 'model-b', run: 'r2', source: 'run log', result: 'pass', blockers: [] } };
   const content = (p = proof, mark = 'x', evidence = '- a1: tests passed') => `---\nid: A\ntitle: Alpha\nstatus: review\n---\n\n## Acceptance\n- [${mark}] a1: works\n\n## Evidence\n${evidence}\n\n## Rule Evidence\n${JSON.stringify(p)}\n`;
   const api = { compareVersions, boardRequires: (config) => boardRequires(config, RULE_REQUIRES), appendLog, loadRegistry: () => ({ providers: { test: { models: { 'model-a': ['alias-a'], 'model-b': [] } } } }) };
+  fs.writeFileSync(file, content());
+  const snapshot = ruleSnapshot(loadBoard(dir), 'A', repo);
+  Object.assign(proof.tests, snapshot);
+  Object.assign(proof.review, snapshot);
   const cases = [
     content({ ...proof, tests: { result: 'fail', command: 'test' } }),
     content(proof, 'x', ''), content(proof, ' '),
     content({ ...proof, review: undefined }),
     content({ ...proof, review: { ...proof.review, blockers: ['defect'] } }),
+    content({ ...proof, review: { ...proof.review, model: 'alias-a[high]' } }),
+    content({ ...proof, review: { ...proof.review, model: 'unknown' } }),
+    content({ ...proof, review: { ...proof.review, agent: 'worker' } }),
+    content({ ...proof, review: { ...proof.review, run: 'r1' } }),
+    content({ ...proof, review: { ...proof.review, basis: 'sha256:wrong' } }),
   ];
   for (const input of cases) {
     fs.writeFileSync(file, input);
-    const result = acceptRule(loadBoard(dir), 'A', 'orchestrator', api);
+    const result = acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo);
     assert.equal(result.ok, false, input);
     assert.equal(fs.readFileSync(file, 'utf8'), input, 'refusal does not write');
   }
+  fs.writeFileSync(file, content(proof, 'x', '- a1: different evidence'));
+  assert.equal(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo).ok, false, 'changed evidence');
+  fs.writeFileSync(file, content().replace('a1: works', 'a1: changed'));
+  assert.equal(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo).ok, false, 'changed criterion');
+  fs.writeFileSync(file, content().replace('status: review', 'status: review\napproved: Owner, 2026-11-01, scope=implementation'));
+  assert.equal(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo).ok, false, 'changed approval');
+  fs.writeFileSync(path.join(repo, 'code'), 'changed');
+  git('add', 'code');
+  git('commit', '-qm', 'changed');
   fs.writeFileSync(file, content());
-  assert.equal(acceptRule(loadBoard(dir), 'A', 'orchestrator', api).ok, true);
+  assert.equal(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo).ok, false, 'changed revision');
+  Object.assign(proof.tests, ruleSnapshot(loadBoard(dir), 'A', repo));
+  Object.assign(proof.review, ruleSnapshot(loadBoard(dir), 'A', repo));
+  fs.writeFileSync(file, content());
+  assert.equal(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo).ok, true);
   const card = loadBoard(dir).cards[0];
   assert.equal(card.header.accepted, 'rule');
   assert.equal(card.header.status, 'review');

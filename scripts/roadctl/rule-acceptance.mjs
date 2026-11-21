@@ -1,5 +1,7 @@
 // A rule acceptance is a record awaiting the owner's separate done.
 import fs from 'node:fs';
+import crypto from 'node:crypto';
+import { execFileSync } from 'node:child_process';
 
 export const RULE_REQUIRES = '0.15.0';
 
@@ -20,7 +22,26 @@ export function canonicalModel(value, registry) {
 }
 
 
-export function acceptRule(board, id, as, api) {
+export function ruleSnapshot(board, id, repo) {
+  const card = board.cards.find((c) => c.header.id === id);
+  if (!card || card.errors.length || typeof repo !== 'string' || !repo.trim()) throw new Error('a valid card and --repo are required');
+  let revision;
+  try {
+    const git = (args) => execFileSync('git', args, { cwd: repo, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim();
+    revision = git(['rev-parse', '--verify', 'HEAD']);
+    if (!/^[a-f0-9]{40,64}$/.test(revision) || git(['status', '--porcelain', '--untracked-files=normal'])) throw new Error();
+  } catch { throw new Error('repository must have a clean checked-out commit'); }
+  const ids = (card.header.depends_on ?? '').split(',').map((x) => x.trim()).filter(Boolean);
+  const dependencies = ids.map((id) => {
+    const dep = board.cards.find((c) => c.header.id === id);
+    if (!dep || dep.errors.length) throw new Error(`dependency ${id} is missing or invalid`);
+    return [id, dep.header.status ?? '', dep.header.accepted ?? '', dep.header.by_mandate ?? ''];
+  });
+  const data = { revision, criteria: card.criteria, evidence: card.sections.Evidence ?? '', approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', depends_on: dependencies };
+  return { revision, basis: `sha256:${crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex')}` };
+}
+
+export function acceptRule(board, id, as, api, repo) {
   const refuse = (reason) => ({ ok: false, reasons: [reason] });
   if ((api.compareVersions(board.config.requires, RULE_REQUIRES) ?? -1) < 0 || api.boardRequires(board.config)) return refuse(`board must require supported roadctl ${RULE_REQUIRES} or newer`);
   if (!/^[A-Za-z0-9@._:-]+$/.test(as ?? '')) return refuse('an agent is required');
@@ -40,6 +61,9 @@ export function acceptRule(board, id, as, api) {
   try { registry = api.loadRegistry(); } catch { return refuse('model registry unavailable'); }
   const authorModel = canonicalModel(worker.model, registry), reviewModel = canonicalModel(reviewer.model, registry);
   if (!authorModel || !reviewModel || authorModel === reviewModel) return refuse('review requires a different known canonical model');
+  let snapshot;
+  try { snapshot = ruleSnapshot(board, id, repo); } catch (e) { return refuse(e.message); }
+  if ([proof.tests, proof.review].some((p) => p.revision !== snapshot.revision || p.basis !== snapshot.basis)) return refuse('test or review record is stale for this revision or basis');
   const raw = fs.readFileSync(c.file, 'utf8');
   const eol = raw.includes('\r\n') ? '\r\n' : '\n';
   const next = raw.replace(/^(---\r?\n[\s\S]*?)(\r?\n---)/, (_, header, end) => `${header}${eol}accepted: rule${end}`);
