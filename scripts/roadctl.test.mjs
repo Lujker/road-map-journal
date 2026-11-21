@@ -3798,6 +3798,44 @@ test('P5.41 a1: --as and ROADCTL_AS accept an executor, a profile and orchestrat
   assert.equal(dcli(r8, ['claim', 'W-3', '--as', CODEX]).status, 0);
 });
 
+const A2_PROFILE_REG = () => writeRegistry({ // P5.46 a2: a profile on the api provider (a deterministic limits answer, no probe)
+  ...TICK_REGISTRY,
+  agent_profiles: { 'pi-developer': { executor: HERMES, openbot: { name: 'pi-developer' }, openbot_variants: [{ name: 'pi-developer-small' }] } },
+});
+
+test('P5.46 a2: tick, limits --check and routine done take a profile, a variant and orchestrator/profile from --as', LSKIP, () => {
+  const reg = A2_PROFILE_REG();
+  const t = tenv();
+  const env = { ROADCTL_REGISTRY: reg };
+  // limits --check: the profile names the executor and its provider
+  const lim = cli(t.c.ws, ['limits', '--check', 'pi-developer'], '', { ...t.env, ...env });
+  assert.equal(lim.status, 0, lim.stderr);
+  assert.match(lim.stdout, /^hermes@windows \(profile pi-developer\) \(provider some-api\): allowed/m);
+  const pair = cli(t.c.ws, ['limits', '--check', 'openbot@home-wsl/pi-developer'], '', { ...t.env, ...env });
+  assert.equal(pair.status, 0, pair.stderr);
+  assert.match(pair.stdout, /\(profile pi-developer\) \(provider some-api\): allowed/);
+  const variant = cli(t.c.ws, ['limits', '--check', 'pi-developer-small'], '', { ...t.env, ...env });
+  assert.equal(variant.status, 0, variant.stderr);
+  assert.match(variant.stdout, /hermes@windows \(profile pi-developer\)/);
+  // a name the registry does not know is still refused, as before
+  assert.equal(cli(t.c.ws, ['limits', '--check', 'nonsense'], '', { ...t.env, ...env }).status, 2);
+  // tick: a routine of the executor is offered to its profile, and the text names both
+  assert.equal(t.bcli(['routine', 'new', 'r1', 'Collect', '--agent', HERMES, '--model', 'none', '--env', 'laptop', '--every', '2h'], env).status, 0);
+  assert.equal(t.bcli(['routine', 'on', 'r1', '--by', 'Owner', '--source', 'chat 2026-11-21'], env).status, 0);
+  assert.equal(t.bcli(['autonomy', 'routines', 'on', '--by', 'Owner'], env).status, 0);
+  const tick = t.run('pi-developer', [], env);
+  assert.equal(tick.status, 0, tick.stderr);
+  assert.match(tick.stdout, /^tick pi-developer \(hermes@windows\): work$/m);
+  assert.match(tick.stdout, /^RUN my-app\/r1 /m);
+  assert.equal(JSON.parse(t.run('pi-developer', ['--json'], env).stdout).items[0].kind, 'RUN', 'the JSON item is the executor\'s');
+  // routine done as the profile records the run under the executor
+  const done = t.bcli(['routine', 'done', 'r1', '--as', 'pi-developer', '--result', 'ok', 'checked'], env);
+  assert.equal(done.status, 0, done.stderr);
+  assert.match(fs.readFileSync(path.join(t.c.board, 'routines', 'r1.md'), 'utf8'), /\[hermes@windows\] RUN ok: checked/);
+  // the executor's own name still works as before
+  assert.equal(t.bcli(['routine', 'done', 'r1', '--as', HERMES, '--result', 'ok', 'again'], env).status, 0);
+});
+
 test('P5.41 a2: delegate --to takes role, profile, executor and orchestrator; claim matches by the rules; the Log writes both names', () => {
   const reg = PROFILE_REG();
   const env = { ROADCTL_REGISTRY: reg };
