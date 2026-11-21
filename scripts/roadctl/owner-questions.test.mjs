@@ -206,7 +206,7 @@ test('P5.24: a copy missing the owner-questions module refuses a board that requ
   fs.copyFileSync(cli, path.join(bin, 'roadctl.mjs'));
   fs.cpSync(fileURLToPath(new URL('./', import.meta.url)), path.join(bin, 'roadctl'), { recursive: true });
   const index = path.join(bin, 'roadctl', 'index.mjs');
-  fs.writeFileSync(index, fs.readFileSync(index, 'utf8').replace(', ownerQuestions];', '];'));
+  fs.writeFileSync(index, fs.readFileSync(index, 'utf8').replace(', ownerQuestions,', ','));
   const r = spawnSync(process.execPath, [path.join(bin, 'roadctl.mjs'), 'tick', '--board', f.board, '--as', 'worker', '--no-pull'], { cwd: f.root, encoding: 'utf8', env: { ...process.env, HOME: f.root, ROADCTL_REGISTRY: path.join(f.root, 'registry.json') } });
   assert.match(r.stdout, /requires the module owner-questions/); assert.doesNotMatch(r.stdout, /^RUN /m);
 });

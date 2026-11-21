@@ -59,6 +59,7 @@ export function acceptRule(board, id, as, api, repo) {
   if (!validRun(worker) || !validRun(reviewer) || worker.agent === reviewer.agent || worker.run === reviewer.run) return refuse('review requires a different agent and a separate run with model sources');
   let registry;
   try { registry = api.loadRegistry(); } catch { return refuse('model registry unavailable'); }
+  if (/^(?:script|cron):/.test(as) || registry?.agents?.[as]?.host === 'script') return refuse('a script cannot accept work by rule');
   const authorModel = canonicalModel(worker.model, registry), reviewModel = canonicalModel(reviewer.model, registry);
   if (!authorModel || !reviewModel || authorModel === reviewModel) return refuse('review requires a different known canonical model');
   let snapshot;

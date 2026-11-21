@@ -102,6 +102,7 @@ test('P5.35 a1: rule acceptance requires green tests, every criterion and an unb
   Object.assign(proof.tests, ruleSnapshot(loadBoard(dir), 'A', repo));
   Object.assign(proof.review, ruleSnapshot(loadBoard(dir), 'A', repo));
   fs.writeFileSync(file, content());
+  assert.equal(acceptRule(loadBoard(dir), 'A', 'script:bot', api, repo).ok, false, 'a script cannot accept');
   assert.equal(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo).ok, true);
   const card = loadBoard(dir).cards[0];
   assert.equal(card.header.accepted, 'rule');
