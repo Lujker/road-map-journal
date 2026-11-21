@@ -37,7 +37,7 @@ export function ruleSnapshot(board, id, repo) {
     if (!dep || dep.errors.length) throw new Error(`dependency ${id} is missing or invalid`);
     return [id, dep.header.status ?? '', dep.header.accepted ?? '', dep.header.by_mandate ?? ''];
   });
-  const data = { revision, criteria: card.criteria, evidence: card.sections.Evidence ?? '', approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', depends_on: dependencies };
+  const data = { revision, criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', depends_on: dependencies };
   return { revision, basis: `sha256:${crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex')}` };
 }
 

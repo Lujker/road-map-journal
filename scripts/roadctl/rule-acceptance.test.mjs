@@ -116,3 +116,34 @@ test('P5.35 a10: aliases and effort cannot disguise same model; unknowns and sel
   assert.equal(canonicalModel('unknown', registry), null);
   assert.equal(canonicalModel('alias-a', { providers: { one: { models: { 'model-a': ['alias-a'], 'model-b': ['alias-a'] } } } }), null);
 });
+
+test('P5.35: CLI accepts a current independent review on a future 0.15 copy', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rule-cli-'));
+  const source = fileURLToPath(new URL('..', import.meta.url));
+  const binDir = path.join(dir, 'bin');
+  fs.mkdirSync(binDir);
+  fs.copyFileSync(path.join(source, 'roadctl.mjs'), path.join(binDir, 'roadctl.mjs'));
+  fs.cpSync(path.join(source, 'roadctl'), path.join(binDir, 'roadctl'), { recursive: true, filter: (f) => !f.endsWith('.test.mjs') });
+  const bin = path.join(binDir, 'roadctl.mjs');
+  fs.writeFileSync(bin, fs.readFileSync(bin, 'utf8').replace("export const VERSION = '0.14.0'", "export const VERSION = '0.15.0'"));
+  const board = path.join(dir, 'board');
+  const repo = path.join(dir, 'repo');
+  fs.mkdirSync(path.join(board, 'cards'), { recursive: true });
+  fs.mkdirSync(repo);
+  fs.writeFileSync(path.join(board, 'config.json'), JSON.stringify({ board_version: 1, requires: RULE_REQUIRES }));
+  const env = { ...process.env, HOME: dir, XDG_STATE_HOME: path.join(dir, 'state'), ROADCTL_REGISTRY: path.join(dir, 'registry.json'), GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid' };
+  for (const args of [['init', '-q'], ['commit', '--allow-empty', '-qm', 'initial']]) assert.equal(spawnSync('git', args, { cwd: repo, env }).status, 0);
+  fs.writeFileSync(env.ROADCTL_REGISTRY, JSON.stringify({ providers: { provider: { models: { alpha: [], beta: [] } } } }));
+  const card = path.join(board, 'cards', 'A.md');
+  const text = '---\nid: A\ntitle: Alpha\nstatus: review\nas_of: 2026-11-21\n---\n\n## Acceptance\n- [x] a1: works\n\n## Evidence\n- a1: verified\n';
+  fs.writeFileSync(card, text);
+  const run = (extra = []) => spawnSync(process.execPath, [bin, 'accept', 'A', '--rule', '--as', 'orchestrator', '--repo', repo, '--board', board, ...extra], { cwd: dir, env, encoding: 'utf8' });
+  const snap = run(['--snapshot']);
+  assert.equal(snap.status, 0, snap.stderr);
+  const basis = JSON.parse(snap.stdout);
+  const proof = { tests: { result: 'pass', command: 'node --test', ...basis }, worker: { agent: 'worker', model: 'alpha', run: 'one', source: 'run log' }, review: { agent: 'reviewer', model: 'beta', run: 'two', source: 'run log', result: 'pass', blockers: [], ...basis } };
+  fs.writeFileSync(card, `${text}\n## Rule Evidence\n${JSON.stringify(proof)}\n`);
+  const result = run();
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(loadBoard(board).cards[0].header.accepted, 'rule');
+});

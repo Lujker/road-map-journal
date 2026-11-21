@@ -68,6 +68,7 @@ roadctl report <id> --as AGENT "text" [--commit SHA]          the claimant hands
 roadctl report <id> --as AGENT --did "text" [--decision T] [--problem "kind: key: text"] [--ask T] [--not-checked T]   the same with a run summary
 roadctl undelegate <id> --by AGENT ["reason"] [--force]   the delegating agent withdraws a delegation
 roadctl accept <id> --as AGENT                 the acceptor takes it (card -> review if every criterion has evidence); then roadctl save
+roadctl accept <id> --rule --as AGENT --repo DIR [--snapshot]   rule acceptance; snapshot prints its revision and basis
 roadctl return <id> --as AGENT "what to fix"   the acceptor sends it back; then roadctl save
 roadctl agents-install --claude [--apply] [--claude-home DIR] [--helper PATH]   Claude Code subagents road-worker, road-reviewer
 roadctl agents-uninstall --claude [--apply]
@@ -823,3 +824,9 @@ The modules in `scripts/roadctl/` have their own tests: `node --test scripts/roa
 ## Instruction blocks
 
 `instructions-install --claude --codex` adds or refreshes one marked block (`<!-- ROADMAP-JOURNAL:START -->` ... `:END -->`) in the user-level `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`, so that every session in every project knows about the skill, keeps existing plans where they are, creates new boards in the central workspace and finds the helper. Text outside the block is never changed; a file that is a symlink is not edited (the block is printed instead); a backup is made before writing; `instructions-uninstall` removes the block. Where the workspace is not under `~/projects/agent-workspace` or `~/Projects/agent-workspace` (for example on Windows), put its path on the first line of `~/.local/share/road-map-journal/workspace` or set `ROADCTL_WORKSPACE`.
+
+### Rule acceptance (P5.35 slice 1)
+
+Requires roadctl and board `requires` 0.15.0; the release must raise VERSION before use. Run `roadctl accept ID --rule --as AGENT --repo DIR --snapshot` on a clean worktree. Put its `revision` and `basis` into both `tests` and `review` in the card's `## Rule Evidence` JSON. The object has `tests: {result: "pass", command, revision, basis}`, `worker: {agent, model, run, source}`, and `review: {agent, model, run, source, result: "pass", blockers: [], revision, basis}`. Every criterion must be marked and have an Evidence line. Then run the same command without `--snapshot`.
+
+The registry's `providers` entries must map known canonical model IDs to alias arrays under `models`, for example `{"providers":{"example":{"models":{"model-a":["alias-a"],"model-b":[]}}}}`. Ambiguous or unknown names, the same model, the same agent or run, and any blocking finding are refused. The model and test records are declarations by agents; roadctl does not independently verify the actual model or run the tests. This state is not owner `done`. A later revision, criteria, Evidence or approval/dependency record requires new test and review records.
