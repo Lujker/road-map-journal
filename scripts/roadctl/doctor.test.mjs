@@ -672,6 +672,15 @@ test('P5.29 a3: doctor warns when the service config points at the working clone
   conductor({ workspace: path.join(r.root, 'nowhere') });
   assert.equal(line().status, 'warn');
   assert.match(line().detail, /not a git clone/);
+  // owner_clone that does not exist, or is a folder without a clone: warn, never ok (the check cannot tell the clones apart)
+  conductor({ workspace: svc, owner_clone: path.join(r.root, 'no-such-clone') });
+  const gone = line();
+  assert.equal(gone.status, 'warn');
+  assert.match(gone.detail, /service\.owner_clone .* is not a git clone/);
+  const plain = path.join(r.root, 'plain-folder');
+  fs.mkdirSync(plain);
+  conductor({ workspace: svc, owner_clone: plain });
+  assert.equal(line().status, 'warn', 'a folder that is not a clone');
   // a relative path is a configuration error caught with the file
   conductor({ workspace: 'relative/clone' });
   assert.equal(r.json(['doctor']).by('launch-templates').status, 'fail');

@@ -614,8 +614,10 @@ export function checkServiceClone(ctx) {
     const r = repoRootOf(ctx, d);
     if (r && !owners.includes(r)) owners.push(r);
   };
-  if (svc.owner_clone) add(svc.owner_clone);
-  else {
+  if (svc.owner_clone) {
+    add(svc.owner_clone);
+    if (!owners.length) return res('service-clone', 'warn', `service.owner_clone ${tilde(svc.owner_clone, ctx.home)} is not a git clone (or does not exist): doctor cannot tell whether ${shown} is a clone of its own`, 'fix owner_clone to the clone the owner works in, or remove it to use the default workspace of the owner');
+  } else {
     try {
       add(fs.readFileSync(path.join(ctx.home, '.local', 'share', 'road-map-journal', 'workspace'), 'utf8').trim().split(/\r?\n/)[0]);
     } catch {
