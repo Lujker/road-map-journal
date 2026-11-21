@@ -4130,22 +4130,54 @@ test('P5.29 a1: report and save of one clone run at once; both records reach the
   assert.equal(g(p.b, 'status', '--porcelain', '--', 'projects'), '', 'nothing is left uncommitted');
 });
 
-test('P5.29 a1: a held repository lock makes the second operation wait, then answer busy (nothing changed); a stale lock is taken over', () => {
+test('P5.29 a1: a held repository lock is taken over only when its owner is dead: a live owner with an old file blocks (busy, nothing changed), a dead pid is taken over, a foreign host waits for the big fuse', () => {
   const { p, run } = claimed2();
   const lock = repoLockOf(p.b);
-  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, token: 'other' }));
   const env = { ROADCTL_REPO_LOCK_WAIT_MS: '300' };
+  const hold = (o, ageMs = 0) => {
+    fs.writeFileSync(lock, JSON.stringify(o));
+    const t = new Date(fs.statSync(lock).mtimeMs - ageMs);
+    fs.utimesSync(lock, t, t);
+  };
   const before = g(p.b, 'rev-parse', 'HEAD');
+  // a live owner (this very process) whose lock file is 10 minutes old: age alone opens nothing
+  hold({ pid: process.pid, host: os.hostname() }, 10 * 60 * 1000);
   const r = run(p.b, ['report', 'W-3', '--as', CODEX, 'blocked by the lock [a2]', '--json'], env);
   assert.equal(r.status, 1);
   assert.equal(out(r).status, 'busy');
+  assert.equal(out(run(p.b, ['pull', '--json'], env)).status, 'busy', 'a second pull does not get in either');
   assert.equal(g(p.b, 'rev-parse', 'HEAD'), before, 'no commit');
   assert.doesNotMatch(card3(p.b, p), /blocked by the lock/, 'the card is untouched');
-  assert.equal(fs.existsSync(lock), true, 'the lock of the other process is not removed');
-  const old = new Date(fs.statSync(lock).mtimeMs - 10 * 60 * 1000);
-  fs.utimesSync(lock, old, old);
+  assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).pid, process.pid, 'the lock of the live owner is not removed');
+  // a lock of another host cannot be checked: waits, even when old (below the fuse)
+  hold({ pid: 1, host: 'some-other-host' }, 10 * 60 * 1000);
+  assert.equal(out(run(p.b, ['pull', '--json'], env)).status, 'busy');
+  // an unreadable lock proves nothing about its owner
+  fs.writeFileSync(lock, 'garbage');
+  assert.equal(out(run(p.b, ['pull', '--json'], env)).status, 'busy');
+  // a foreign lock older than the fuse (6 h) is taken over, with a warning
+  hold({ pid: 1, host: 'some-other-host' }, 7 * 3600 * 1000);
+  const fuse = run(p.b, ['pull', '--json'], env);
+  assert.equal(out(fuse).status, 'up-to-date');
+  assert.match(fuse.stderr, /taking over the repository lock of host some-other-host/);
+  // a dead owner on this host (a pid that has ended) is taken over at once, whatever the age
+  const dead = spawnSync(process.execPath, ['-e', '0']).pid;
+  hold({ pid: dead, host: os.hostname() });
   assert.equal(out(run(p.b, ['report', 'W-3', '--as', CODEX, 'after the takeover [a2]', '--json'], env)).status, 'reported');
   assert.equal(fs.existsSync(lock), false);
+});
+
+test('P5.29 a1: repoLockDead decides by liveness: same host + ESRCH is dead, EPERM or a live pid is alive, foreign or unreadable never by age below the fuse', () => {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rc-rl-')), 'l');
+  const put = (o) => fs.writeFileSync(f, typeof o === 'string' ? o : JSON.stringify(o));
+  const opt = (alive) => ({ host: 'h', alive });
+  put({ pid: 42, host: 'h' });
+  assert.equal(rc.repoLockDead(f, 1e12, opt(() => true)), false, 'live pid, any age');
+  assert.equal(rc.repoLockDead(f, 0, opt(() => false)), true, 'dead pid, fresh file');
+  put({ pid: 42, host: 'x' });
+  assert.equal(rc.repoLockDead(f, 3600e3, opt(() => false)), false, 'foreign host is not checked by pid');
+  put('{"pid":"7"}');
+  assert.equal(rc.repoLockDead(f, 1e12, opt(() => false)), false, 'no host: unreadable');
 });
 
 test('P5.29 a2: the service has a clone of its own: its commits and the owner\'s commits in another clone of one bare repository do not disturb each other; a plain pull joins them', () => {

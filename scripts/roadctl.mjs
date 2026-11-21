@@ -1363,8 +1363,25 @@ function gitx(args, cwd, { timeout = 0 } = {}) {
 // P5.29 a1: one lock per clone for every operation that reads a board file and then commits, rebases or pushes it (pull, save, claim, report, routine done).
 // Two processes of one clone (the service and an agent, two agents) take turns: the second waits, so nobody's autostash, commit or file write is lost and
 // git's own index.lock is never contended by roadctl itself. The lock file is `roadctl-repo.lock` in the git directory of the clone (not in the working
-// tree, so it is never committed). Stale after 5 minutes without a finish; the wait is 60 s (ROADCTL_REPO_LOCK_WAIT_MS). No git or no lock helper: no lock.
-const REPO_LOCK_STALE_MS = 5 * 60 * 1000;
+// tree, so it is never committed); the wait is 60 s (ROADCTL_REPO_LOCK_WAIT_MS). No git or no lock helper: no lock.
+// The file holds { pid, host }. It is taken over ONLY when its owner is known to be dead: same host and `kill(pid, 0)` says ESRCH. Its age alone never opens it
+// (a live push can take minutes). A lock of another host (a clone on a shared disk) cannot be checked, so it waits for a big safety fuse (6 h) and warns.
+const REPO_LOCK_STALE_MS = 5 * 60 * 1000; // only the floor required by acquireLock; the rule is repoLockDead
+const REPO_LOCK_FOREIGN_FUSE_MS = 6 * 3600 * 1000;
+/** Whether the repository lock `file` may be taken: its owner (same host) is dead, or a foreign owner is older than the fuse (with a warning). Anything unreadable waits. */
+export function repoLockDead(file, ageMs, { host = os.hostname(), alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code !== 'ESRCH'; } } } = {}) {
+  let o = null;
+  try {
+    o = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch {
+    return false;
+  }
+  if (!o || !Number.isInteger(o.pid) || o.pid <= 0 || typeof o.host !== 'string') return false;
+  if (o.host === host) return !alive(o.pid);
+  if (ageMs <= REPO_LOCK_FOREIGN_FUSE_MS) return false;
+  process.stderr.write(`roadctl: warning: taking over the repository lock of host ${sanitize(o.host, 60)} (pid ${o.pid}), older than ${REPO_LOCK_FOREIGN_FUSE_MS / 3600000} h; its owner cannot be checked from here\n`);
+  return true;
+}
 const heldRepoLocks = new Set();
 const repoLockWaitMs = () => (Number.isFinite(Number(process.env.ROADCTL_REPO_LOCK_WAIT_MS)) && process.env.ROADCTL_REPO_LOCK_WAIT_MS !== undefined && process.env.ROADCTL_REPO_LOCK_WAIT_MS !== '' ? Number(process.env.ROADCTL_REPO_LOCK_WAIT_MS) : 60000);
 
@@ -1380,7 +1397,7 @@ export function repoLockFile(board) {
 export function withRepoLock(board, fn) {
   const file = STATE ? repoLockFile(board) : null;
   if (!file || heldRepoLocks.has(file)) return fn(); // no git, a lone copy, or this process already holds it (an operation inside an operation)
-  const l = STATE.acquireLock(file, { staleMs: REPO_LOCK_STALE_MS, waitMs: repoLockWaitMs(), strict: true });
+  const l = STATE.acquireLock(file, { staleMs: REPO_LOCK_STALE_MS, waitMs: repoLockWaitMs(), strict: true, content: JSON.stringify({ pid: process.pid, host: os.hostname(), at: new Date().toISOString() }), isStale: repoLockDead });
   if (!l.ok) return { status: 'busy', message: l.reason === 'held' ? 'another roadctl process is working in this clone (repository lock); try again in a moment' : `the repository lock cannot be used (${l.reason})` };
   heldRepoLocks.add(file);
   try {

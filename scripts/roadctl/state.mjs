@@ -50,11 +50,12 @@ function createExclusive(file, body, link = fs.linkSync, atomic = false) {
  *   staleMs   age (by modification time) after which an existing lock is taken over; required
  *   waitMs    how long to wait for a held lock (0: give up at once)
  *   content   what to write (default: a JSON line with pid and token); the token of the owner is kept in memory
+ *   isStale   optional `(file, ageMs) => boolean` that replaces the age rule (P5.29: the repository lock is taken over only when its owner is known to be dead, never by age alone)
  *   strict    true: an unusable directory is a failure ({ ok: false, reason }); default false: `{ ok: true, held: false }` (go on without a lock)
  * Returns { ok: true, held: true, release(), heartbeat() } or { ok: false, reason: 'held' | code }.
  * `release()` removes the file only while it is still the owner's own (the token in the file, or the unchanged caller-supplied content).
  */
-export function acquireLock(file, { staleMs, waitMs = 0, pollMs = 15, content, strict = false, link = fs.linkSync } = {}) {
+export function acquireLock(file, { staleMs, waitMs = 0, pollMs = 15, content, strict = false, link = fs.linkSync, isStale = null } = {}) {
   if (!Number.isFinite(staleMs) || staleMs <= 0) throw new Error('acquireLock needs staleMs');
   const token = crypto.randomBytes(8).toString('hex');
   const body = content ?? JSON.stringify({ pid: process.pid, token });
@@ -98,6 +99,7 @@ export function acquireLock(file, { staleMs, waitMs = 0, pollMs = 15, content, s
     },
   };
   const age = () => Date.now() - fs.statSync(file).mtimeMs;
+  const old = () => (isStale ? isStale(file, age()) : age() > staleMs);
   for (;;) {
     try {
       createExclusive(file, body, link, strict);
@@ -107,7 +109,7 @@ export function acquireLock(file, { staleMs, waitMs = 0, pollMs = 15, content, s
     }
     let stale = false;
     try {
-      stale = age() > staleMs;
+      stale = old();
     } catch {
       continue; // vanished in between: try again at once
     }
@@ -128,7 +130,7 @@ export function acquireLock(file, { staleMs, waitMs = 0, pollMs = 15, content, s
         try {
           let still = false;
           try {
-            still = age() > staleMs; // checked again under the guard: someone else may have replaced the lock since
+            still = old(); // checked again under the guard: someone else may have replaced the lock since
           } catch {
             still = false;
           }
