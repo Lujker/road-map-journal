@@ -504,7 +504,12 @@ export function eligibility(d, agent, reg) {
     return reg.agents[executor]?.roles?.includes(t.role) ? { ok: true } : { ok: false, reason: `${executor} does not have the role ${t.role} in the registry` };
   }
   if (t.kind === 'executor') return who.executor === t.executor ? { ok: true } : { ok: false, reason: `the delegation is addressed to ${d.to}` };
-  if (t.kind === 'profile') return who.profile === t.profile ? { ok: true } : { ok: false, reason: `the delegation is addressed to profile ${d.to}` };
+  if (t.kind === 'profile') {
+    if (who.profile === t.profile) return { ok: true };
+    // P5.46 a3: the executor of that profile is the same agent under its own name (the claim stores the executor either way)
+    const owner = WHO.profilesOf(reg).get(t.profile);
+    return owner && owner.executor === executor ? { ok: true } : { ok: false, reason: `the delegation is addressed to profile ${d.to}` };
+  }
   if (t.kind === 'orchestrator') return who.orchestrator === t.orchestrator ? { ok: true } : { ok: false, reason: `the delegation is addressed to orchestrator ${d.to}` };
   return { ok: false, reason: t.error ?? `the delegation is addressed to ${d.to}` };
 }

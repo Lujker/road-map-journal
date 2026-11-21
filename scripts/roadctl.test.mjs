@@ -3877,6 +3877,31 @@ test('P5.41 a2: delegate --to takes role, profile, executor and orchestrator; cl
   assert.match(cardText(r4), /CLAIMED by pi-developer \(pi-worker@home-wsl\)/);
 });
 
+test('P5.46 a3: a delegation to a profile is also taken by that profile\'s executor under its own name, and tasks --for finds it', LSKIP, () => {
+  // the same registry, with an api provider for pi-worker@home-wsl so the limits gate is deterministic and no probe runs
+  const base = JSON.parse(fs.readFileSync(PROFILE_REG(), 'utf8'));
+  const reg = writeRegistry({ ...base, providers: { 'some-api': { kind: 'api' } }, agents: { ...base.agents, 'pi-worker@home-wsl': { host: 'pi', provider: 'some-api', roles: ['worker'] } } });
+  const env = { ROADCTL_REGISTRY: reg, ROADCTL_NOW: T0 };
+  const root = project();
+  assert.equal(dcli(root, ['delegate', 'W-3', '--to', 'pi-developer', '--by', ME, '--criteria', 'a2'], env).status, 0);
+  const t = tenv();
+  // tasks --for: the executor of the profile sees the open delegation, another executor does not
+  const seen = cli(root, ['tasks', '--for', 'pi-worker@home-wsl', '--json'], '', env);
+  assert.equal(seen.status, 0, seen.stderr);
+  assert.deepEqual(JSON.parse(seen.stdout).map((x) => [x.id, x.to]), [['W-3', 'pi-developer']]);
+  assert.deepEqual(JSON.parse(cli(root, ['tasks', '--for', 'codex-developer', '--json'], '', env).stdout), [], 'another profile of the registry is not eligible');
+  // claim: by the executor name itself, and the Log writes it
+  assert.equal(dcli(root, ['claim', 'W-3', '--as', 'pi-worker@home-wsl'], env).status, 0);
+  assert.match(cardText(root), /^claim: pi-worker@home-wsl /m);
+  // tick offers the TAKE of a profile delegation to that executor too
+  const t2 = tenv();
+  assert.equal(t2.bcli(['delegate', 'W-3', '--to', 'pi-developer', '--by', ME, '--criteria', 'a2'], { ROADCTL_REGISTRY: reg }).status, 0);
+  const tick = t2.run('pi-worker@home-wsl', [], { ROADCTL_REGISTRY: reg });
+  assert.equal(tick.status, 0, tick.stderr);
+  assert.match(tick.stdout, /^TAKE my-app\/W-3 /m);
+  assert.doesNotMatch(t2.run(CODEX, [], { ROADCTL_REGISTRY: reg }).stdout, /TAKE my-app\/W-3/, 'codex@home-wsl is not that profile\'s executor');
+});
+
 test('P5.41 a3: claim moves ready -> doing when approved; without approval it refuses', () => {
   const root = project();
   edit(root, 'W-5', (t) => t.replace('depends_on: W-2', `depends_on: W-2\n${APPROVED}`));
