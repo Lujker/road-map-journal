@@ -4,6 +4,7 @@ Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. 
 
 ## Unreleased
 
+- Repository: P5.46 a5 (tails of 0.14). `handoff --to <profile>` prints that profile's registry row in the `For:` line (the executor it maps to, that executor's roles and model, the openbot name), not only the executor's; `--to <executor>` and the pair form keep their own lines. No board format change, no VERSION change.
 - Repository: P5.46 a4 (tails of 0.14). `delegate --to` a name the registry does not know (an `x@host` form, read as an orchestrator) or a role that no agent has still writes the delegation, and one warning on stderr says that `claim` will refuse it and which form can take it. No board format change, no VERSION change.
 - Repository: P5.46 a3 (tails of 0.14). A delegation to a profile is also taken by that profile's executor under its own name (`--as pi-worker@home-wsl`), and `tasks --for pi-worker@home-wsl` lists it; a `tick` of that executor offers the TAKE. No board format change, no VERSION change.
 - Repository: P5.46 a2 (tails of 0.14). `tick`, `limits --check` and `routine done` take the same `--as` names as `claim`: a profile, a variant or `orchestrator/profile` acts as the executor it maps to (tick offers that executor's items and names both in its text, `limits --check` checks the executor's provider, `routine done` records the run of that executor's routine). A name the registry does not know keeps the old behaviour. No board format change, no VERSION change.
