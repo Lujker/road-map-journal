@@ -57,9 +57,9 @@ test('P5.35 a1: rule acceptance requires green tests, every criterion and an unb
   fs.mkdirSync(path.join(dir, 'cards'));
   fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ requires: RULE_REQUIRES }));
   const file = path.join(dir, 'cards', 'A.md');
-  const proof = { tests: { result: 'pass', command: 'node --test' }, review: { agent: 'reviewer', result: 'pass', blockers: [] } };
+  const proof = { tests: { result: 'pass', command: 'node --test' }, worker: { agent: 'worker', model: 'model-a', run: 'r1', source: 'run log' }, review: { agent: 'reviewer', model: 'model-b', run: 'r2', source: 'run log', result: 'pass', blockers: [] } };
   const content = (p = proof, mark = 'x', evidence = '- a1: tests passed') => `---\nid: A\ntitle: Alpha\nstatus: review\n---\n\n## Acceptance\n- [${mark}] a1: works\n\n## Evidence\n${evidence}\n\n## Rule Evidence\n${JSON.stringify(p)}\n`;
-  const api = { compareVersions, boardRequires: (config) => boardRequires(config, RULE_REQUIRES), appendLog };
+  const api = { compareVersions, boardRequires: (config) => boardRequires(config, RULE_REQUIRES), appendLog, loadRegistry: () => ({ providers: { test: { models: { 'model-a': ['alias-a'], 'model-b': [] } } } }) };
   const cases = [
     content({ ...proof, tests: { result: 'fail', command: 'test' } }),
     content(proof, 'x', ''), content(proof, ' '),
@@ -77,4 +77,13 @@ test('P5.35 a1: rule acceptance requires green tests, every criterion and an unb
   const card = loadBoard(dir).cards[0];
   assert.equal(card.header.accepted, 'rule');
   assert.equal(card.header.status, 'review');
+});
+
+test('P5.35 a10: aliases and effort cannot disguise same model; unknowns and self-review fail', async () => {
+  const { canonicalModel } = await import('./rule-acceptance.mjs');
+  const registry = { providers: { one: { models: { 'model-a': ['alias-a'], 'model-b': ['alias-b'] } } } };
+  assert.equal(canonicalModel('alias-a[high]', registry), canonicalModel('one/model-a:low', registry));
+  assert.notEqual(canonicalModel('model-a', registry), canonicalModel('model-b', registry));
+  assert.equal(canonicalModel('unknown', registry), null);
+  assert.equal(canonicalModel('alias-a', { providers: { one: { models: { 'model-a': ['alias-a'], 'model-b': ['alias-a'] } } } }), null);
 });
