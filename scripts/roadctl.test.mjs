@@ -3877,6 +3877,35 @@ test('P5.41 a2: delegate --to takes role, profile, executor and orchestrator; cl
   assert.match(cardText(r4), /CLAIMED by pi-developer \(pi-worker@home-wsl\)/);
 });
 
+test('P5.46 a4: delegate --to a name the registry does not know warns that claim will refuse; a known name does not', LSKIP, () => {
+  const reg = PROFILE_REG();
+  const env = { ROADCTL_REGISTRY: reg, ROADCTL_NOW: T0 };
+  // a name that looks like an executor but is not in the registry: the delegation is written, and the warning names the claim that will refuse
+  const root = project();
+  const r = dcli(root, ['delegate', 'W-3', '--to', 'claude-worker@home-wsl', '--by', ME, '--criteria', 'a2'], env);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /^roadctl delegate: WARNING: the registry does not know claude-worker@home-wsl: a plain "roadctl claim W-3 --as claude-worker@home-wsl" will refuse/m);
+  assert.match(cardText(root), /^delegate: to=claude-worker@home-wsl /m, 'the delegation is still written');
+  assert.match(dcli(root, ['claim', 'W-3', '--as', 'claude-worker@home-wsl'], env).stderr, /unknown claude-worker@home-wsl/, 'the warning was true');
+  // a role that exists in the registry but that no agent has: nobody can claim it
+  const base = JSON.parse(fs.readFileSync(reg, 'utf8'));
+  const root2 = project();
+  const r2 = dcli(root2, ['delegate', 'W-3', '--to', 'auditor', '--by', ME], { ...env, ROADCTL_REGISTRY: writeRegistry({ ...base, roles: { ...base.roles, auditor: {} } }) });
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.match(r2.stderr, /WARNING: no agent of the registry has the role auditor/);
+  // a known executor and a known profile: two names that work, no warning
+  for (const to of ['codex@home-wsl', 'pi-developer']) {
+    const rk = dcli(project(), ['delegate', 'W-3', '--to', to, '--by', ME], env);
+    assert.equal(rk.status, 0, rk.stderr);
+    assert.doesNotMatch(rk.stderr, /WARNING/, to);
+  }
+  // without a registry nothing changes: no warning, and a claim by the name still works
+  const p2 = project();
+  const noReg = cli(p2, ['delegate', 'W-3', '--to', 'heredoc@elsewhere', '--by', ME], '', { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 });
+  assert.equal(noReg.status, 0, noReg.stderr);
+  assert.doesNotMatch(noReg.stderr, /WARNING/);
+});
+
 test('P5.46 a3: a delegation to a profile is also taken by that profile\'s executor under its own name, and tasks --for finds it', LSKIP, () => {
   // the same registry, with an api provider for pi-worker@home-wsl so the limits gate is deterministic and no probe runs
   const base = JSON.parse(fs.readFileSync(PROFILE_REG(), 'utf8'));

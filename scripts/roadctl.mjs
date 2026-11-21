@@ -1581,6 +1581,12 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
   if ('delegate' in c.header || 'claim' in c.header) reasons.push('a delegation is already active on this card (one at a time); accept or return it first');
   const tgt = WHO.resolveTo(to, registry); // P5.41: role, profile, executor or orchestrator
   if (tgt.kind === 'unknown') reasons.push(tgt.error + (tgt.hint ? `; ${tgt.hint}` : ''));
+  // P5.46 a4: a name the registry does not know still makes a valid delegation line, but nobody can claim it by that name; say so once, here
+  const warnings = [];
+  if (registry) {
+    if (tgt.kind === 'orchestrator' && !registry.agents?.[to] && !registry.agent_profiles?.[to]) warnings.push(`the registry does not know ${to}: a plain "roadctl claim ${id} --as ${to}" will refuse (unknown name); as an orchestrator only "${to}/<profile>" can take this delegation`);
+    else if (tgt.kind === 'role' && !Object.values(registry.agents ?? {}).some((a) => (a?.roles ?? []).includes(tgt.role))) warnings.push(`no agent of the registry has the role ${tgt.role}: nobody can claim this delegation until the owner gives it to one`);
+  }
   const e = checkAgent(by, '--by');
   if (e) reasons.push(e);
   const d = { to, host, criteria: criteria === 'all' ? 'all' : String(criteria).split(',').map((x) => x.trim()), by, accept, state: 'open', at: isoAt() };
@@ -1593,7 +1599,7 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
   writeCard(c, t);
   appendLog(board, id, `DELEGATED to ${d.to} (host ${d.host}, criteria ${d.criteria === 'all' ? 'all' : d.criteria.join(',')}, accept ${d.accept})`, { author: by });
   if (basis?.log) appendLog(board, id, basis.log, { author: by });
-  return { ok: true, delegate: d };
+  return { ok: true, delegate: d, ...(warnings.length ? { warnings } : {}) };
 }
 
 export function parseLease(s = '2h') {
@@ -4628,6 +4634,7 @@ async function mainRun(argv, io, audit) {
         io.err(staleWarning(board));
         const r = delegateCard(board, args[1], { to: flags.to, host: flags.host === true ? undefined : flags.host, criteria: flags.criteria === true ? undefined : flags.criteria, by: flags.by, accept: flags.accept === true ? undefined : flags.accept });
         if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
+        for (const w of r.warnings ?? []) io.err(`roadctl delegate: WARNING: ${w}\n`); // P5.46 a4
         return out(`${args[1]}: delegated to ${r.delegate.to} (host ${r.delegate.host}, accept ${r.delegate.accept}), state open. Next: roadctl save, then the executor runs roadctl claim ${args[1]} --as <agent>`), 0;
       }
       case 'claim': {
