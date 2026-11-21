@@ -334,7 +334,7 @@ export function boardRequires(config, version = VERSION) {
   return null;
 }
 const WHO_REQUIRES = '0.14.0'; // the first roadctl that reads profiles and orchestrator/profile pairs in --as and --to
-const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy'], ['0.13.0', 'owner-questions']]; // required modules for board format versions
+const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy'], ['0.13.0', 'owner-questions'], ['0.15.0', 'rule-acceptance']]; // required modules for board format versions
 
 const statusOf = (board, card) => {
   const s = card.header.status ?? '';
