@@ -17,7 +17,7 @@ export const REVIEW_RULE = [
   'Review rule:',
   '- Return the work only for: (1) a violated criterion of the card, (2) a failing test or an incompatibility, (3) a defect you can reproduce with a concrete scenario (input -> wrong result).',
   '- Everything else (style, naming, a better idea, a risk without a scenario) goes to a "later" list in your verdict. It is not a return.',
-  '- At most two review rounds per card; after the second the coordinator decides and what is left goes to a follow-up card.',
+  '- At most two review rounds per card; after the second, stop and escalate any remaining blocker; only non-blocking follow-ups go to another card.',
   '- A second review looks only at the earlier blockers and the new diff, not at the whole card again.',
   '- First line of the verdict: accept / accept with follow-ups / return.',
 ];
@@ -47,7 +47,7 @@ export function handoffLines({ card, to, role, tests, base, note, repo, executor
   const id = card.header.id;
   const branch = branchFor(id, card.header.title);
   const dir = repo ? dirFor(repo, id) : `../<repo>-${String(id).toLowerCase()}`;
-  const open = card.criteria.filter((c) => c.mark !== 'x');
+  const open = role === 'reviewer' ? card.criteria : card.criteria.filter((c) => c.mark !== 'x');
   const L = [`Assignment ${id}: ${clean(card.header.title, 160)}`, `For: ${to} | role: ${role}${executor ? ` | ${executor}` : ''}`, ''];
   L.push('Goal:', ...firstParagraphs(card.sections.Goal).split('\n').map((l) => `  ${l}`), '');
   L.push(`Criteria${role === 'reviewer' ? ' to check' : ''} (full text: roadctl show ${id}):`, ...(open.length ? open.map((c) => `- ${c.id}: ${clean(c.text, 300)}`) : ['- (no open criterion on the card: ask the coordinator what to do before you start)']), '');

@@ -420,9 +420,12 @@ function daily({ boards, refused, env, api, now, language }) {
     const project = projectOf(b);
     const bw = dailyWords(b.config?.language);
     if ((api.compareVersions(b.config.requires, '0.13.0') ?? -1) >= 0) {
-      try {
-        for (const item of ownerItems(b, now)) if (['decision', 'proposed', 'milestone'].includes(item.type)) lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}${item.undoable ? ' (undo available)' : ''}`);
-      } catch { lines.push(`${project}: owner question data unreadable`); }
+      // P5.44 a1: an unreadable Questions section refuses its own card (a line of its own, from ownerItems), so one broken card
+      // does not hide the decisions of the others or the rest of the overview
+      for (const item of ownerItems(b, now)) {
+        if (item.type === 'refused') lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}`);
+        else if (['decision', 'proposed', 'milestone'].includes(item.type)) lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}${item.undoable ? ' (undo available)' : ''}`);
+      }
     }
     const rows = api.routineRows(b, now);
     if (rows.length && rows.every((r) => r.reasons.includes('board switch off')) && rows.some((r) => r.enabled)) {

@@ -97,6 +97,7 @@ test('P5.41 a5: a reviewer gets the review rule and is read-only; a fixer gets t
     assert.match(rv, /First line of the verdict: accept \/ accept with follow-ups \/ return\./);
     assert.match(rv, /Read-only: look at branch h-1-export-the-report/);
     assert.match(rv, /Criteria to check/);
+    assert.match(rv, /- a2: the separator is a semicolon/, 'a reviewer also checks completed criteria');
     assert.doesNotMatch(rv, /roadctl worktree add|roadctl claim/, 'a reviewer creates and claims nothing');
     assert.match(rv, /You do not run approve, done or accept/);
     const fx = r.run(['H-1', '--to', 'dev', '--role', 'fixer', '--note', 'a3: an empty report crashes (input: empty file -> exception)']).stdout;

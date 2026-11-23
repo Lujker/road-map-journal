@@ -1502,11 +1502,19 @@ export function saveBoard(board, message, { timeout = netTimeout() } = {}) {
     }
     const merged = lint(loadBoard(board.dir)).filter((x) => x.level === 'error');
     if (merged.length) return { status: 'lint-after-merge', errors: merged.map((x) => `${x.card}: ${x.msg}`), message: `after merging other changes lint found ${merged.length} error(s); not pushed` };
-    const out = gitx(['diff', '--name-only', '@{u}', 'HEAD'], ctx.root).out.split('\n').filter(Boolean);
+    const head = gitx(['rev-parse', '--verify', 'HEAD'], ctx.root);
+    const branch = gitx(['symbolic-ref', '--quiet', '--short', 'HEAD'], ctx.root);
+    if (!head.ok || !branch.ok) return { status: 'error', message: 'cannot identify the branch and commit to push' };
+    const remote = gitx(['config', '--get', `branch.${branch.out}.remote`], ctx.root);
+    const target = gitx(['config', '--get', `branch.${branch.out}.merge`], ctx.root);
+    if (!remote.ok || !target.ok) return { status: 'error', message: 'cannot identify the upstream branch to push' };
+    const history = gitx(['log', '--format=', '--name-only', '--no-renames', '--diff-merges=first-parent', '-z', `@{u}..${head.out}`], ctx.root);
+    if (!history.ok) return { status: 'error', message: `cannot check unpushed commits: ${failureHint(history)}` };
+    const out = history.out.split('\0').filter(Boolean);
     const foreign = out.filter((x) => !inScope(ctx, x));
     if (foreign.length) return { status: 'foreign-commits', files: foreign, message: `unpushed commits touch paths outside the board (${foreign.slice(0, 5).join(', ')}); push those yourself` };
     if (!out.length && !(aheadBehind(ctx.root)?.ahead > 0)) return { status: 'nothing-to-save', message: `nothing to push${note}` };
-    const p = gitx(['push', '--quiet'], ctx.root, { timeout });
+    const p = gitx(['push', '--quiet', remote.out, `${head.out}:${target.out}`], ctx.root, { timeout });
     if (p.ok) return { status: 'pushed', message: `committed and pushed${note}` };
     if (looksOffline(p)) return { status: 'saved-local', message: `committed locally; could not push (${failureHint(p) || 'timeout'})` };
     if (attempt === 0 && /rejected|non-fast-forward|fetch first/i.test(p.err)) continue; // someone pushed in between: integrate again
@@ -1690,7 +1698,7 @@ export function claimCard(board, id, { as, lease = '2h', workdir, registry = loa
     if (i.status === 'conflict') return drop('the same card was changed on the server');
     if (!['pulled', 'up-to-date'].includes(i.status)) return { status: 'error', ...base, message: `${i.message}; the claim is committed locally and not exclusive` };
     const now = delegationInfo(findCard(loadBoard(board.dir), id));
-    if (!(now.delegate?.state === 'claimed' && now.claim?.agent === as && now.claim.at === claim.at)) return drop('after merging');
+    if (!(now.delegate?.state === 'claimed' && now.claim?.agent === claim.agent && now.claim.at === claim.at)) return drop('after merging');
   }
   return { status: 'error', ...base, message: 'git push was rejected three times; the claim is committed locally and not exclusive' };
 }
@@ -3037,14 +3045,15 @@ const applyTickFilter = (f, i) => !f || ((!f.kinds || f.kinds.includes(i.kind.to
 function acquireTickLock(agent, env, suffix = '') {
   const f = tickLockPath(agent, env, suffix);
   if (STATE) {
-    const l = STATE.acquireLock(f, { staleMs: TICK_LOCK_STALE_MS }); // an unusable state directory: go on without a lock rather than fail
+    const l = STATE.acquireLock(f, { staleMs: TICK_LOCK_STALE_MS, strict: true });
+    if (!l.ok && l.reason !== 'held') throw new Error(`cannot acquire tick lock (${l.reason}); check the state directory`);
     return l.ok ? l : { ok: false };
   }
   const token = crypto.randomBytes(8).toString('hex'); // seam (P5.28): lone-copy fallback
   try {
     fs.mkdirSync(path.dirname(f), { recursive: true });
-  } catch {
-    return { ok: true, release() {} };
+  } catch (e) {
+    throw new Error(`cannot acquire tick lock (${e.code ?? 'error'}); check the state directory`);
   }
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
@@ -3060,7 +3069,7 @@ function acquireTickLock(agent, env, suffix = '') {
         },
       };
     } catch (e) {
-      if (e.code !== 'EEXIST') return { ok: true, release() {} };
+      if (e.code !== 'EEXIST') throw new Error(`cannot acquire tick lock (${e.code ?? 'error'}); check the state directory`);
       try {
         if (Date.now() - fs.statSync(f).mtimeMs <= TICK_LOCK_STALE_MS) return { ok: false };
         fs.rmSync(f); // the lone copy keeps the old takeover (the race is closed in state.mjs only)

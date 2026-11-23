@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { wallClock } from '../testkit/time.mjs';
+import { wallClock, waitFor } from '../testkit/time.mjs';
 import { lockFile, spanSeconds, WAIT_EXIT } from './lock.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -50,7 +50,7 @@ for (const mode of hasFlock ? ['flock', 'file'] : ['file']) {
     try {
       const over = mode === 'file' ? { ROADCTL_LOCK_NO_FLOCK: '1' } : {};
       const a = r.start(r.job('A'), over);
-      await new Promise((resolve) => setTimeout(resolve, 150)); // A holds the lock before B asks
+      assert.ok(waitFor(() => r.lines().includes('A-start')), 'A acquired the lock before B asks');
       const b = r.start(r.job('B'), over);
       assert.deepEqual(await Promise.all([a, b]), [0, 0]);
       assert.ok(serialized(r.lines()), `no overlap: ${r.lines().join(' ')}`);
@@ -65,11 +65,16 @@ for (const mode of hasFlock ? ['flock', 'file'] : ['file']) {
     const r = rig();
     try {
       const over = mode === 'file' ? { ROADCTL_LOCK_NO_FLOCK: '1' } : {};
-      const a = r.start(r.job('A', 2500), over);
-      await new Promise((resolve) => setTimeout(resolve, 300));
-      const b = r.run(['--wait', '1s', ...r.job('B')], over);
-      assert.equal(b.status, WAIT_EXIT, b.stderr);
-      assert.match(b.stderr, /was not free within 1s; the command did not start/);
+      const done = path.join(r.dir, 'release');
+      const log = path.join(r.dir, 'order.log');
+      const script = `const fs=require('fs');fs.appendFileSync(${JSON.stringify(log)},'A-start\\n');const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(done)})){clearInterval(t);fs.appendFileSync(${JSON.stringify(log)},'A-end\\n')}},20)`;
+      const a = r.start(['--', process.execPath, '-e', script], over);
+      try {
+        assert.ok(waitFor(() => r.lines().includes('A-start')), 'A acquired the lock before B asks');
+        const b = r.run(['--wait', '1s', ...r.job('B')], over);
+        assert.equal(b.status, WAIT_EXIT, b.stderr);
+        assert.match(b.stderr, /was not free within 1s; the command did not start/);
+      } finally { fs.writeFileSync(done, ''); }
       assert.equal(await a, 0);
       assert.deepEqual(r.lines(), ['A-start', 'A-end'], 'B never started');
     } finally { r.cleanup(); }

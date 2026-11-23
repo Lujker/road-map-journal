@@ -316,7 +316,7 @@ export function checkState(ctx) {
   const dir = stateDirOf(ctx);
   const w = writableOrCreatable(dir);
   const shown = tilde(dir, ctx.home);
-  if (!w.ok) out.push(res('state-dir', 'warn', `state directory ${shown} ${w.exists ? 'is not writable' : 'cannot be created'}: tick would run WITHOUT its lock and could not keep a ledger`, 'make it writable, or point XDG_STATE_HOME at a writable place'));
+  if (!w.ok) out.push(res('state-dir', 'warn', `state directory ${shown} ${w.exists ? 'is not writable' : 'cannot be created'}: tick cannot acquire its lock or keep a ledger`, 'make it writable, or point XDG_STATE_HOME at a writable place'));
   else if (!w.exists) out.push(res('state-dir', 'ok', `state directory ${shown} does not exist yet; it is created by the first tick`));
   else {
     const locks = fs.readdirSync(dir).filter((n) => /^tick-.*\.lock$/.test(n));

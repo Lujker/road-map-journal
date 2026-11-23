@@ -446,7 +446,7 @@ test('P5.1 a5: `runs --json` is an array of records that fit the schema describe
   assert.match(DOCS, /`usage`[^\n]*`null`/);
 });
 
-test('P5.1 a6: a state directory that cannot be used does not break routine done, claim, report, tick or the run commands', FAKES_SKIP, () => {
+test('P5.1 a6: an unavailable ledger does not break routine done, claim, report or run commands, but tick stops', FAKES_SKIP, () => {
   const good = rig();
   const bad = rig();
   fs.writeFileSync(path.join(bad.dir, 'a-file'), 'x');
@@ -465,8 +465,8 @@ test('P5.1 a6: a state directory that cannot be used does not break routine done
   same(['claim', 'W-3', '--as', WORKER]);
   same(['report', 'W-3', '--as', WORKER, 'text']);
   const t = bad.tick([], broken);
-  assert.equal(t.status, good.tick([]).status);
-  assert.equal(t.stdout, good.tick([]).stdout);
+  assert.equal(t.status, 6);
+  assert.match(t.stdout, /paused/);
   assert.equal(bad.tick([], { ...broken, XDG_STATE_HOME: path.join(bad.dir, 'a-file', 'x', 'y') }).status, t.status);
   // the run commands say so and let the work go on
   const begin = bad.run(['run', 'begin', 'mr-status', '--as', ME], broken);

@@ -68,6 +68,14 @@ function tickClaude(r, over = {}) {
   return spawnSync('bash', [path.join(EXAMPLES, 'tick-claude.sh')], { cwd: r.ws, encoding: 'utf8', input: '', env: { ...r.env, AGENT: ME, WORKDIR: path.join(r.dir, 'work'), ROADCTL: path.join(r.bin, 'roadctl'), MODEL: 'haiku', ...over } });
 }
 
+test('tick-claude.sh chooses the board from WORKDIR, not the caller directory', NEEDS, () => {
+  const r = rig();
+  const fake = path.join(r.dir, 'fake-roadctl');
+  fs.writeFileSync(fake, '#!/bin/sh\npwd > "$HOME/tick-cwd"\nexit 4\n', { mode: 0o755 });
+  assert.equal(tickClaude(r, { ROADCTL: fake }).status, 0);
+  assert.equal(fs.realpathSync(fs.readFileSync(path.join(r.dir, 'tick-cwd'), 'utf8').trim()), fs.realpathSync(path.join(r.dir, 'work')));
+});
+
 test('tick-claude.sh: a due routine starts claude once with the tick prompt; the finished run (routine done) makes the next tick idle and starts nothing', NEEDS, () => {
   const r = rig();
   r.routine(ME);

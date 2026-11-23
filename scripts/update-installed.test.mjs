@@ -156,7 +156,7 @@ test('P5.47: syncLauncher on an empty HOME writes ~/.local/bin/roadctl (0755) th
     assert.equal(text, launcherContent(dest));
     assert.ok(text.startsWith('#!/bin/sh\n'));
     assert.ok(text.includes(LAUNCHER_MARKER));
-    assert.ok(text.includes(`exec node ${JSON.stringify(dest)} "$@"`));
+    assert.ok(text.includes(`exec node '${dest}' "$@"`));
     // it really runs the helper and passes the arguments through
     const run = spawnSync('sh', [r.file, 'status', '--json'], { encoding: 'utf8' });
     assert.equal(run.stdout.trim(), 'helper status|--json');
@@ -164,7 +164,21 @@ test('P5.47: syncLauncher on an empty HOME writes ~/.local/bin/roadctl (0755) th
     // a moved helper rewrites our own launcher
     const other = path.join(root, 'elsewhere', 'roadctl.mjs');
     assert.equal(syncLauncher(home, other, { pathEnv: '' }).action, 'update');
-    assert.ok(fs.readFileSync(r.file, 'utf8').includes(JSON.stringify(other)));
+    assert.ok(fs.readFileSync(r.file, 'utf8').includes(`'${other}'`));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('launcher runs a helper whose path contains shell metacharacters', () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rmj-launcher-'));
+  try {
+    const dest = path.join(root, "a'$HOME", 'roadctl.mjs');
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, 'console.log("correct helper")\n');
+    const file = path.join(root, 'launcher');
+    fs.writeFileSync(file, launcherContent(dest));
+    const run = spawnSync('sh', [file], { encoding: 'utf8' });
+    assert.equal(run.status, 0, run.stderr);
+    assert.equal(run.stdout.trim(), 'correct helper');
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

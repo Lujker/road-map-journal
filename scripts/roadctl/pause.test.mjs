@@ -79,6 +79,28 @@ const sha = (file) => crypto.createHash('sha256').update(fs.readFileSync(file)).
 const tree = (dir) => fs.readdirSync(dir, { recursive: true, withFileTypes: true }).filter((e) => e.isFile()).map((e) => path.join(e.parentPath ?? e.path, e.name)).sort().map((f) => `${path.relative(dir, f)} ${sha(f)}`);
 const rawLines = (file) => fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 
+test('tick refuses to start when the state path is not a directory', FAKES_SKIP, () => {
+  const r = rig();
+  const blocked = path.join(r.dir, 'not-a-directory');
+  fs.writeFileSync(blocked, 'file');
+  const result = r.tick(['--json'], { XDG_STATE_HOME: blocked });
+  assert.equal(result.status, 6, result.stderr + result.stdout);
+  assert.equal(JSON.parse(result.stdout).decision, 'paused');
+  assert.equal(readPause(path.join(blocked, 'road-map-journal'), 0).unreadable, true);
+});
+
+test('tick fails when it cannot create its lock', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const r = rig();
+  fs.mkdirSync(r.sd, { recursive: true });
+  fs.chmodSync(r.sd, 0o555);
+  try {
+    const result = r.tick(['--json']);
+    assert.equal(result.status, 2, result.stdout + result.stderr);
+    assert.match(result.stderr, /cannot acquire tick lock/);
+    assert.equal(result.stdout, '');
+  } finally { fs.chmodSync(r.sd, 0o755); }
+});
+
 // ---------------------------------------------------------------- a1: exit 6, no limits, nothing read
 
 test('P5.5 a1: a paused tick exits 6 and prints stable text, asks no limits provider (the fake claude is never called), takes no lock, reads no board; unpaused it probes', FAKES_SKIP, () => {

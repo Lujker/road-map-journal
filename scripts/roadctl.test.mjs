@@ -831,6 +831,20 @@ test('save refuses on lint errors and on unpushed commits outside the board', ()
   assert.ok(!p.serverLog().includes('private work'));
 });
 
+test('save refuses unpushed outside paths even when later commits undo them', () => {
+  const p = pair();
+  const before = g(p.server, 'rev-parse', 'main');
+  fs.writeFileSync(path.join(p.a, 'private.txt'), 'private');
+  g(p.a, 'add', 'private.txt');
+  g(p.a, 'commit', '-q', '-m', 'add private');
+  g(p.a, 'rm', '-q', 'private.txt');
+  g(p.a, 'commit', '-q', '-m', 'remove private');
+  const result = p.run(p.a, ['save', '--json']);
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  assert.equal(out(result).status, 'foreign-commits');
+  assert.equal(g(p.server, 'rev-parse', 'main'), before);
+});
+
 test('hooks: the session brief reports the sync state; autosync pulls at start and saves at Stop; the reminder is not disturbed', () => {
   const p = pair();
   p.run(p.a, ['log', 'W-3', 'from a']);
@@ -3796,6 +3810,21 @@ test('P5.41 a1: --as and ROADCTL_AS accept an executor, a profile and orchestrat
   const r8 = project();
   delegated(r8);
   assert.equal(dcli(r8, ['claim', 'W-3', '--as', CODEX]).status, 0);
+});
+
+test('claim by profile survives an unrelated upstream commit', () => {
+  const p = pair();
+  const env = { ROADCTL_REGISTRY: PROFILE_REG(), ROADCTL_NOW: T0 };
+  const run = (w, args) => p.run(w, args, '', env);
+  assert.equal(run(p.a, ['delegate', 'W-3', '--to', 'worker', '--by', ME]).status, 0);
+  assert.equal(run(p.a, ['save']).status, 0);
+  assert.equal(run(p.b, ['pull']).status, 0);
+  assert.equal(run(p.b, ['log', 'W-5', 'unrelated change']).status, 0);
+  assert.equal(run(p.b, ['save']).status, 0);
+  const result = run(p.a, ['claim', 'W-3', '--as', 'pi-developer', '--json']);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.equal(out(result).status, 'claimed');
+  assert.equal(out(result).claim.agent, 'pi-worker@home-wsl');
 });
 
 test('P5.41 a2: delegate --to takes role, profile, executor and orchestrator; claim matches by the rules; the Log writes both names', () => {

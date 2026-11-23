@@ -285,7 +285,8 @@ function inbox({ args, flags, api, env, out }) {
   if (args.length !== 1) throw new Error('usage: roadctl inbox --board DIR [--json]');
   const board = boardOf(flags, api);
   const items = ownerItems(board, api.nowMs(env));
-  if (flags.json) out(JSON.stringify({ version: 1, items }, null, 2));
+  // P5.44 a1 round 2: version 2, because the v1 item types are a closed set: a v1 client refuses this envelope by its version instead of failing on one broken card
+  if (flags.json) out(JSON.stringify({ version: 2, items }, null, 2));
   else if (!items.length) out('inbox: empty');
   else for (const i of items) out(`${i.type} ${i.target}: ${i.confirmation}`);
   return 0;
@@ -295,7 +296,16 @@ export function ownerItems(board, time) {
   for (const item of [...board.cards, ...(board.routines ?? [])]) {
     const raw = rawItem(item);
     const deferred = (type) => { const m = /^(review|approval|escalation|proposed|milestone) (\S+)$/.exec(item.header.inbox_defer ?? ''); return Boolean(m && m[1] === type && Date.parse(m[2]) > time); };
-    for (const q of questionsFromItem(raw)) {
+    let rows = [];
+    try { rows = questionsFromItem(raw); }
+    catch (e) {
+      // P5.44 a1: one unreadable Questions section refuses its own item and names the reason; the other items are still listed
+      const reason = asLine(e.message).slice(0, 200);
+      // P5.44 a1 round 2: the item keeps every field the contract requires (target, hash, confirmation), so a v2 client validates it as it validates the others
+      items.push({ type: 'refused', target: item.header.id, hash: sha(raw), reason, confirmation: `${item.header.id} "${asLine(item.header.title ?? '')}": the Questions section cannot be read, so nothing is shown for this item: ${reason}` });
+      continue;
+    }
+    for (const q of rows) {
       if (!['waiting', 'decided'].includes(q.state) || (q.defer_until && Date.parse(q.defer_until) > time)) continue;
       const content = JSON.stringify(q);
       const undoable = undoWouldPass(board, item, q, time, !board.cards.includes(item));
@@ -374,6 +384,8 @@ export default {
     },
     /** A card whose Questions section cannot be read is refused by tick (no RESUME); lint names it here. */
     'board-lint'({ board, api }) {
+      // P5.44 a1: the format belongs to 0.13.0, so a board below it is not checked for it (nothing writes or reads it there)
+      if ((api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) return {};
       const findings = [];
       for (const card of board.cards) {
         try { questionsFromItem(rawItem(card)); } catch (e) { findings.push({ level: 'error', file: `cards/${card.name}`, text: `the Questions section cannot be read, so tick offers nothing for this card: ${api.sanitize(e.message, 200)}` }); }

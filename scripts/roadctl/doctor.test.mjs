@@ -307,7 +307,7 @@ test('a5: the state directory: not writable is a warning that names the lost loc
   try {
     const d = r.json(['doctor']).by('state-dir');
     assert.equal(d.status, 'warn');
-    assert.match(d.detail, /not writable: tick would run WITHOUT its lock/);
+    assert.match(d.detail, /not writable: tick cannot acquire its lock/);
   } finally {
     fs.chmodSync(dir, 0o755);
   }

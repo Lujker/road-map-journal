@@ -3,7 +3,7 @@
 // `runs` (the owner's view). Hooks (registry.mjs HOOK_NAMES): tick-before (crashed by time threshold, attempt of a RUN item), tick-ledger
 // (folded ticks.jsonl, rotation, skipped: busy), `tick` observer (skipped: limits, not-due), routine-done-before/after (the Log line with
 // run_id, duration and host; the end record), claim-after and report-after (a delegated task is a run).
-// Everything here degrades quietly: a state directory that cannot be used never stops routine done, claim, report or tick.
+// Ledger hooks degrade quietly for routine done, claim and report; tick separately requires its lock and pause state.
 import {
   badAttempts, beginRun, clearSkips, DEFAULT_TIMEOUT_MS, finishRun, hostName, isOverdue, ledgerPaths, locateRun, noteRun, nowMs, readRuns, readState,
   reconcileCrashed, recordSkip, recordTick, RUNS_ROTATE_BYTES, rotateIfLarge, runIdFor, runKey, cleanText, usable, isoAt,
