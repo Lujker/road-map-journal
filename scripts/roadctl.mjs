@@ -2252,7 +2252,23 @@ export function hookContext(event, payload, boardArg, host = 'claude') {
   return r;
 }
 
+/** P5.50 a2: one line per hook run. It is the only evidence `doctor` can have that configured hooks actually fire (a settings file only proves configuration). Bounded and never throws: a hook must not fail a session. */
+export function recordHookRun(event, host, env = process.env) {
+  try {
+    const name = String(event ?? '');
+    const recordedHost = name.startsWith('pre-commit') ? 'git' : host; // a git hook is not a harness session: it must not confirm a harness's hooks
+    const file = STATE?.hookLogPath ? STATE.hookLogPath(env) : path.join(xdgDir(env, 'XDG_STATE_HOME', ['.local', 'state']), 'road-map-journal', 'hooks.jsonl');
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), event: name.slice(0, 40), host: String(recordedHost ?? '').slice(0, 20) })}\n`, { mode: 0o600 });
+    if (fs.statSync(file).size > 64 * 1024) {
+      const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-40);
+      fs.writeFileSync(file, `${lines.join('\n')}\n`, { mode: 0o600 });
+    }
+  } catch { /* a hook never fails a session and never changes its answer */ }
+}
+
 export function runHook(event, payload, boardArg, io = { out: (s) => process.stdout.write(s), err: (s) => process.stderr.write(s) }, host = 'claude') {
+  recordHookRun(event, host);
   try {
     if (event === 'pre-commit') {
       const dir = findBoard(process.cwd(), boardArg);
@@ -4572,7 +4588,11 @@ async function mainRun(argv, io, audit) {
   if (wantsHelp) return out(helpFor(cmd)), 0;
   if (cmd === 'version') return out(VERSION), 0;
   try {
-    if (cmd === 'hook') return runHook(args[1], readStdinJson(), flags.board, io, flags.host === 'codex' ? 'codex' : 'claude');
+    if (cmd === 'hook') {
+      const event = String(args[1] ?? '');
+      const host = flags.host === 'codex' ? 'codex' : event.startsWith('hermes-') ? 'hermes' : 'claude';
+      return runHook(event, readStdinJson(), flags.board, io, host);
+    }
     if (flags.workspace) process.env.ROADCTL_WORKSPACE = flags.workspace;
     if (cmd === 'boards') return boardsCommand(flags, args, io);
     if (flags.project !== undefined && cmd !== 'where') {

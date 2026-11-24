@@ -4,6 +4,8 @@ Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. 
 
 ## Unreleased
 
+- Repository: P5.50 a1/a2, checking a connection. The skill's setup reference now tells a working session how to prove the connection end to end (the skill is loaded, the actual `roadctl` in `PATH`, the board, `ROADCTL_AS`, the state directory, hooks configured vs confirmed, and a test card from `claim` to `report`) and what `doctor` cannot prove. `roadctl doctor` names the actual `roadctl` in `PATH` with its launcher target, version and sha (`launcher`), the board for the working directory with its path (`board-current`), and reports each harness's hooks apart: configured only, or confirmed by a run recorded in `$XDG_STATE_HOME/road-map-journal/hooks.jsonl` by `roadctl hook`. No board format change, no JSON schema change, no VERSION change.
+
 - Repository: P5.44 matches owner-notification subjects in choice points, deduplicates HOLD by episode, and checks delivery of 40 maximum-length owner answer IDs. P5.46 rejects implementation delegations with analysis-only approval before claim.
 
 - Repository: audit fixes for board-only pushes, unavailable tick state, profile claim retries, reviewer criteria, launcher paths, inbox and daily digest partial refusals, and scheduler working directory. `inbox --json` now uses version 2; version 1 clients must reject it. Skill: clarify external board discovery, portable handoffs and escalation of review blockers.
