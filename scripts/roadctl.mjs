@@ -1591,6 +1591,7 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
     if (!basis.ok) reasons.push('the card has no approved record; the owner approves before work is delegated', ...basis.reasons);
   }
   if (CLOSED.has(st)) reasons.push(`the card is ${st}`);
+  if (st === 'ready' && readyMilestones(board) >= 2) reasons.push('two milestones await owner decision');
   if ('delegate' in c.header || 'claim' in c.header) reasons.push('a delegation is already active on this card (one at a time); accept or return it first');
   const tgt = WHO.resolveTo(to, registry); // P5.41: role, profile, executor or orchestrator
   if (tgt.kind === 'unknown') reasons.push(tgt.error + (tgt.hint ? `; ${tgt.hint}` : ''));
@@ -1624,6 +1625,7 @@ function claimable(board, c, as, reg) {
   if (info.errors.length) return { reasons: [`the delegation is malformed (${info.errors[0]}); run roadctl lint`] };
   const d = info.delegate;
   if (CLOSED.has(statusOf(board, c))) return { reasons: [`the card is ${statusOf(board, c)}`] };
+  if (statusOf(board, c) === 'ready' && d.state === 'open' && readyMilestones(board) >= 2) return { reasons: ['two milestones await owner decision'] };
   if (statusOf(board, c) === 'blocked' && /^owner question /.test(c.header.blocked ?? '')) return { reasons: ['waiting for an owner answer'] };
   if (d.state === 'reported') return { reasons: ['the delegation was already reported and awaits acceptance'] };
   if (d.state === 'claimed' && !info.claim) return { reasons: ['state is claimed but there is no claim; run roadctl lint'] };

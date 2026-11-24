@@ -501,3 +501,22 @@ test('P5.35: two ready board milestones block queue and mandate START only on th
   fs.unlinkSync(path.join(dir, 'two.md'));
   assert.ok(r.starts().some((i) => i.id === 'M-2'));
 });
+
+test('P5.35: new delegation and first claim stop at two milestones, ongoing work continues', () => {
+  const r = rig();
+  const approved = 'approved: Owner, 2026-11-01, scope=implementation, source=chat\n';
+  r.put('NEW', { extra: approved });
+  r.put('CLAIM', { extra: approved });
+  r.put('ACTIVE', { status: 'doing', extra: approved });
+  r.ok(['delegate', 'CLAIM', '--to', 'worker', '--by', ME]);
+  r.put('A', { status: 'done' }); r.put('B', { status: 'done' });
+  const dir = path.join(r.board, 'milestones'); fs.mkdirSync(dir);
+  for (const id of ['A', 'B']) fs.writeFileSync(path.join(dir, `${id}.md`), `---\nid: ${id}\ncards: ${id}\n---\n`);
+  for (const args of [['delegate', 'NEW', '--to', 'worker', '--by', ME], ['claim', 'CLAIM', '--as', 'worker']]) {
+    const result = r.run(args);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stdout + result.stderr, /two milestones await owner decision/);
+  }
+  r.ok(['delegate', 'ACTIVE', '--to', 'worker', '--by', ME]);
+  r.ok(['claim', 'ACTIVE', '--as', 'worker']);
+});
