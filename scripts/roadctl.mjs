@@ -631,25 +631,26 @@ export function autonomyRows(board, au = autonomyOf(board)) {
   return rows;
 }
 
-// Read milestones directly: inbox deferral must never change admission.
-function readyMilestones(board) {
+// ID is the filename without .md; header retains presentation metadata, including deferral.
+export function readyMilestones(board) {
   const dir = path.join(board.dir, 'milestones');
-  if (!fs.existsSync(dir)) return 0;
+  if (!fs.existsSync(dir)) return [];
   const cards = new Map(board.cards.map((c) => [c.header.id, c]));
-  return fs.readdirSync(dir).filter((f) => f.endsWith('.md')).filter((f) => {
+  return fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort().flatMap((f) => {
     const milestone = parseCard(path.join(dir, f));
     const ids = (milestone.header.cards ?? '').split(',').map((id) => id.trim()).filter(Boolean);
-    return !milestone.errors.length && ids.length > 0 && ids.every((id) => {
+    const ready = !milestone.errors.length && ids.length > 0 && ids.every((id) => {
       const card = cards.get(id);
       return card && (statusOf(board, card) === 'done' || card.header.accepted === 'rule');
     });
-  }).length;
+    return ready ? [{ id: f.slice(0, -3), header: milestone.header, cards: ids }] : [];
+  });
 }
 
 /** seam (P5.28): `start-admit`: a module may refuse a START for a queued card that passed every core check: [{ text, module }]. */
 function startRefusals(board, card, row) {
   const out = [];
-  if (readyMilestones(board) >= 2) out.push({ text: 'two milestones await owner decision', module: 'milestones' });
+  if (readyMilestones(board).length >= 2) out.push({ text: 'two milestones await owner decision', module: 'milestones' });
   for (const h of MODULE_REG.callHook('start-admit', { board, card, row, env: process.env, api: moduleApi() })) if (h.value?.admit === false) out.push({ text: sanitize(String(h.value.reason ?? `refused by module ${h.module}`), 100), module: h.module });
   return out;
 }
@@ -1591,7 +1592,7 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
     if (!basis.ok) reasons.push('the card has no approved record; the owner approves before work is delegated', ...basis.reasons);
   }
   if (CLOSED.has(st)) reasons.push(`the card is ${st}`);
-  if (st === 'ready' && readyMilestones(board) >= 2) reasons.push('two milestones await owner decision');
+  if (st === 'ready' && readyMilestones(board).length >= 2) reasons.push('two milestones await owner decision');
   if ('delegate' in c.header || 'claim' in c.header) reasons.push('a delegation is already active on this card (one at a time); accept or return it first');
   const tgt = WHO.resolveTo(to, registry); // P5.41: role, profile, executor or orchestrator
   if (tgt.kind === 'unknown') reasons.push(tgt.error + (tgt.hint ? `; ${tgt.hint}` : ''));
@@ -1625,7 +1626,7 @@ function claimable(board, c, as, reg) {
   if (info.errors.length) return { reasons: [`the delegation is malformed (${info.errors[0]}); run roadctl lint`] };
   const d = info.delegate;
   if (CLOSED.has(statusOf(board, c))) return { reasons: [`the card is ${statusOf(board, c)}`] };
-  if (statusOf(board, c) === 'ready' && d.state === 'open' && readyMilestones(board) >= 2) return { reasons: ['two milestones await owner decision'] };
+  if (statusOf(board, c) === 'ready' && d.state === 'open' && readyMilestones(board).length >= 2) return { reasons: ['two milestones await owner decision'] };
   if (statusOf(board, c) === 'blocked' && /^owner question /.test(c.header.blocked ?? '')) return { reasons: ['waiting for an owner answer'] };
   if (d.state === 'reported') return { reasons: ['the delegation was already reported and awaits acceptance'] };
   if (d.state === 'claimed' && !info.claim) return { reasons: ['state is claimed but there is no claim; run roadctl lint'] };
@@ -4347,7 +4348,7 @@ ROUTINE_SECTIONS.push(...MODULE_REG.routineSections);
 TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
-const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
+const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, readyMilestones, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
   boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits, resolveAs: (name, reg) => WHO.resolveAs(name, reg) }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {

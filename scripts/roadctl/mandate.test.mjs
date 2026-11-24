@@ -490,8 +490,12 @@ test('P5.35: two ready board milestones block queue and mandate START only on th
   r.put('B', { status: 'done' });
   const milestone = (id, cards) => fs.writeFileSync(path.join(dir, `${id}.md`), `---\nid: ${id}\ncards: ${cards}\ninbox_defer: milestone 2099-01-01\ndate: 2099-01-01\n---\n`);
   milestone('one', 'A');
+  assert.deepEqual(rc.readyMilestones(rc.loadBoard(r.board)).map(({ id, cards }) => ({ id, cards })), [{ id: 'one', cards: ['A'] }]);
   assert.equal(r.starts()[0].id, 'Q-1');
   milestone('two', 'B');
+  const ready = rc.readyMilestones(rc.loadBoard(r.board));
+  assert.deepEqual(ready.map(({ id, cards }) => ({ id, cards })), [{ id: 'one', cards: ['A'] }, { id: 'two', cards: ['B'] }]);
+  assert.equal(ready[0].header.inbox_defer, 'milestone 2099-01-01');
   assert.deepEqual(r.starts(), []);
   assert.equal(other.starts()[0].id, 'Q-1');
   r.setConfig({ autonomy: { enabled: false } });
