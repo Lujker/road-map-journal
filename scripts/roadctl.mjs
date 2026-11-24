@@ -631,9 +631,25 @@ export function autonomyRows(board, au = autonomyOf(board)) {
   return rows;
 }
 
+// Read milestones directly: inbox deferral must never change admission.
+function readyMilestones(board) {
+  const dir = path.join(board.dir, 'milestones');
+  if (!fs.existsSync(dir)) return 0;
+  const cards = new Map(board.cards.map((c) => [c.header.id, c]));
+  return fs.readdirSync(dir).filter((f) => f.endsWith('.md')).filter((f) => {
+    const milestone = parseCard(path.join(dir, f));
+    const ids = (milestone.header.cards ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+    return !milestone.errors.length && ids.length > 0 && ids.every((id) => {
+      const card = cards.get(id);
+      return card && (statusOf(board, card) === 'done' || card.header.accepted === 'rule');
+    });
+  }).length;
+}
+
 /** seam (P5.28): `start-admit`: a module may refuse a START for a queued card that passed every core check: [{ text, module }]. */
 function startRefusals(board, card, row) {
   const out = [];
+  if (readyMilestones(board) >= 2) out.push({ text: 'two milestones await owner decision', module: 'milestones' });
   for (const h of MODULE_REG.callHook('start-admit', { board, card, row, env: process.env, api: moduleApi() })) if (h.value?.admit === false) out.push({ text: sanitize(String(h.value.reason ?? `refused by module ${h.module}`), 100), module: h.module });
   return out;
 }
@@ -671,7 +687,7 @@ function mandateStart(board) {
   for (const c of board.cards) {
     if (!c.header.id || statusOf(board, c) !== 'ready') continue;
     const b = approvalBasis(board, c, 'start');
-    if (b.ok) found.push({ id: c.header.id, title: c.header.title, rank: b.rank });
+    if (b.ok && !startRefusals(board, c, { id: c.header.id, status: 'ready' }).length) found.push({ id: c.header.id, title: c.header.title, rank: b.rank });
   }
   return found.sort((a, b) => a.rank - b.rank || naturalCompare(a.id, b.id))[0] ?? null;
 }

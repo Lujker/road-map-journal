@@ -476,3 +476,28 @@ test('P5.33 seams: approval-basis and board-lint are known hooks, documented for
   assert.equal(names.group, 'Owner only');
   assert.ok(rc.ALL_COMMANDS.mandate.hidden, 'the overview is at its cap');
 });
+
+test('P5.35: two ready board milestones block queue and mandate START only on their board', FAKES_SKIP, () => {
+  const r = rig();
+  const other = rig();
+  for (const x of [r, other]) {
+    x.write(); x.approve();
+    x.put('Q-1', { kind: 'fix', size: 'S', extra: 'approved: Owner, 2026-11-01, scope=implementation+auto, source=chat\n' });
+    x.setConfig({ autonomy: { enabled: true, agents: [], queue: ['Q-1'] } });
+  }
+  const dir = path.join(r.board, 'milestones'); fs.mkdirSync(dir);
+  r.put('A', { status: 'review', extra: 'accepted: rule\n' });
+  r.put('B', { status: 'done' });
+  const milestone = (id, cards) => fs.writeFileSync(path.join(dir, `${id}.md`), `---\nid: ${id}\ncards: ${cards}\ninbox_defer: milestone 2099-01-01\ndate: 2099-01-01\n---\n`);
+  milestone('one', 'A');
+  assert.equal(r.starts()[0].id, 'Q-1');
+  milestone('two', 'B');
+  assert.deepEqual(r.starts(), []);
+  assert.equal(other.starts()[0].id, 'Q-1');
+  r.setConfig({ autonomy: { enabled: false } });
+  other.setConfig({ autonomy: { enabled: false } });
+  assert.deepEqual(r.starts(), []);
+  assert.ok(other.starts().some((i) => i.id === 'M-2'));
+  fs.unlinkSync(path.join(dir, 'two.md'));
+  assert.ok(r.starts().some((i) => i.id === 'M-2'));
+});
