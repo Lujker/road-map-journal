@@ -3812,6 +3812,25 @@ test('P5.41 a1: --as and ROADCTL_AS accept an executor, a profile and orchestrat
   assert.equal(dcli(r8, ['claim', 'W-3', '--as', CODEX]).status, 0);
 });
 
+test('registered profile can delegate a ready card and accept its report under its own name', () => {
+  const root = project();
+  const env = { ROADCTL_REGISTRY: PROFILE_REG() };
+  const run = (args) => dcli(root, args, env);
+  edit(root, 'W-5', (t) => t.replace('depends_on: W-2', `depends_on: W-2\n${APPROVED}`));
+  const id = 'W-5';
+  const delegator = 'claude-developer';
+  assert.equal(run(['delegate', id, '--to', 'codex-developer', '--by', delegator]).status, 0);
+  const claim = run(['claim', id, '--as', 'codex-developer']);
+  assert.equal(claim.status, 0, claim.stderr + claim.stdout);
+  assert.match(cardText(root, id), /^status: doing$/m);
+  edit(root, id, (t) => t.replace('## Log', '## Evidence\n\n## Log'));
+  evidenceOf(root, id, ['a1', 'a2']);
+  const report = run(['report', id, '--as', 'codex-developer', 'checked']);
+  assert.equal(report.status, 0, report.stderr + report.stdout);
+  assert.match(run(['accept', id, '--as', ME]).stderr, /only claude-developer may accept/);
+  assert.equal(run(['accept', id, '--as', delegator]).status, 0);
+});
+
 test('claim by profile survives an unrelated upstream commit', () => {
   const p = pair();
   const env = { ROADCTL_REGISTRY: PROFILE_REG(), ROADCTL_NOW: T0 };

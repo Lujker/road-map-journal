@@ -516,7 +516,10 @@ export function acceptorCheck(d, agent, reg) {
   const executor = who.executor;
   if (isScriptAgent(executor, reg)) return { ok: false, reason: `${executor} is a script; a script can delegate but not accept` };
   if (d.accept === 'owner') return { ok: false, reason: 'accept=owner: the owner accepts by hand (roadctl done, after review); an agent cannot accept or return this delegation' };
-  if (d.accept === 'by') return executor === d.by ? { ok: true } : { ok: false, reason: `accept=by: only ${d.by} may accept or return` };
+  if (d.accept === 'by') {
+    const acceptor = WHO.profilesOf(reg).has(d.by) ? who.profile : executor;
+    return acceptor === d.by ? { ok: true } : { ok: false, reason: `accept=by: only ${d.by} may accept or return` };
+  }
   if (d.accept === 'reviewer') {
     if (!reg) return { ok: true };
     return reg.agents[executor]?.can_accept === true ? { ok: true } : { ok: false, reason: `accept=reviewer: ${executor} has no can_accept in the registry` };
@@ -1625,7 +1628,8 @@ function claimable(board, c, as, reg) {
   }
   const el = eligibility(d, as, reg);
   if (!el.ok) return { reasons: [el.reason] };
-  if (reg && !reg.agents[d.by]) return { reasons: [`the delegating agent ${d.by} is not in the registry (${reg.path}); add it or ask the owner`] };
+  const delegatorExecutor = WHO.profilesOf(reg).get(d.by)?.executor ?? d.by;
+  if (reg && !Object.hasOwn(reg.agents, delegatorExecutor)) return { reasons: [`the delegating agent ${d.by} is not in the registry (${reg.path}); add it or ask the owner`] };
   return { d, info, basis };
 }
 
