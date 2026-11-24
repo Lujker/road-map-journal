@@ -31,6 +31,10 @@ case "$code" in
   *) echo "tick: roadctl failed with exit code $code" >&2; exit "$code" ;;
 esac
 
+answer_flags=()
+answer_ids="$(printf '%s\n' "$prompt" | sed -n 's/^  owner answer IDs: //p')"
+[ -n "$answer_ids" ] && answer_flags=(--owner-answers "$answer_ids")
+
 read -r -a extra <<< "${CLAUDE_EXTRA_ARGS:-}"
-exec "$ROADCTL" supervise --routine "$ROUTINE" --as "$AGENT" --timeout "${TIMEOUT:-30m}" ${board[@]+"${board[@]}"} -- \
+exec "$ROADCTL" supervise --routine "$ROUTINE" --as "$AGENT" --timeout "${TIMEOUT:-30m}" ${board[@]+"${board[@]}"} "${answer_flags[@]}" -- \
   claude -p --model "${MODEL:-haiku}" --max-turns "${MAX_TURNS:-30}" ${extra[@]+"${extra[@]}"} "$prompt"

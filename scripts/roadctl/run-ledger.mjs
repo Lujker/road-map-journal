@@ -9,6 +9,7 @@ import {
   reconcileCrashed, recordSkip, recordTick, RUNS_ROTATE_BYTES, rotateIfLarge, runIdFor, runKey, cleanText, usable, isoAt,
 } from './run-store.mjs';
 import fs from 'node:fs';
+import { routineAnswerIds } from './owner-questions.mjs';
 import { collectFields, formatLogText, renderSummary } from './run-summary.mjs';
 
 const RUN_ID_RE = /^[A-Za-z0-9._:-]{1,64}$/;
@@ -85,12 +86,14 @@ function runBegin({ flags, args, out, env, api }) {
     }
     p = { kind: 'routine', project: projectOf(board), id, agent: as, model: r.header.model ?? null, anchor: r.header.last_run ?? null, deadlineMs: now + timeoutMs(r.header.timeout) };
   } else {
+    if (flags['owner-answers'] !== undefined) throw new Error('--owner-answers is only for routine runs');
     const card = board.cards.find((c) => c.header.id === id);
     if (!card) throw new Error(`no routine or card with id ${cleanText(id, 60)}`);
     const until = taskUntil(card);
     p = { kind: 'task', project: projectOf(board), id, agent: as, model: null, anchor: taskAnchor(card), deadlineMs: Number.isFinite(until) && until > now ? until : now + DEFAULT_TIMEOUT_MS };
   }
-  const res = beginRun(env, { ...p, runId: explicit, now, version: api.VERSION });
+  const ownerAnswerIds = routineAnswerIds(flags['owner-answers'], board, id, api);
+  const res = beginRun(env, { ...p, runId: explicit, now, version: api.VERSION, ownerAnswerIds });
   if (res.status === 'unavailable') {
     process.stderr.write(`roadctl run begin: warning: ${res.reason}; this run is not recorded (it can still go on)\n`);
     out(flags.json ? JSON.stringify({ status: 'unavailable', run_id: null }) : 'run not recorded (run ledger unavailable)');
@@ -208,7 +211,7 @@ export default {
       group: 'Record', effect: 'write', hidden: true, summary: 'begin a run or leave a checkpoint in the local run ledger',
       purpose: 'For paths without a supervisor. `begin` records the start of a run of a routine (or of a card) and prints its run id; a second `begin` of the same thing while the first is open answers "already begun" with exit code 5, so two schedulers on one machine do not both run it. `note` leaves a cheap local checkpoint on an open run; the last one stays in the record if the run is broken off. `done` ends a run of the duty orchestrator (which has no routine or card to write to) with a run summary: it is kept in the local ledger and printed in the plain form the owner reads, up to six lines; `--did` is required. The run id can come from ROADCTL_RUN_ID instead of the command line, and `routine done` finds its run by itself. Nothing goes to git; a state directory that cannot be written is a warning, not a failure.',
       usage: ['roadctl run begin <routine|card> --as AGENT [--run ID]', 'roadctl run note [RUN_ID] "what was done" [--as AGENT]', 'roadctl run done --as AGENT --result ok|escalated|failed --did "what was done" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]'],
-      flags: [['--as AGENT', 'the agent that runs it (for a routine: the routine\'s own agent)'], ['--result R', 'run done: ok, escalated or failed'], ['--did T', 'run done: what was done (1 to 3 times, 120 characters each; required)'], ['--decision T', 'run done: a decision taken (up to 3 times, 160)'], ['--problem P', 'run done: "transient|permanent|unknown: key: text" (up to 3 times; the key lets the owner see one problem once)'], ['--ask T', 'run done: what is needed from the owner (200)'], ['--not-checked T', 'run done: what was not checked (160)'], ['--run ID', 'use this run id instead of the derived one (ROADCTL_RUN_ID does the same)'], ['--json', 'machine-readable output of begin']],
+      flags: [['--as AGENT', 'the agent that runs it (for a routine: the routine\'s own agent)'], ['--result R', 'run done: ok, escalated or failed'], ['--did T', 'run done: what was done (1 to 3 times, 120 characters each; required)'], ['--decision T', 'run done: a decision taken (up to 3 times, 160)'], ['--problem P', 'run done: "transient|permanent|unknown: key: text" (up to 3 times; the key lets the owner see one problem once)'], ['--ask T', 'run done: what is needed from the owner (200)'], ['--not-checked T', 'run done: what was not checked (160)'], ['--owner-answers IDS', 'comma-separated IDs included in a routine launch prompt'], ['--run ID', 'use this run id instead of the derived one (ROADCTL_RUN_ID does the same)'], ['--json', 'machine-readable output of begin']],
       examples: ['roadctl run begin server-watch --as claude-code@home-wsl', 'roadctl run note "checked 7 of 9 servers"', 'roadctl run done --as claude-code@home-wsl --result ok --did "3 cards taken, 1 accepted" --ask "decide P5.4 scope"'],
       changes: 'Appends to runs.jsonl in the machine state directory (not to the board, not to git).',
       exits: '0 recorded (or not recorded because the ledger is unavailable, with a warning); 5 already begun; 1 refused (not the routine\'s agent, a run of another thing); 2 usage error',
@@ -288,6 +291,7 @@ export default {
       if (usable(env).ok) plan = attempt(() => locateRun(env, { ...key, runId: explicit, anchor })) ?? plan;
       else if (explicit) plan.run_id = explicit;
       if (plan.problem) return { refuse: plan.problem };
+      if (!explicit && plan.run?.owner_answer_ids.length) return { refuse: 'this run has owner answers; finish with its explicit --run ID' };
       for (const w of sum.warnings) process.stderr.write(`roadctl routine done: warning: ${w}\n`);
       if (!sum.structured && !plan.run && !explicit) return { plan, now, anchor, key }; // no begin, no id, no summary fields: the Log line stays as it always was (old boards and tests); the ledger still gets the run
       const duration_s = plan.run?.started ? Math.max(0, Math.round((now - Date.parse(plan.run.started)) / 1000)) : null;

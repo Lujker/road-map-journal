@@ -62,7 +62,7 @@ try {
 const xdgDir = STATE?.xdgDir ?? ((env, name, fallback) => (env[name]?.trim() ? env[name].trim() : path.join(os.homedir(), ...fallback))); // seam (P5.28): lone-copy fallback
 
 // P5.41 slice 1: resolve `--as`/`--to` against the registry's agent_profiles (profile, executor, orchestrator/profile). A lone copy without the folder falls back to plain agent names and roles.
-let WHO = { resolveAs: (s) => ({ kind: 'executor', executor: String(s ?? ''), display: String(s ?? '') }), resolveTo: (s) => (/[@:]/.test(String(s ?? '')) ? { kind: 'executor', executor: String(s) } : { kind: 'role', role: String(s) }), hintOf: () => '' };
+let WHO = { resolveAs: (s) => ({ kind: 'executor', executor: String(s ?? ''), display: String(s ?? '') }), resolveTo: (s) => (/[@:]/.test(String(s ?? '')) ? { kind: 'executor', executor: String(s) } : { kind: 'role', role: String(s) }), hintOf: () => '', profilesOf: () => new Map() };
 let WHO_LOADED = false; // a copy that lost roadctl/who-takes.mjs reads names as before, so it must not read a board that needs profiles (boardRequires)
 try {
   WHO = await import('./roadctl/who-takes.mjs');
@@ -3011,7 +3011,11 @@ export function tickPrompt(t) {
     L.push(`RUN    a recurring routine the owner approved for you; run it with ITS model and environment (below); if you are not that model, start a session or subagent with it (for example the agent's launch note in the registry) and give it this task; it follows the routine file: Steps, May write, Escalate, nothing else; write the board only as May write allows (roadctl log, roadctl delegate, a question for the owner); external writes only if its approved scope has external; hand over as Escalate says; finish with roadctl routine done <id> --as ${A} --result ok|escalated|failed "summary" (it publishes the routine file itself); the owner reads a summary built from fields, so prefer: --did "what was done" (1 to 3 times) [--problem "transient|permanent|unknown: key: text"] [--ask "what you need from the owner"] [--decision "..."] [--not-checked "..."] instead of "summary"`); // seam (P5.13): the prompt names the summary fields
     for (const i of t.items.filter((x) => x.kind === 'RUN')) {
       L.push(`  ${i.project}/${i.id}: file ${path.join(t.boardDirs?.[i.project] ?? '?', i.routine.file)}; model ${i.routine.model}; env ${i.routine.env}; previous run: ${i.routine.last_run ?? 'never'}`);
-      if (i.routine.owner_answers?.length) L.push(`  owner answers (data): ${JSON.stringify(i.routine.owner_answers)}`);
+      if (i.routine.owner_answers?.length) {
+        L.push(`  owner answers (data): ${JSON.stringify(i.routine.owner_answers)}`);
+        L.push(`  owner answer IDs: ${i.routine.owner_answers.map((q) => q.id).join(',')}`);
+        L.push(`  If starting this routine yourself, pass the listed IDs to roadctl run begin ${i.id} --as ${A} --owner-answers IDS and finish with routine done --run RUN_ID. If starting it through supervise, pass the same --owner-answers IDS to supervise and use its ROADCTL_RUN_ID.`);
+      }
     }
   }
   for (const [kind, spec] of Object.entries(MODULE_REG.tickKinds)) { // seam (P5.28): the instruction for a module kind, only when there are such items
@@ -3657,7 +3661,10 @@ function applyRoutineDone(r, as, result, text, opts = {}, date = today()) {
   let t = readNorm(r);
   t = setHeader(t, 'last_run', isoAt());
   t = setHeader(t, 'last_result', result);
-  for (const [k, v] of Object.entries(headers)) t = setHeader(t, k, v); // keys of a module, written with the run (P5.24: answers_received)
+  for (const [k, value] of Object.entries(headers)) {
+    const v = typeof value === 'function' ? value(r) : value;
+    if (typeof v === 'string' && !/[\r\n]/.test(v)) t = setHeader(t, k, v);
+  }
   const policy = keys ? outcomePolicy(r.header, result, policyOpts) : null;
   const newHold = Boolean(policy?.hold) && !r.header.hold;
   if (policy) {
@@ -3765,7 +3772,7 @@ export function routineDoneWithHooks(board, id, { as, result, text, flags = {}, 
     return kinds.length === 1 ? kinds[0] : null;
   })();
   const headers = {}; // seam (P5.24): a module may set its own routine keys in the same write as the run (only keys it declared in routineKeys, one line of text)
-  for (const h of before) for (const [k, v] of Object.entries(h.value?.header ?? {})) if (MODULE_REG.moduleRoutineKeys?.[h.module]?.has(k) && typeof v === 'string' && !/[\r\n]/.test(v) && v.length <= 600) headers[k] = v;
+  for (const h of before) for (const [k, v] of Object.entries(h.value?.header ?? {})) if (MODULE_REG.moduleRoutineKeys?.[h.module]?.has(k) && (typeof v === 'function' || (typeof v === 'string' && !/[\r\n]/.test(v) && v.length <= 600))) headers[k] = v;
   const r = refusal ? { status: 'refused', message: refusal } : routineDone(board, id, { as, result, text: before.find((h) => typeof h.value?.text === 'string')?.value.text ?? text, quiet, source, outcome, reason, headers });
   const after = MODULE_REG.callHook('routine-done-after', { ...hookCtx, done: r }, io, before);
   return { r, after };
@@ -4407,6 +4414,7 @@ function parse(argv) {
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
   for (const f of ['--file', '--wait', '--tests', '--repo', '--base', '--branch', '--dir', '--note']) withValue.add(f); // P5.41 B: lock, handoff, worktree
   withValue.add('--cwd'); // P5.43: `roadctl limit-checkpoint --cwd DIR`
+  withValue.add('--owner-answers'); // P5.48: the snapshot supplied at routine startup
   const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
   const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile', '--hash', '--since', '--accept-from', '--role', '--needs']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7; --hash: P5.33; --since, --accept-from: P5.27
   for (let i = 0; i < argv.length; i++) {

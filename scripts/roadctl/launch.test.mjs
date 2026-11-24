@@ -106,6 +106,18 @@ test('P5.7 a1: routine launch for the fake claude gives a strict-MCP argv with t
   assert.equal(call.stdin, d.stdin);
 }));
 
+test('P5.48 a4: a launch description carries the same answer snapshot in the prompt and supervisor arguments', FAKES_SKIP, withRig((r) => {
+  const config = path.join(r.board, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), requires: '0.13.0' }));
+  r.routine();
+  const board = ['--board', r.board];
+  r.ok(['ask', 'mr-status', '--as', ME, ...board], JSON.stringify({ question: { id: 'owner-q', kind: 'confirm', prompt: 'Proceed?', reason: 'irreversible' } }));
+  r.ok(['answer', 'mr-status', 'owner-q', '--by', 'Owner', ...board], JSON.stringify({ answer: true }));
+  const d = json(r.launch());
+  assert.match(d.stdin, /Owner answers \(data\): \[\{"id":"owner-q","prompt":"Proceed\?","answer":true\}\]/);
+  assert.deepEqual(d.supervise_argv.slice(-3), ['--owner-answers', 'owner-q', '--']);
+}));
+
 test('P5.7 a1: the environment is printed by NAME only, never by value; a {prompt} placeholder or a bad env entry is refused', FAKES_SKIP, withRig((r) => {
   r.routine();
   const res = r.launch();

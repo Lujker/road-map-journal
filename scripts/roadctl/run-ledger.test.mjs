@@ -568,7 +568,7 @@ test('integration: owner answer survives HOLD, resume and shifting skips until t
   const withInput = (args, data, over) => spawnSync(process.execPath, [SELF, ...args, '--board', r.board], {
     cwd: r.ws, encoding: 'utf8', input: JSON.stringify(data), env: { ...r.env, ...over },
   });
-  const question = { question: { id: 'owner-q', kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } };
+  const question = { question: { id, kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } };
   const asked = withInput(['ask', 'mr-status', '--as', ME], question, r.at(3));
   assert.equal(asked.status, 0, asked.stderr);
   const heldAndWaiting = JSON.parse(r.ok(['routine', 'list', '--json'], r.at(3)).stdout).find((x) => x.id === 'mr-status');
@@ -604,7 +604,7 @@ test('integration: an answer that arrives while a run is going and before its HO
   fail(1);
   // the third run STARTS first, the owner answers while it goes, the run then fails: HOLD, and last_run is later than the answer
   r.ok(['run', 'begin', 'mr-status', '--as', ME], r.at(2));
-  assert.equal(withInput(['ask', 'mr-status', '--as', ME], { question: { id: 'owner-q', kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } }, r.at(3)).status, 0);
+  assert.equal(withInput(['ask', 'mr-status', '--as', ME], { question: { id, kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } }, r.at(3)).status, 0);
   assert.equal(withInput(['answer', 'mr-status', 'owner-q', '--by', 'Owner'], { answer: 'Use plan B' }, r.at(4)).status, 0);
   fail(5);
   const text = fs.readFileSync(r.routineFile(), 'utf8');
@@ -636,8 +636,8 @@ function answerRig() {
   r.routine();
   const withInput = (args, data, over) => spawnSync(process.execPath, [SELF, ...args, '--board', r.board], { cwd: r.ws, encoding: 'utf8', input: JSON.stringify(data), env: { ...r.env, ...over } });
   const at = (iso) => clock(iso);
-  const ask = (iso) => assert.equal(withInput(['ask', 'mr-status', '--as', ME], { question: { id: 'owner-q', kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } }, at(iso)).status, 0);
-  const answer = (iso) => assert.equal(withInput(['answer', 'mr-status', 'owner-q', '--by', 'Owner'], { answer: 'Use plan B' }, at(iso)).status, 0);
+  const ask = (iso, id = 'owner-q') => assert.equal(withInput(['ask', 'mr-status', '--as', ME], { question: { id, kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } }, at(iso)).status, 0);
+  const answer = (iso, id = 'owner-q', text = 'Use plan B') => assert.equal(withInput(['answer', 'mr-status', id, '--by', 'Owner'], { answer: text }, at(iso)).status, 0);
   const prompt = (iso) => r.tick(['--routine', 'mr-status', '--prompt'], at(iso)).stdout;
   const header = () => fs.readFileSync(r.routineFile(), 'utf8');
   return { r, at, ask, answer, prompt, header };
@@ -653,10 +653,10 @@ test('P5.24 answer delivery: the second of the ledger and of last_run may differ
   assert.doesNotMatch(header(), /^answers_received:/m, 'nothing was received');
   assert.match(header(), /^last_run: 2026-11-10T10:02:01Z$/m);
   assert.match(prompt('2026-11-10T12:30:00.000Z'), /owner answers \(data\).*Use plan B/, 'the next RUN gets it');
-  // the run that began after the answer and ended with a result takes it: the mark is in the routine file, and the answer is gone
-  r.ok(['run', 'begin', 'mr-status', '--as', ME], at('2026-11-10T12:31:00.000Z'));
+  // the next run explicitly receives the answer
+  r.ok(['run', 'begin', 'mr-status', '--as', ME, '--run', 'r-answer', '--owner-answers', 'owner-q'], at('2026-11-10T12:31:00.000Z'));
   assert.match(prompt('2026-11-10T12:31:30.000Z'), /Use plan B/, 'offered until a run has ended with it');
-  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], at('2026-11-10T12:32:00.000Z'));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--run', 'r-answer', '--result', 'ok', 'done'], at('2026-11-10T12:32:00.000Z'));
   assert.match(header(), /^answers_received: owner-q$/m);
   assert.doesNotMatch(prompt('2026-11-10T15:00:00.000Z'), /Use plan B/);
 });
@@ -670,8 +670,8 @@ test('P5.24 answer delivery: a bare routine done (no begin), a failed run and a 
   assert.doesNotMatch(header(), /received/, 'the Log line is the old format');
   assert.match(prompt('2026-11-10T12:30:00.000Z'), /Use plan B/);
   // began after the answer but ended with failed: the answer stays
-  r.ok(['run', 'begin', 'mr-status', '--as', ME], at('2026-11-10T12:31:00.000Z'));
-  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'broke'], at('2026-11-10T12:32:00.000Z'));
+  r.ok(['run', 'begin', 'mr-status', '--as', ME, '--run', 'r-answer', '--owner-answers', 'owner-q'], at('2026-11-10T12:31:00.000Z'));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--run', 'r-answer', '--result', 'failed', 'broke'], at('2026-11-10T12:32:00.000Z'));
   assert.doesNotMatch(header(), /^answers_received:/m);
   assert.match(prompt('2026-11-10T14:40:00.000Z'), /Use plan B/);
   // the supervisor's record of a run that ended without a result (hook level) marks nothing either
@@ -681,7 +681,35 @@ test('P5.24 answer delivery: a bare routine done (no begin), a failed run and a 
   assert.deepEqual(mod(ctx({ source: 'supervisor' })), {});
   assert.deepEqual(mod(ctx({ result: 'failed' })), {});
   // an ok run that began after the answer takes it
-  r.ok(['run', 'begin', 'mr-status', '--as', ME], at('2026-11-10T14:41:00.000Z'));
-  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'escalated', 'asked'], at('2026-11-10T14:42:00.000Z'));
+  r.ok(['run', 'begin', 'mr-status', '--as', ME, '--run', 'r-retry', '--owner-answers', 'owner-q'], at('2026-11-10T14:41:00.000Z'));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--run', 'r-retry', '--result', 'escalated', 'asked'], at('2026-11-10T14:42:00.000Z'));
   assert.match(header(), /^answers_received: owner-q$/m);
+});
+
+test('P5.48 a4: a late run keeps its answer snapshot across repeated ticks and another run', FAKES_SKIP, () => {
+  const { r, at, ask, answer, prompt, header } = answerRig();
+  ask('2026-11-10T09:00:00Z', 'other-q');
+  answer('2026-11-10T09:01:00Z', 'other-q', 'Use plan C');
+  ask('2026-11-10T09:02:00Z');
+  answer('2026-11-10T09:03:00Z');
+  assert.match(prompt('2026-11-10T09:04:00Z'), /owner answer IDs: other-q,owner-q/);
+
+  const begin = (runId, ids, iso) => r.ok(['run', 'begin', 'mr-status', '--as', ME, '--run', runId, '--owner-answers', ids], at(iso));
+  const done = (runId, iso) => r.ok(['routine', 'done', 'mr-status', '--as', ME, '--run', runId, '--result', 'ok', 'done'], at(iso));
+  begin('r-original', 'owner-q,future-q', '2026-11-10T09:05:00Z');
+  ask('2026-11-10T09:10:00Z', 'future-q');
+  answer('2026-11-10T09:11:00Z', 'future-q', 'Use plan D');
+  for (let minute = 12; minute < 22; minute++) {
+    assert.match(prompt(`2026-11-10T09:${minute}:00Z`), /owner answer IDs: other-q,owner-q,future-q/);
+  }
+
+  // The first run is now overdue. Beginning the second marks the first as crashed.
+  begin('r-other', 'other-q', '2026-11-10T12:00:00Z');
+  const unbound = r.run(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], at('2026-11-10T12:01:00Z'));
+  assert.match(unbound.stderr, /explicit --run ID/);
+  done('r-original', '2026-11-10T12:02:00Z');
+  assert.match(header(), /^answers_received: owner-q$/m);
+  done('r-other', '2026-11-10T12:03:00Z');
+  assert.match(header(), /^answers_received: owner-q,other-q$/m);
+  assert.match(prompt('2026-11-10T15:00:00Z'), /owner answer IDs: future-q$/m);
 });

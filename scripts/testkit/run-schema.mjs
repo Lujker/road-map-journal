@@ -37,6 +37,7 @@ const CHECKS = {
   note: strOrNull,
   count: (v) => Number.isInteger(v) && v >= 1,
   deadline: isoOrNull,
+  owner_answer_ids: strList,
 };
 
 export function runRecordProblems(r) {

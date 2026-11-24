@@ -3419,7 +3419,7 @@ test('P5.4 a5: the old parser (0.11.0) reads what 0.12.0 writes: last_result sta
   assert.doesNotMatch(t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' }).stdout, /^RUN /m, 'the new copy holds it');
 });
 
-test('P5.24 answer delivery, two clones: the answer is offered on both until a run on the other clone, that began after it and ended ok, marks it in git; then both stop offering it', LSKIP, () => {
+test('P5.24 answer delivery, two clones: the answer is offered on both until a run on the other clone, that took its ID at begin and ended ok, marks it in git; then both stop offering it', LSKIP, () => {
   const p = pair();
   // each clone is its own machine: its own state directory (run ledger), limits cache and PATH with the fake claude (known limits, 10% used), so the test
   // never depends on an installed claude or on the limits cache of the machine it runs on (on CI: no claude, limits unknown, the gate would stay shut)
@@ -3442,9 +3442,9 @@ test('P5.24 answer delivery, two clones: the answer is offered on both until a r
   assert.equal(out(run(p.b, ['pull', '--json'], '2026-11-10T10:02:00Z')).status, 'pulled');
   assert.match(prompt(p.a, '2026-11-10T12:30:00Z'), /Use plan B/, 'offered on the clone where it was given');
   assert.match(prompt(p.b, '2026-11-10T12:30:00Z'), /Use plan B/, 'and on the other clone');
-  // the run on clone b: begin after the answer, a result of its own, published by routine done
-  ok(p.b, ['run', 'begin', 'mr-status', '--as', ME], '2026-11-10T12:31:00Z');
-  ok(p.b, ['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'handled it'], '2026-11-10T12:32:00Z');
+  // the run on clone b: take the ID at begin, a result of its own, published by routine done
+  ok(p.b, ['run', 'begin', 'mr-status', '--as', ME, '--run', 'r-b', '--owner-answers', 'owner-q'], '2026-11-10T12:31:00Z');
+  ok(p.b, ['routine', 'done', 'mr-status', '--as', ME, '--run', 'r-b', '--result', 'ok', 'handled it'], '2026-11-10T12:32:00Z');
   assert.match(g(p.server, 'show', 'main:projects/my-app/board/routines/mr-status.md'), /^answers_received: owner-q$/m, 'the mark is on the server');
   assert.doesNotMatch(prompt(p.b, '2026-11-10T14:40:00Z'), /Use plan B/);
   assert.match(prompt(p.a, '2026-11-10T14:40:00Z'), /Use plan B/, 'clone a has not pulled yet: it still offers it (repeating is allowed)');

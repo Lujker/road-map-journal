@@ -479,6 +479,13 @@ test('P5.2 a15: a routine switched off (or a board that requires a newer roadctl
 
 test('P5.2 a11: the scheduler example runs the model under supervise: no routine done is recorded as failed and the next tick is idle; a reporting model is ok', NEEDS, withRig(async (r) => {
   r.routine();
+  const config = path.join(r.board, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), requires: '0.13.0' }));
+  const input = (args, value) => spawnSync(process.execPath, [SELF, ...args, '--board', r.board], { cwd: r.ws, encoding: 'utf8', env: r.env, input: JSON.stringify(value) });
+  const ask = input(['ask', 'mr-status', '--as', ME], { question: { id: 'owner-q', kind: 'text', prompt: 'Which path?', reason: 'irreversible' } });
+  assert.equal(ask.status, 0, ask.stderr);
+  const answer = input(['answer', 'mr-status', 'owner-q', '--by', 'Owner'], { answer: 'Plan B' });
+  assert.equal(answer.status, 0, answer.stderr);
   const job = (over = {}) => spawnSync('bash', [EXAMPLE], { cwd: r.ws, encoding: 'utf8', input: '', env: { ...r.env, AGENT: ME, ROUTINE: 'mr-status', PROJECT: 'my-app', WORKDIR: r.dir, ROADCTL: path.join(r.bin, 'roadctl'), ...over } });
   const work = () => r.calls('claude').filter((c) => !c.event && !isProbe(c));
   const a = job();
@@ -486,6 +493,9 @@ test('P5.2 a11: the scheduler example runs the model under supervise: no routine
   assert.equal(work().length, 1, 'the model started once');
   assert.deepEqual(work()[0].argv.slice(0, 5), ['-p', '--model', 'haiku', '--max-turns', '30']);
   assert.match(work()[0].argv.at(-1), /^You are claude-code@home-wsl, the scheduled orchestrator/);
+  assert.match(work()[0].argv.at(-1), /owner answers \(data\).*Plan B/);
+  assert.deepEqual(r.runs().find((x) => x.id === 'mr-status' && x.outcome === 'failed').owner_answer_ids, ['owner-q']);
+  assert.doesNotMatch(r.routineText(), /^answers_received:/m);
   assert.match(a.stderr, /failed: no result/);
   assert.match(r.routineText(), /^last_result: failed$/m);
   assert.match(r.routineText(), /src=supervisor\]/);
@@ -497,6 +507,7 @@ test('P5.2 a11: the scheduler example runs the model under supervise: no routine
   const c = job({ ROADCTL_NOW: shift(180), FAKE_AFTER: finish });
   assert.equal(c.status, 0, c.stderr + c.stdout);
   assert.equal(work().length, 2);
+  assert.match(r.routineText(), /^answers_received: owner-q$/m);
   assert.match(r.routineText(), /^last_result: ok$/m);
   assert.equal(r.runs().filter((x) => x.id === 'mr-status' && x.outcome === 'ok').length, 1);
 }));

@@ -4,7 +4,7 @@ import path from 'node:path';
 const pathFor = (dir, file) => path.join(dir, file);
 import { makeQuestion, answerQuestion, undoQuestion, addQuestion, putQuestions, questionsFromItem } from './owner-questions-data.mjs';
 import { admission, readMandate, TELL_OWNER_FLOOR } from './mandate.mjs';
-import { locateRun } from './run-store.mjs';
+import { locateRun, MAX_RUN_ANSWERS } from './run-store.mjs';
 
 const REQUIRES = '0.13.0';
 const DAY_MS = 864e5;
@@ -14,15 +14,26 @@ const asLine = (s) => String(s).replace(/[\r\n|]/g, ' ').replace(/[`<>\[\]]/g, '
 const when = (env, api) => new Date(api.nowMs(env)).toISOString();
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-/**
- * Delivery of owner answers to a routine is an explicit mark in git, not a comparison of times. The routine header `answers_received` lists the ids of the answers that a
- * FINISHED run received (written by `routine done` in the same commit as the run, so every clone sees it after a pull). An answered question whose id is not listed is
- * offered in the prompt of every RUN again: repeating is allowed, losing is not. `routine done` marks an answer only when the run is known to have started after it
- * (the begin of the run in the local run ledger: `run begin` or `supervise`, the same machine that is running) and ended with a result of its own (ok or escalated, not
- * failed, not the supervisor's record of a run without a result, a timeout or a crash). A bare `routine done` with no begin cannot tell what the run saw: it marks nothing.
- */
+// Pending answers are offered again until a run with an explicit snapshot records its own result.
 export const receivedIds = (header) => new Set(String(header?.answers_received ?? '').split(',').map((x) => x.trim()).filter(Boolean));
-export const MAX_RECEIVED = 40;
+
+export function pendingRoutineAnswers(board, id, api) {
+  if ((api.compareVersions(board.config?.requires, REQUIRES) ?? -1) < 0) return [];
+  const routine = board.routines.find((r) => r.header.id === id);
+  if (!routine) return [];
+  const got = receivedIds(routine.header);
+  return questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && !got.has(q.id));
+}
+
+export function routineAnswerIds(value, board, id, api) {
+  if (value === undefined) return [];
+  const ids = typeof value === 'string' ? value.split(',') : [];
+  if (!ids.length || ids.length > MAX_RUN_ANSWERS || ids.some((id) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(id))) {
+    throw new Error('--owner-answers needs a comma-separated list of up to 40 question IDs');
+  }
+  const pending = new Set(pendingRoutineAnswers(board, id, api).map((q) => q.id));
+  return [...new Set(ids)].filter((id) => pending.has(id));
+}
 
 function input() {
   const buffer = Buffer.alloc(16385);
@@ -400,24 +411,25 @@ export default {
         if (!routine) return {};
         const project = path.basename(board.project);
         const explicit = flags?.run ?? (/^[A-Za-z0-9._:-]{1,64}$/.test(env.ROADCTL_RUN_ID ?? '') ? env.ROADCTL_RUN_ID : undefined);
-        const run = locateRun(env, { kind: 'routine', project, id, runId: explicit, anchor: routine.header.last_run ?? null }).run;
-        const started = Date.parse(run?.started ?? '');
-        if (!Number.isFinite(started) || run?.outcome !== 'started') return {}; // no begin: nothing is known about what the run saw
-        const got = receivedIds(routine.header);
-        const fresh = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && !got.has(q.id) && Date.parse(q.answered) < started).map((q) => q.id);
-        if (!fresh.length) return {};
-        return { header: { answers_received: [...got, ...fresh].slice(-MAX_RECEIVED).join(',') } };
+        if (!explicit) return {};
+        const plan = locateRun(env, { kind: 'routine', project, id, runId: explicit });
+        const run = plan.run;
+        if (plan.problem || run?.agent !== as || !['started', 'crashed'].includes(run?.outcome) || !run.owner_answer_ids.length) return {};
+        const delivered = new Set(run.owner_answer_ids);
+        return { header: { answers_received: (current) => {
+          try {
+            const got = receivedIds(current.header);
+            const fresh = questionsFromItem(rawItem(current)).filter((q) => q.state === 'answered' && delivered.has(q.id) && !got.has(q.id));
+            if (fresh.length) return [...got, ...fresh.map((q) => q.id)].join(',');
+          } catch { /* leave unreadable question data and its delivery mark alone */ }
+        } } };
       } catch { return {}; }
     },
     'tick-before'({ agent, items, boardDirs, env, api }) {
       const run = {};
       for (const item of items.filter((x) => x.kind === 'RUN')) {
         const board = api.loadBoard(boardDirs[item.project]);
-        if ((api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) continue;
-        const routine = board.routines.find((r) => r.header.id === item.id);
-        if (!routine) continue;
-        const got = receivedIds(routine.header);
-        const answers = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && !got.has(q.id)).map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
+        const answers = pendingRoutineAnswers(board, item.id, api).slice(0, MAX_RUN_ANSWERS).map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
         if (answers.length) run[`${item.project}/${item.id}`] = { owner_answers: answers };
       }
       // P5.24 a11: a card whose decision the owner undid is a RESUME task for its current holder, not a plain TAKE —
