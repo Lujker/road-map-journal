@@ -494,6 +494,15 @@ test('P5.47 a3 + P5.50 a2: hooks — missing, configured but not yet confirmed, 
   assert.equal(r.json(['doctor']).all('hooks').find((c) => c.subject === 'codex').status, 'warn', 'codex (the fake) is in PATH but has no hooks.json');
 });
 
+test('P5.50 a2: a git pre-commit run is not a harness session and does not confirm its hooks', () => {
+  const r = rig({ git: false });
+  assert.equal(r.run(['hook-install', '--claude', '--user', '--apply']).status, 0);
+  assert.equal(r.run(['hook', 'pre-commit', '--board', r.board]).status, 0);
+  const claude = r.json(['doctor']).all('hooks').find((c) => c.subject === 'claude');
+  assert.equal(claude.status, 'warn');
+  assert.match(claude.detail, /no hook run has been recorded/);
+});
+
 test('P5.50 a2: launcher — doctor names the roadctl a non-interactive shell finds, its target and version; a missing target fails', () => {
   const r = rig({ git: false });
   r.install();

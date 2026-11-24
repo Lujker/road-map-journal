@@ -2193,9 +2193,11 @@ export function hookContext(event, payload, boardArg, host = 'claude') {
 /** P5.50 a2: one line per hook run. It is the only evidence `doctor` can have that configured hooks actually fire (a settings file only proves configuration). Bounded and never throws: a hook must not fail a session. */
 export function recordHookRun(event, host, env = process.env) {
   try {
+    const name = String(event ?? '');
+    const recordedHost = name.startsWith('pre-commit') ? 'git' : host; // a git hook is not a harness session: it must not confirm a harness's hooks
     const file = STATE?.hookLogPath ? STATE.hookLogPath(env) : path.join(xdgDir(env, 'XDG_STATE_HOME', ['.local', 'state']), 'road-map-journal', 'hooks.jsonl');
     fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-    fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), event: String(event ?? '').slice(0, 40), host: String(host ?? '').slice(0, 20) })}\n`, { mode: 0o600 });
+    fs.appendFileSync(file, `${JSON.stringify({ at: new Date().toISOString(), event: name.slice(0, 40), host: String(recordedHost ?? '').slice(0, 20) })}\n`, { mode: 0o600 });
     if (fs.statSync(file).size > 64 * 1024) {
       const lines = fs.readFileSync(file, 'utf8').split('\n').filter(Boolean).slice(-40);
       fs.writeFileSync(file, `${lines.join('\n')}\n`, { mode: 0o600 });
