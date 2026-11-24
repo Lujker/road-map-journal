@@ -583,6 +583,53 @@ export function checkLaunch(ctx, loaded) {
   return out;
 }
 
+/** The git work tree that holds `dir` (real path), or null. */
+function repoRootOf(ctx, dir) {
+  if (!dir || !fs.existsSync(dir)) return null;
+  const g = gitq(ctx, ['rev-parse', '--show-toplevel'], dir);
+  if (!g.ok || !g.out) return null;
+  try {
+    return fs.realpathSync(g.out);
+  } catch {
+    return g.out;
+  }
+}
+
+/**
+ * P5.29 a3: the service (P5.25) works in a clone of its own. Its configuration is the `service` object of the local conductor.json: `workspace` (the folder
+ * of the clone the service reads and commits in) and, optionally, `owner_clone` (the clone the owner works in). The owner's clone is `owner_clone`, else the
+ * default workspace of the owner: the pointer file and ~/projects/agent-workspace (not ROADCTL_WORKSPACE: a service started with its own clone sets that variable).
+ * Same repository: warn, because a pull, a commit and an owner's uncommitted edit would meet in one working tree.
+ */
+export function checkServiceClone(ctx) {
+  const c = readConductor(ctx.env, ctx.platform);
+  if (c.state !== 'ok') return res('service-clone', 'skip', 'no usable conductor.json: nothing says where the service works (see the launch-templates line)');
+  const svc = c.conductor.service;
+  if (svc === undefined) return res('service-clone', 'skip', 'conductor.json has no "service" section: no service clone is configured yet', 'when the service is set up, give it a clone of its own: "service": { "workspace": "/path/to/service-clone" }');
+  const shown = tilde(svc.workspace, ctx.home);
+  const root = repoRootOf(ctx, svc.workspace);
+  if (!root) return res('service-clone', 'warn', `service.workspace ${shown} is not a git clone (or does not exist): the service cannot pull or commit there`, 'clone the boards repository into that folder: git clone ORIGIN FOLDER');
+  const owners = [];
+  const add = (d) => {
+    const r = repoRootOf(ctx, d);
+    if (r && !owners.includes(r)) owners.push(r);
+  };
+  if (svc.owner_clone) {
+    add(svc.owner_clone);
+    if (!owners.length) return res('service-clone', 'warn', `service.owner_clone ${tilde(svc.owner_clone, ctx.home)} is not a git clone (or does not exist): doctor cannot tell whether ${shown} is a clone of its own`, 'fix owner_clone to the clone the owner works in, or remove it to use the default workspace of the owner');
+  } else {
+    try {
+      add(fs.readFileSync(path.join(ctx.home, '.local', 'share', 'road-map-journal', 'workspace'), 'utf8').trim().split(/\r?\n/)[0]);
+    } catch {
+      /* optional pointer file */
+    }
+    add(path.join(ctx.home, 'projects', 'agent-workspace'));
+    add(path.join(ctx.home, 'Projects', 'agent-workspace'));
+  }
+  if (owners.includes(root)) return res('service-clone', 'warn', `service.workspace ${shown} is the working clone of the owner (${tilde(root, ctx.home)}): the service and the owner would pull, commit and edit in one working tree`, 'give the service a clone of its own: git clone ORIGIN SERVICE_FOLDER, and point service.workspace at it; both clones share the remote and meet through pull and save');
+  return res('service-clone', 'ok', `the service works in ${shown}, a clone of its own (not the working clone of the owner)`);
+}
+
 export const CHECKS = [
   ['runtime', checkRuntime],
   ['installed-copy', checkInstalledCopy],
@@ -597,5 +644,6 @@ export const CHECKS = [
   ['hooks', checkHooks],
   ['skill', checkSkill],
   ['launch-templates', (ctx, loaded) => checkLaunch(ctx, loaded)],
+  ['service-clone', checkServiceClone],
   ['boards', (ctx, loaded) => checkBoards(ctx, loaded)],
 ];
