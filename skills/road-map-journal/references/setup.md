@@ -52,13 +52,39 @@ export ROADCTL_AS=<name>
 
 `roadctl claim`, `report` and the limit checkpoint use it (a profile or a pair is resolved to its executor); `tick` and `limits --check` need an executor name, so pass `--as <executor>` to them; `--as` on a command overrides it for that one call. Who may take what is in [Executors and the registry](executors.md). An unknown name is refused with a hint.
 
-## Check the machine
+## Check the connection from the session
 
-```sh
-roadctl doctor
-```
+A file on disk is not a connection: the agent must have loaded the skill, find the board and be able to report under its own name. Run this in the same session where the agent will work, before real work, and keep the result as evidence for a new agent or a new machine. Run `roadctl doctor` again on a new machine, after an update, and when "nothing runs": it is read-only and gives the fix command for every problem.
 
-Read-only. It reports the installed skill and roadctl, the hooks, whether `ROADCTL_AS` resolves, the boards and their `requires`, and gives the fix command for every problem. Run it on a new machine, after an update, and when "nothing runs".
+1. **The skill is loaded, not only installed.** Ask the agent to name the skill `road-map-journal` and quote its "Discover first" step before it reads any file. If it cannot, this session did not load it: install or update the skill and start a new session. The `skill` check of `doctor` sees the installed file only.
+2. **The command is the one you think.**
+   ```sh
+   command -v roadctl
+   roadctl --version
+   ```
+   `doctor` repeats this as `launcher`: the actual `roadctl` in `PATH`, the target of its launcher, and that copy's version and sha. A stale copy in `PATH` is the usual reason a claim reaches an old helper.
+3. **The profile and the state directory.**
+   ```sh
+   export ROADCTL_AS=<name>     # once per session
+   roadctl doctor
+   ```
+   Read `agent-name` (`ROADCTL_AS` resolves to an executor or a profile, not a guess), `state-dir` (the writable directory ticks, locks and the hook record use), `board-current`/`boards` (the actual board) and `hooks` (configured, and whether a run was confirmed).
+4. **The board is the one you mean.**
+   ```sh
+   roadctl where
+   ```
+   If it is not, work from the project folder or pass `--board DIR` / `--project NAME`; `doctor` shows the same actual path.
+5. **Hooks: configured is not confirmed.** A settings file proves only that the file was written. A hook is confirmed when `doctor` reports a recorded run with its event and time, after a real session start. If it says "configured, but no hook run has been recorded", start a new session of that harness in a project with a board, then run `doctor` again. Do not install or change hooks from this check; review and approve the host's own hook prompt once.
+6. **A test card, end to end.** Use a scratch board or a test card, never a live one:
+   ```sh
+   roadctl worktree add TEST-1
+   roadctl claim TEST-1 --workdir <worktree>
+   roadctl lock -- <test command>
+   roadctl report TEST-1 --commit <sha> "connection check: <result>"
+   ```
+   A second `claim` of the same card must be refused: that is the exclusivity check. A report the board accepts proves that the profile, the state directory and the board work together.
+
+**What doctor cannot prove.** It reads files and a local hook record; it starts no session. It cannot show that the running agent loaded the skill, that the host called a hook, or that a model saw the context. Items 1 and 5 cover those; the rest is a result on a test card. For an orchestrator (OpenMausBot, OpenBot, Hermes), run the same steps inside the session it starts, under the name it gives you in `ROADCTL_AS`; the board side does not change.
 
 ## Daily cycle
 

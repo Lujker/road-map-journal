@@ -18,6 +18,9 @@ import path from 'node:path';
 export const xdgDir = (env, name, fallback) => (env[name]?.trim() ? env[name].trim() : path.join(os.homedir(), ...fallback));
 export const stateDir = (env = process.env) => path.join(xdgDir(env, 'XDG_STATE_HOME', ['.local', 'state']), 'road-map-journal');
 
+/** P5.50: the record that a host ran a roadctl hook (event, host, time). `doctor` reads it to tell "configured" from "confirmed fired". */
+export const hookLogPath = (env = process.env) => path.join(stateDir(env), 'hooks.jsonl');
+
 /** Lifetimes of the existing locks (ms), kept as they were when the three self-made locks were replaced by `acquireLock`. */
 export const LOCK_STALE_MS = { tick: 10 * 60 * 1000, ledger: 30 * 1000, digest: 60 * 1000 };
 const GUARD_STALE_MS = 5000; // the takeover guard is held for microseconds; one older than this belongs to a process that died inside it
