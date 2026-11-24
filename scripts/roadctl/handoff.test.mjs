@@ -41,13 +41,13 @@ Second paragraph with more detail.
 ## Log
 `;
 
-function rig({ registry = true } = {}) {
+function rig({ registry = true, reg: regObject = null } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-handoff-'));
   const board = path.join(root, 'board');
   fs.cpSync(EXAMPLE, board, { recursive: true });
   fs.writeFileSync(path.join(board, 'cards', 'H-1-export.md'), CARD);
   const reg = path.join(root, 'registry.json');
-  if (registry) fs.writeFileSync(reg, JSON.stringify({ version: 1, roles: { worker: {}, reviewer: {} }, agents: { 'known-agent': { host: 'x', roles: ['worker', 'reviewer'], model: 'big-model' } } }));
+  if (registry) fs.writeFileSync(reg, JSON.stringify(regObject ?? { version: 1, roles: { worker: {}, reviewer: {} }, agents: { 'known-agent': { host: 'x', roles: ['worker', 'reviewer'], model: 'big-model' } } }));
   const run = (args) => spawnSync(process.execPath, [SELF, 'handoff', ...args, '--board', board], { cwd: root, encoding: 'utf8', env: { ...process.env, HOME: root, ROADCTL_REGISTRY: registry ? reg : path.join(root, 'none.json'), ROADCTL_DATE: '2026-11-20' } });
   const snapshot = () => fs.readdirSync(board, { recursive: true }).sort().map((f) => { const p = path.join(board, String(f)); return fs.statSync(p).isFile() ? `${f}:${fs.readFileSync(p, 'utf8').length}` : String(f); }).join('\n');
   return { root, board, run, snapshot, cleanup: () => fs.rmSync(root, { recursive: true, force: true }) };
@@ -143,5 +143,27 @@ test('P5.41 a5: the text names no product and no harness; usage errors and unkno
     assert.equal(u.status, 2);
     assert.match(u.stderr, /no card NOPE-1/);
     assert.match(r.run(['H-1']).stderr, /usage: roadctl handoff ID --to WHO/);
+  } finally { r.cleanup(); }
+});
+
+test('P5.46 a5: handoff --to a profile shows that profile\'s registry row (its executor and roles), and the executor\'s own name keeps its row', () => {
+  const r = rig({ reg: { version: 1, roles: { worker: {}, reviewer: {} }, agents: { 'pi-worker@home-wsl': { host: 'pi', roles: ['worker', 'reviewer'], model: 'flash' } }, agent_profiles: { 'pi-developer': { executor: 'pi-worker@home-wsl', openbot: { name: 'pi-developer-full' } } } } });
+  try {
+    const h = r.run(['H-1', '--to', 'pi-developer']);
+    assert.equal(h.status, 0, h.stderr);
+    assert.match(h.stdout, /^For: pi-developer \| role: worker \| registry: profile pi-developer -> pi-worker@home-wsl; roles worker, reviewer, model flash, openbot pi-developer-full$/m);
+    // the pair form names the same profile row
+    const p = r.run(['H-1', '--to', 'openbot@home-wsl/pi-developer']);
+    assert.equal(p.status, 0, p.stderr);
+    assert.match(p.stdout, /^For: openbot@home-wsl\/pi-developer \| role: worker \| registry: profile pi-developer -> pi-worker@home-wsl; roles worker, reviewer, model flash/m);
+    // the executor by its own name: its own row, and no profile line
+    const e = r.run(['H-1', '--to', 'pi-worker@home-wsl']);
+    assert.equal(e.status, 0, e.stderr);
+    assert.match(e.stdout, /^For: pi-worker@home-wsl \| role: worker \| registry: roles worker, reviewer, model flash$/m);
+    assert.doesNotMatch(e.stdout, /registry: profile/, 'the executor row is not a profile line');
+    // an unknown name in the pair form: no registry line rather than a wrong one
+    const x = r.run(['H-1', '--to', 'nonsense']);
+    assert.equal(x.status, 0, x.stderr);
+    assert.match(x.stdout, /^For: nonsense \| role: worker$/m);
   } finally { r.cleanup(); }
 });

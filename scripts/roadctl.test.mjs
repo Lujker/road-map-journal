@@ -3551,6 +3551,26 @@ test('P5.4 a9: the transition to HOLD is one immediate problem in digest, not re
   assert.doesNotMatch(t.bcli(['digest']).stdout, /held:/, 'and only once');
 });
 
+test('P5.44 a3: one HOLD is one episode in digest: approving the held routine again does not tell the same hold a second time', LSKIP, () => {
+  const t = tenv();
+  raiseOutcome(t.c.board);
+  routineOn(t);
+  const hold = () => rc.loadBoard(t.c.board).routines.find((x) => x.header.id === 'mr-status').header;
+  for (let i = 0; i < 3; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'x']).status, 0);
+  const id = hold().hold_id;
+  const approval = hold().approval_id;
+  const d1 = t.bcli(['digest']);
+  assert.equal(d1.status, 0, d1.stderr);
+  assert.equal((d1.stdout.match(/held: after 3 failed runs in a row/g) ?? []).length, 1, `one immediate hold problem: ${d1.stdout}`);
+  // the owner approves the held routine once more: a new approval episode, the same hold; nothing about the hold is news
+  assert.equal(t.bcli(['routine', 'on', 'mr-status', '--by', 'Lujker', '--source', 'chat 2026-11-13']).status, 0);
+  assert.notEqual(hold().approval_id, approval, 'a new approval_id');
+  assert.equal(hold().hold_id, id, 'the hold episode did not change');
+  const d2 = t.bcli(['digest']);
+  assert.equal(d2.status, 0, d2.stderr);
+  assert.doesNotMatch(d2.stdout, /held:/, `the same hold is not told again: ${d2.stdout}`);
+});
+
 // ---------------------------------------------------------------- P4.11: one routine per scheduler job, a time window for routines, the working directory of a claim
 
 const gq = (dir, ...a) => execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...a], { cwd: dir, encoding: 'utf8' });
@@ -3846,6 +3866,49 @@ test('claim by profile survives an unrelated upstream commit', () => {
   assert.equal(out(result).claim.agent, 'pi-worker@home-wsl');
 });
 
+const A2_PROFILE_REG = () => writeRegistry({ // P5.46 a2: a profile on the api provider (a deterministic limits answer, no probe)
+  ...TICK_REGISTRY,
+  agent_profiles: { 'pi-developer': { executor: HERMES, openbot: { name: 'pi-developer' }, openbot_variants: [{ name: 'pi-developer-small' }] } },
+});
+
+test('P5.46 a2: tick, limits --check and routine done take a profile, a variant and orchestrator/profile from --as', LSKIP, () => {
+  const reg = A2_PROFILE_REG();
+  const t = tenv();
+  const env = { ROADCTL_REGISTRY: reg };
+  // limits --check: the profile names the executor and its provider
+  const lim = cli(t.c.ws, ['limits', '--check', 'pi-developer'], '', { ...t.env, ...env });
+  assert.equal(lim.status, 0, lim.stderr);
+  assert.match(lim.stdout, /^hermes@windows \(profile pi-developer\) \(provider some-api\): allowed/m);
+  const pair = cli(t.c.ws, ['limits', '--check', 'openbot@home-wsl/pi-developer'], '', { ...t.env, ...env });
+  assert.equal(pair.status, 0, pair.stderr);
+  assert.match(pair.stdout, /\(profile pi-developer\) \(provider some-api\): allowed/);
+  const variant = cli(t.c.ws, ['limits', '--check', 'pi-developer-small'], '', { ...t.env, ...env });
+  assert.equal(variant.status, 0, variant.stderr);
+  assert.match(variant.stdout, /hermes@windows \(profile pi-developer\)/);
+  // a name the registry does not know is still refused, as before
+  assert.equal(cli(t.c.ws, ['limits', '--check', 'nonsense'], '', { ...t.env, ...env }).status, 2);
+  // tick: a routine of the executor is offered to its profile, and the text names both
+  assert.equal(t.bcli(['routine', 'new', 'r1', 'Collect', '--agent', HERMES, '--model', 'none', '--env', 'laptop', '--every', '2h'], env).status, 0);
+  assert.equal(t.bcli(['routine', 'on', 'r1', '--by', 'Owner', '--source', 'chat 2026-11-21'], env).status, 0);
+  assert.equal(t.bcli(['autonomy', 'routines', 'on', '--by', 'Owner'], env).status, 0);
+  const tick = t.run('pi-developer', [], env);
+  assert.equal(tick.status, 0, tick.stderr);
+  assert.match(tick.stdout, /^tick pi-developer \(hermes@windows\): work$/m);
+  assert.match(tick.stdout, /^RUN my-app\/r1 /m);
+  assert.equal(JSON.parse(t.run('pi-developer', ['--json'], env).stdout).items[0].kind, 'RUN', 'the JSON item is the executor\'s');
+  const pairedTick = t.run('openbot@home-wsl/pi-developer', ['--prompt'], env);
+  assert.equal(pairedTick.status, 0, pairedTick.stderr);
+  assert.match(pairedTick.stdout, /roadctl limits --check openbot@home-wsl\/pi-developer;/);
+  assert.match(pairedTick.stdout, /routine done <id> --as openbot@home-wsl\/pi-developer --result/);
+  // routine done as the profile records the run under the executor
+  const done = t.bcli(['routine', 'done', 'r1', '--as', 'pi-developer', '--result', 'ok', 'checked'], env);
+  assert.equal(done.status, 0, done.stderr);
+  assert.match(fs.readFileSync(path.join(t.c.board, 'routines', 'r1.md'), 'utf8'), /\[hermes@windows\] RUN ok: checked/);
+  // the executor's own name still works as before
+  assert.equal(t.bcli(['routine', 'done', 'r1', '--as', 'openbot@home-wsl/pi-developer', '--result', 'ok', 'paired'], env).status, 0);
+  assert.equal(t.bcli(['routine', 'done', 'r1', '--as', HERMES, '--result', 'ok', 'again'], env).status, 0);
+});
+
 test('P5.41 a2: delegate --to takes role, profile, executor and orchestrator; claim matches by the rules; the Log writes both names', () => {
   const reg = PROFILE_REG();
   const env = { ROADCTL_REGISTRY: reg };
@@ -3885,6 +3948,67 @@ test('P5.41 a2: delegate --to takes role, profile, executor and orchestrator; cl
   assert.equal(dg(r4, 'pi-worker@home-wsl').status, 0);
   assert.equal(dcli(r4, ['claim', 'W-3', '--as', 'pi-developer'], env).status, 0, 'pi-developer is pi-worker@home-wsl by profile');
   assert.match(cardText(r4), /CLAIMED by pi-developer \(pi-worker@home-wsl\)/);
+});
+
+test('P5.46 a4: delegate --to a name the registry does not know warns that claim will refuse; a known name does not', LSKIP, () => {
+  const reg = PROFILE_REG();
+  const env = { ROADCTL_REGISTRY: reg, ROADCTL_NOW: T0 };
+  // a name that looks like an executor but is not in the registry: the delegation is written, and the warning names the claim that will refuse
+  const root = project();
+  const r = dcli(root, ['delegate', 'W-3', '--to', 'claude-worker@home-wsl', '--by', ME, '--criteria', 'a2'], env);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /^roadctl delegate: WARNING: the registry does not know claude-worker@home-wsl: a plain "roadctl claim W-3 --as claude-worker@home-wsl" will refuse/m);
+  assert.match(cardText(root), /^delegate: to=claude-worker@home-wsl /m, 'the delegation is still written');
+  assert.match(dcli(root, ['claim', 'W-3', '--as', 'claude-worker@home-wsl'], env).stderr, /unknown claude-worker@home-wsl/, 'the warning was true');
+  // a role that exists in the registry but that no agent has: nobody can claim it
+  const base = JSON.parse(fs.readFileSync(reg, 'utf8'));
+  const root2 = project();
+  const r2 = dcli(root2, ['delegate', 'W-3', '--to', 'auditor', '--by', ME], { ...env, ROADCTL_REGISTRY: writeRegistry({ ...base, roles: { ...base.roles, auditor: {} } }) });
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.match(r2.stderr, /WARNING: no agent of the registry has the role auditor/);
+  // a known executor and a known profile: two names that work, no warning
+  for (const to of ['codex@home-wsl', 'pi-developer']) {
+    const rk = dcli(project(), ['delegate', 'W-3', '--to', to, '--by', ME], env);
+    assert.equal(rk.status, 0, rk.stderr);
+    assert.doesNotMatch(rk.stderr, /WARNING/, to);
+  }
+  // without a registry nothing changes: no warning, and a claim by the name still works
+  const p2 = project();
+  const noReg = cli(p2, ['delegate', 'W-3', '--to', 'heredoc@elsewhere', '--by', ME], '', { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 });
+  assert.equal(noReg.status, 0, noReg.stderr);
+  assert.doesNotMatch(noReg.stderr, /WARNING/);
+});
+
+test('P5.46 a3: a delegation to a profile is also taken by that profile\'s executor under its own name, and tasks --for finds it', LSKIP, () => {
+  // the same registry, with an api provider for pi-worker@home-wsl so the limits gate is deterministic and no probe runs
+  const base = JSON.parse(fs.readFileSync(PROFILE_REG(), 'utf8'));
+  const reg = writeRegistry({
+    ...base,
+    providers: { 'some-api': { kind: 'api' } },
+    agents: { ...base.agents, 'pi-worker@home-wsl': { host: 'pi', provider: 'some-api', roles: ['worker'] } },
+    agent_profiles: { ...base.agent_profiles, 'pi-researcher': { executor: 'pi-worker@home-wsl' } },
+  });
+  const env = { ROADCTL_REGISTRY: reg, ROADCTL_NOW: T0 };
+  const root = project();
+  assert.equal(dcli(root, ['delegate', 'W-3', '--to', 'pi-developer', '--by', ME, '--criteria', 'a2'], env).status, 0);
+  const t = tenv();
+  // tasks --for: the executor of the profile sees the open delegation, another executor does not
+  const seen = cli(root, ['tasks', '--for', 'pi-worker@home-wsl', '--json'], '', env);
+  assert.equal(seen.status, 0, seen.stderr);
+  assert.deepEqual(JSON.parse(seen.stdout).map((x) => [x.id, x.to]), [['W-3', 'pi-developer']]);
+  assert.deepEqual(JSON.parse(cli(root, ['tasks', '--for', 'codex-developer', '--json'], '', env).stdout), [], 'another profile of the registry is not eligible');
+  assert.match(dcli(root, ['claim', 'W-3', '--as', 'pi-researcher'], env).stderr, /addressed to profile pi-developer/);
+  // claim: by the executor name itself, and the Log writes it
+  assert.equal(dcli(root, ['claim', 'W-3', '--as', 'pi-worker@home-wsl'], env).status, 0);
+  assert.match(cardText(root), /^claim: pi-worker@home-wsl /m);
+  // tick offers the TAKE of a profile delegation to that executor too
+  const t2 = tenv();
+  assert.equal(t2.bcli(['delegate', 'W-3', '--to', 'pi-developer', '--by', ME, '--criteria', 'a2'], { ROADCTL_REGISTRY: reg }).status, 0);
+  const tick = t2.run('pi-worker@home-wsl', [], { ROADCTL_REGISTRY: reg });
+  assert.equal(tick.status, 0, tick.stderr);
+  assert.match(tick.stdout, /^TAKE my-app\/W-3 /m);
+  assert.doesNotMatch(t2.run('pi-researcher', [], { ROADCTL_REGISTRY: reg }).stdout, /TAKE my-app\/W-3/);
+  assert.doesNotMatch(t2.run(CODEX, [], { ROADCTL_REGISTRY: reg }).stdout, /TAKE my-app\/W-3/, 'codex@home-wsl is not that profile\'s executor');
 });
 
 test('P5.41 a3: claim moves ready -> doing when approved; without approval it refuses', () => {
@@ -4142,4 +4266,14 @@ test('tick --json contract: every decision and every item kind fits the schema o
   bad((j) => { j.items[0].routine = 'x'; }, /items\[0\].routine/);
   bad((j) => { j.limits.state = 'maybe'; }, /limits.state/);
   bad((j) => { j.decision = 'idle'; }, /idle with items/);
+});
+
+test('P5.46 a1: delegate refuses an analysis-only approval before writing a delegation', () => {
+  const root = project();
+  edit(root, 'W-3', (t) => t.replace('scope=implementation', 'scope=analysis'));
+  const before = cardText(root);
+  const result = dcli(root, ['delegate', 'W-3', '--to', 'worker', '--by', ME]);
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  assert.match(result.stderr, /approval needs scope=implementation/);
+  assert.equal(cardText(root), before);
 });

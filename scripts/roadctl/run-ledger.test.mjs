@@ -713,3 +713,18 @@ test('P5.48 a4: a late run keeps its answer snapshot across repeated ticks and a
   assert.match(header(), /^answers_received: owner-q,other-q$/m);
   assert.match(prompt('2026-11-10T15:00:00Z'), /owner answer IDs: future-q$/m);
 });
+
+test('P5.44 a5: 40 answer ids of the maximum length all reach answers_received; the header bound fits MAX_RECEIVED, so the list is never dropped silently', FAKES_SKIP, () => {
+  const { r, at } = answerRig();
+  const ids = Array.from({ length: 40 }, (_, i) => `q${String(i).padStart(2, '0')}${'x'.repeat(77)}`); // 80 characters: the longest id a question may have
+  assert.equal(ids[0].length, 80);
+  const rows = ids.map((id) => ({ id, kind: 'text', prompt: 'Proceed?', reason: 'irreversible', blocking: true, created: '2026-11-10T09:00:00.000Z', state: 'answered', answer: 'yes', answered: '2026-11-10T09:30:00.000Z' }));
+  fs.appendFileSync(r.routineFile(), `\n## Questions\n${JSON.stringify(rows)}\n`);
+  r.ok(['run', 'begin', 'mr-status', '--as', ME, '--run', 'r-long-answers', '--owner-answers', ids.join(',')], at('2026-11-10T10:00:00.000Z'));
+  const done = r.ok(['routine', 'done', 'mr-status', '--as', ME, '--run', 'r-long-answers', '--result', 'ok', 'done'], at('2026-11-10T10:05:00.000Z'));
+  assert.doesNotMatch(done.stderr, /longer than/, 'the module key is within the bound');
+  const got = /^answers_received: (.*)$/m.exec(fs.readFileSync(r.routineFile(), 'utf8'));
+  assert.ok(got, 'the mark is written');
+  assert.deepEqual(got[1].split(','), ids, 'all 40 ids, in order, none lost');
+  assert.ok(got[1].length > 600, `${got[1].length} characters: the old 600-character bound would have dropped this header`);
+});

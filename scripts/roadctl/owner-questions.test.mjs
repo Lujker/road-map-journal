@@ -569,6 +569,22 @@ test('P5.24 a5/a11: a missing scope blocks, and a Tell the owner rule is matched
   assert.doesNotMatch(f.read(), /"state":"decided"/);
 });
 
+test('P5.44 a2: a Tell the owner subject in one point of a choice question blocks it, as the main prompt would', (t) => {
+  const f = fixture(t);
+  const mandate = '---\nmandate: 1\nlevel: L3\nkinds: fix, docs\nmax_size: M\nmerge: branch\nbudget: cards_per_day=2, runs_per_week=10\n---\n\n## Goals\n- G1 (priority 1): ship\n\n## Forbidden\n- nothing\n\n## Tell the owner\n- Deploy to production\n';
+  fs.writeFileSync(path.join(f.board, 'mandate.md'), mandate);
+  const shown = JSON.parse(f.run(['mandate', 'show', '--json']).stdout);
+  assert.equal(f.run(['mandate', 'approve', '--by', 'Owner', '--hash', shown.hash]).status, 0);
+  fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\nkind: fix\nsize: S\ngoal: G1\nby_mandate: ${shown.hash}`));
+  // the main prompt says nothing of the rule; one point does, and the area is inside the card: still blocking
+  const r = f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'point-tell', kind: 'choice', prompt: 'Choose the next step', reason: 'reversible', scope: ['implementation'], points: [{ id: 'p1', prompt: 'Deploy to production now?', options: ['yes', 'no'] }, { id: 'p2', prompt: 'Wait?', options: ['yes', 'no'] }], recommended: { p1: 'no', p2: 'yes' } } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(f.read(), /"blocking":true/);
+  assert.match(f.read(), /a subject of Tell the owner in the mandate/);
+  assert.doesNotMatch(f.read(), /"state":"decided"/);
+  assert.match(f.read(), /status: blocked/);
+});
+
 test('P5.24 a11: a stored blocking field may only raise the strictness', async (t) => {
   const { readQuestions } = await import('./owner-questions-data.mjs');
   const bad = { id: 'bad', kind: 'confirm', prompt: 'Proceed?', reason: 'irreversible', scope: ['external'], created: '2026-11-20T10:00:00.000Z', state: 'decided', blocking: false, recommended: true, undo_until: '2026-11-21T10:00:00.000Z' };
