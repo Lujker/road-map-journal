@@ -568,7 +568,7 @@ test('integration: owner answer survives HOLD, resume and shifting skips until t
   const withInput = (args, data, over) => spawnSync(process.execPath, [SELF, ...args, '--board', r.board], {
     cwd: r.ws, encoding: 'utf8', input: JSON.stringify(data), env: { ...r.env, ...over },
   });
-  const question = { question: { id, kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } };
+  const question = { question: { id: 'owner-q', kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } };
   const asked = withInput(['ask', 'mr-status', '--as', ME], question, r.at(3));
   assert.equal(asked.status, 0, asked.stderr);
   const heldAndWaiting = JSON.parse(r.ok(['routine', 'list', '--json'], r.at(3)).stdout).find((x) => x.id === 'mr-status');
@@ -587,8 +587,8 @@ test('integration: owner answer survives HOLD, resume and shifting skips until t
   const open = { ...r.at(247), FAKE_U5: '0.1', XDG_CACHE_HOME: path.join(r.dir, 'cache-open') };
   const tick = r.tick(['--routine', 'mr-status', '--prompt'], open);
   assert.equal(tick.status, 0, tick.stderr); assert.match(tick.stdout, /owner answers \(data\).*Use plan B/);
-  r.ok(['run', 'begin', 'mr-status', '--as', ME], { ...r.at(247), FAKE_U5: '0.1' }); // the run that received the answer began after it
-  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], { ...r.at(248), FAKE_U5: '0.1' });
+  r.ok(['run', 'begin', 'mr-status', '--as', ME, '--run', 'r-answer', '--owner-answers', 'owner-q'], { ...r.at(247), FAKE_U5: '0.1' });
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--run', 'r-answer', '--result', 'ok', 'done'], { ...r.at(248), FAKE_U5: '0.1' });
   const next = r.tick(['--routine', 'mr-status', '--prompt'], { ...r.at(369), FAKE_U5: '0.1', XDG_CACHE_HOME: path.join(r.dir, 'cache-open') });
   assert.equal(next.status, 0, next.stderr); assert.doesNotMatch(next.stdout, /Use plan B/);
 });
@@ -604,7 +604,7 @@ test('integration: an answer that arrives while a run is going and before its HO
   fail(1);
   // the third run STARTS first, the owner answers while it goes, the run then fails: HOLD, and last_run is later than the answer
   r.ok(['run', 'begin', 'mr-status', '--as', ME], r.at(2));
-  assert.equal(withInput(['ask', 'mr-status', '--as', ME], { question: { id, kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } }, r.at(3)).status, 0);
+  assert.equal(withInput(['ask', 'mr-status', '--as', ME], { question: { id: 'owner-q', kind: 'text', prompt: 'Which direction?', reason: 'irreversible' } }, r.at(3)).status, 0);
   assert.equal(withInput(['answer', 'mr-status', 'owner-q', '--by', 'Owner'], { answer: 'Use plan B' }, r.at(4)).status, 0);
   fail(5);
   const text = fs.readFileSync(r.routineFile(), 'utf8');
@@ -618,10 +618,10 @@ test('integration: an answer that arrives while a run is going and before its HO
   const tick = r.tick(['--routine', 'mr-status', '--prompt'], open(250));
   assert.equal(tick.status, 0, tick.stderr);
   assert.match(tick.stdout, /owner answers \(data\).*Use plan B/, 'the first RUN that starts after the answer receives it');
-  // the same answer is offered again until a run that started after it has ended
+  // the same answer is offered until a run that received it has ended
   assert.match(r.tick(['--routine', 'mr-status', '--prompt'], open(251)).stdout, /Use plan B/);
-  r.ok(['run', 'begin', 'mr-status', '--as', ME], open(252));
-  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'done'], open(255));
+  r.ok(['run', 'begin', 'mr-status', '--as', ME, '--run', 'r-answer', '--owner-answers', 'owner-q'], open(252));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--run', 'r-answer', '--result', 'ok', 'done'], open(255));
   const next = r.tick(['--routine', 'mr-status', '--prompt'], open(400));
   assert.equal(next.status, 0, next.stderr);
   assert.doesNotMatch(next.stdout, /Use plan B/, 'the run that received it has ended: the answer is gone');
