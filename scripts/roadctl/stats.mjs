@@ -5,6 +5,7 @@
 // Day granularity: the Log has a date and no time, so every comparison is by day. Not built yet (P5.24 questions and `undo`, P5.34 proposals, P5.35 milestones):
 // their fields are in the JSON as null / empty, and a reader tolerates extra fields, so they fill in later without a change of the schema (scripts/testkit/stats-schema.mjs).
 import fs from 'node:fs';
+import path from 'node:path';
 import { questionsFromItem } from './owner-questions-data.mjs';
 import { boardEvents, loadBoards, readOwnerCommands } from './digest.mjs';
 import { readMandate, takes } from './mandate.mjs';
@@ -141,6 +142,17 @@ export function computeStats({ boards, env, api, since = '0000-00-00', acceptFro
   const blocking = questions.filter((q) => q.blocking && Date.parse(q.created) > now - 7 * DAY && Date.parse(q.created) <= now && q.created.slice(0, 10) >= since);
   const proposed = since === '0000-00-00' && boards.length && boards.every((b) => (api.compareVersions(b.config.requires, '0.15.0') ?? -1) >= 0)
     ? boards.flatMap((b) => b.cards.filter((c) => (b.config.status_map?.[c.header.status] ?? c.header.status) === 'idea' && /^sha256-v1:[a-f0-9]{64}$/.test(c.header.proposed ?? ''))).length : null;
+  let milestoneReturns = 0;
+  const milestoneFormat = boards.length > 0 && boards.every((b) => (api.compareVersions(b.config.requires, '0.15.0') ?? -1) >= 0);
+  if (milestoneFormat) for (const b of boards) {
+    const dir = path.join(b.dir, 'milestones');
+    if (!fs.existsSync(dir)) continue;
+    try { for (const file of fs.readdirSync(dir).filter((f) => f.endsWith('.md'))) {
+      const milestone = api.parseCard(path.join(dir, file));
+      if (milestone.errors.length) { milestoneReturns = null; break; }
+      if (milestoneReturns !== null) milestoneReturns += milestone.log.filter((l) => /^MILESTONE RETURN\b/.test(l.text) && l.date >= since && l.date <= today).length;
+    } } catch { milestoneReturns = null; }
+  }
   return {
     stats: STATS_VERSION,
     generated: isoAt(now),
@@ -153,7 +165,7 @@ export function computeStats({ boards, env, api, since = '0000-00-00', acceptFro
     owner_wait: { review_to_acceptance: reviewWait(boards, { since, acceptFrom, today }), question_to_answer: { n: 0, median_days: null, p90_days: null } },
     escalations: { escalated_runs: outcome('escalated'), asks: runs.filter((r) => r.fields.needs_owner).length, top_problems: [...problems.values()].sort((a, b) => b.n - a.n || a.key.localeCompare(b.key)).slice(0, 10) },
     returns: { returned: returned.length, cards: new Set(returned).size, task_reports: taskRuns, share_of_reports: share(returned.length, taskRuns) },
-    mandate: { boards: boards.map((b) => { const m = readMandate(b, api); return { project: projectOf(b), level: m?.level ?? null, state: m?.state ?? 'none' }; }), started_by_mandate: { n: taken.length, cards: [...new Set(taken)].sort() }, proposed, undone_share: questionsValid ? share(decisions.filter((q) => q.state === 'undone').length, decisions.length) : null, blocking_questions_per_week: questionsValid ? blocking.length : null, milestone_returns: null },
+    mandate: { boards: boards.map((b) => { const m = readMandate(b, api); return { project: projectOf(b), level: m?.level ?? null, state: m?.state ?? 'none' }; }), started_by_mandate: { n: taken.length, cards: [...new Set(taken)].sort() }, proposed, undone_share: questionsValid ? share(decisions.filter((q) => q.state === 'undone').length, decisions.length) : null, blocking_questions_per_week: questionsValid ? blocking.length : null, milestone_returns: milestoneFormat ? milestoneReturns : null },
   };
 }
 
@@ -170,7 +182,7 @@ export function formatStats(j) {
   L.push(`owner wait, review to acceptance${j.accept_from ? ` (from ${j.accept_from})` : ''}: ${days({ n: w.n, median_days: w.median_days, p90_days: w.p90_days })}; ${w.open} still in review${w.open_oldest_days === null ? '' : `, oldest ${w.open_oldest_days}d`}`);
   L.push(`escalations: ${j.escalations.escalated_runs} runs, ${j.escalations.asks} questions to the owner${j.escalations.top_problems.length ? `; problems: ${j.escalations.top_problems.map((p) => `${cleanText(p.key, 40)} x${p.n}`).join(', ')}` : ''}`);
   L.push(`returned from review: ${j.returns.returned} (${j.returns.cards} cards, ${pct(j.returns.share_of_reports)} of ${j.returns.task_reports} task reports)`);
-  L.push(`mandate: ${j.mandate.boards.map((b) => `${b.project} ${b.level ?? 'none'}`).join(', ')}; cards started by it: ${j.mandate.started_by_mandate.n}; proposed now: ${j.mandate.proposed ?? 'unknown'}; undone: ${pct(j.mandate.undone_share)}; blocking questions, last 7 days: ${j.mandate.blocking_questions_per_week ?? 'unknown'}; milestone returns: not counted yet`);
+  L.push(`mandate: ${j.mandate.boards.map((b) => `${b.project} ${b.level ?? 'none'}`).join(', ')}; cards started by it: ${j.mandate.started_by_mandate.n}; proposed now: ${j.mandate.proposed ?? 'unknown'}; undone: ${pct(j.mandate.undone_share)}; blocking questions, last 7 days: ${j.mandate.blocking_questions_per_week ?? 'unknown'}; milestone returns: ${j.mandate.milestone_returns ?? 'unknown'}`);
   return L;
 }
 
@@ -196,7 +208,7 @@ export default {
   commands: {
     stats: {
       group: 'Look', effect: 'read', hidden: true, summary: 'autonomy metrics: how much work ran without the owner, how long the owner takes, why runs escalate',
-      purpose: 'Numbers for the owner who decides which kinds of work may go without confirmation; roadctl counts them from the Log lines of routines and cards in git (RUN, REPORT, RETURNED, ACCEPTED, `accepted`), this machine\'s run ledger (crashed, timeout, aborted and skipped runs, durations), the audit of owner commands (owner-commands.jsonl and the owner\'s traces in git) and the mandate. A run is WITHOUT THE OWNER when it ended ok, asked nothing (no `ask`) and the owner ran no command on the same routine or card after it, up to the next run of that target (days are compared, the Log has no time; a command on the day of the next run counts for the earlier run). Shown: the share of such runs per routine and per kind of work (the id of a routine, the track prefix of a card id such as P5); the wait for acceptance (the day a card reached review to its `accepted`, median and p90, and the cards still in review); escalations (runs that escalated, questions, the most frequent `--problem` keys); returns from review (RETURNED lines against task reports); failures, timeouts and run time; the mandate (level, cards started by it). Question to answer and milestone returns are not counted yet. Proposed is the current snapshot on 0.15 boards, not a historical count; it is null with --since. Undone share counts reversible decisions created in the selected period; blocking questions per week counts the last seven days, bounded by --since. Unreadable question data makes both numbers unknown. The runs of another machine arrive through git: run `roadctl pull` first. Read only.',
+      purpose: 'Numbers for the owner who decides which kinds of work may go without confirmation; roadctl counts them from the Log lines of routines and cards in git (RUN, REPORT, RETURNED, ACCEPTED, `accepted`), this machine\'s run ledger (crashed, timeout, aborted and skipped runs, durations), the audit of owner commands (owner-commands.jsonl and the owner\'s traces in git) and the mandate. A run is WITHOUT THE OWNER when it ended ok, asked nothing (no `ask`) and the owner ran no command on the same routine or card after it, up to the next run of that target (days are compared, the Log has no time; a command on the day of the next run counts for the earlier run). Shown: the share of such runs per routine and per kind of work (the id of a routine, the track prefix of a card id such as P5); the wait for acceptance (the day a card reached review to its `accepted`, median and p90, and the cards still in review); escalations (runs that escalated, questions, the most frequent `--problem` keys); returns from review (RETURNED lines against task reports); failures, timeouts and run time; the mandate (level, cards started by it). Question to answer is not counted yet. Milestone returns count owner return actions recorded in milestone Logs. Proposed is the current snapshot on 0.15 boards, not a historical count; it is null with --since. Undone share counts reversible decisions created in the selected period; blocking questions per week counts the last seven days, bounded by --since. Unreadable question data makes both numbers unknown. The runs of another machine arrive through git: run `roadctl pull` first. Read only.',
       usage: ['roadctl stats [--since DATE] [--accept-from DATE] [--all] [--json]'],
       flags: [['--since DATE', 'count only runs, returns and owner commands from that day (YYYY-MM-DD); default: all history'], ['--accept-from DATE', 'the wait for acceptance counts from that day and leaves out acceptances before it; for deferred acceptance of a pile of cards in review, give the date of the release candidate'], ['--all', 'every board of the central workspace, not only this project'], ['--json', 'machine-readable output (schema: scripts/testkit/stats-schema.mjs)']],
       examples: ['roadctl stats', 'roadctl stats --all --since 2026-11-01 --json', 'roadctl stats --accept-from 2026-11-20'],

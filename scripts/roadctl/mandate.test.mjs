@@ -586,6 +586,9 @@ test('P5.35 a2/a12: rule dependencies need a current chain and a live L3 mandate
     r.editCard(id, (raw) => raw.replace('accepted: rule\n', `accepted: rule\nrule_deps: ${basis}\nrule_content: ${content}\n`));
   };
   putAccepted('A', null, 'a'); putAccepted('B', 'A', 'b');
+  const milestoneDir = path.join(r.board, 'milestones'); fs.mkdirSync(milestoneDir);
+  fs.writeFileSync(path.join(milestoneDir, 'chain.md'), '---\nid: chain\ncards: B\n---\n');
+  assert.equal(rc.readyMilestones(rc.loadBoard(r.board)).length, 1);
   r.put('C', { kind: 'fix', size: 'S', extra: 'depends_on: B\n' });
   assert.ok(r.starts().some((x) => x.id === 'C'));
   r.editCard('C', (raw) => raw.replace('status: ready', 'status: ready\napproved: Owner, 2026-11-20, scope=implementation+auto'));
@@ -594,6 +597,7 @@ test('P5.35 a2/a12: rule dependencies need a current chain and a live L3 mandate
   r.editCard('A', (raw) => raw.replace('accepted: rule', 'accepted: removed'));
   assert.ok(!r.starts().some((x) => x.id === 'C'));
   putAccepted('A', null, 'c');
+  assert.equal(rc.readyMilestones(rc.loadBoard(r.board)).length, 0, 'a stale acceptance is not a ready milestone');
   assert.ok(!r.starts().some((x) => x.id === 'C'), 'a new acceptance of A does not revive B');
   putAccepted('B', 'A', 'd');
   assert.ok(r.starts().some((x) => x.id === 'C'));
@@ -669,4 +673,43 @@ test('P5.35: interrupted milestone done resumes by original hash without overwri
   assert.doesNotMatch(status.stdout, /transaction|roadctl\.lock/);
   const committed = spawnSync('git', ['-C', r.ws, 'ls-tree', '-r', '--name-only', 'HEAD'], { encoding: 'utf8' });
   assert.equal(committed.status, 0, committed.stderr); assert.doesNotMatch(committed.stdout, /transaction|roadctl\.lock/);
+});
+
+test('P5.35: milestone return removes rule acceptance, preserves owner done, and counts returns', async () => {
+  const { dependencyBasis, ruleContent } = await import('./rule-acceptance.mjs');
+  const r = rig({ requires: '0.15.0' }); r.write(); r.approve();
+  r.put('A', { status: 'review', extra: `accepted: rule\nrule_id: ${'a'.repeat(64)}\n` });
+  r.put('B', { status: 'done', extra: 'accepted: Owner, 2026-11-09\n' });
+  let b = rc.loadBoard(r.board), a = b.cards.find((c) => c.header.id === 'A');
+  r.editCard('A', (s) => s.replace('accepted: rule\n', `accepted: rule\nrule_deps: ${dependencyBasis(b, a)}\nrule_content: ${ruleContent(a)}\n`));
+  const dir = path.join(r.board, 'milestones'); fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, 'one.md'), '---\nid: one\ncards: A, B\n---\n');
+  const hash = JSON.parse(r.ok(['inbox', '--json']).stdout).items.find((x) => x.target === 'one').hash;
+  const args = ['milestone', 'return', 'one', '--cards', 'A', '--reason', 'fix test', '--hash', hash, '--by', OWNER];
+  assert.equal(r.run(args, { ROADCTL_UNATTENDED: '1' }).status, 1);
+  assert.equal(r.run(args).status, 0);
+  assert.match(r.cardText('A'), /status: doing/); assert.doesNotMatch(r.cardText('A'), /^accepted:|^rule_id:/m);
+  assert.match(r.cardText('A'), /RETURNED from milestone one: fix test/);
+  assert.match(r.cardText('B'), /status: done/); assert.match(r.cardText('B'), /accepted: Owner/);
+  assert.match(fs.readFileSync(path.join(dir, 'one.md'), 'utf8'), /MILESTONE RETURN cards A: fix test/);
+  assert.equal(JSON.parse(r.ok(['stats', '--json']).stdout).mandate.milestone_returns, 1);
+  assert.equal(JSON.parse(r.ok(['stats', '--json', '--since', '2026-11-11']).stdout).mandate.milestone_returns, 0);
+});
+
+test('P5.35: interrupted milestone return resumes only the original action and hash', async () => {
+  const { milestoneTransactionFile } = await import('./state.mjs');
+  const r = rig({ requires: '0.15.0' }); r.put('A', { status: 'review', extra: 'accepted: rule\n' });
+  const dir = path.join(r.board, 'milestones'); fs.mkdirSync(dir);
+  const mf = path.join(dir, 'one.md'); fs.writeFileSync(mf, '---\nid: one\ncards: A\n---\n');
+  const af = path.join(r.board, 'cards', 'A-card.md'), beforeA = fs.readFileSync(af, 'utf8'), beforeM = fs.readFileSync(mf, 'utf8');
+  const afterA = beforeA.replace('status: review', 'status: doing').replace('accepted: rule\n', ''), afterM = `${beforeM}\n## Log\n- 2026-11-10 [Owner] MILESTONE RETURN cards A: fix\n`;
+  const hash = 'c'.repeat(64), journal = milestoneTransactionFile(rc.loadBoard(r.board), r.env);
+  fs.mkdirSync(path.dirname(journal), { recursive: true });
+  fs.writeFileSync(journal, JSON.stringify({ action: 'return', id: 'one', hash, entries: [{ id: 'A', before: beforeA, after: afterA }, { id: '@milestone', before: beforeM, after: afterM }] }));
+  fs.writeFileSync(af, afterA);
+  assert.notEqual(r.run(['milestone', 'done', 'one', '--hash', hash, '--by', OWNER]).status, 0);
+  assert.notEqual(r.run(['milestone', 'return', 'one', '--hash', 'd'.repeat(64), '--by', OWNER]).status, 0);
+  const result = r.run(['milestone', 'return', 'one', '--hash', hash, '--by', OWNER]);
+  assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /recovered/);
+  assert.equal(fs.readFileSync(mf, 'utf8'), afterM); assert.ok(!fs.existsSync(journal));
 });

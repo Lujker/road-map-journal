@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { dependencyBasis, ruleContent } from './roadctl/rule-acceptance.mjs';
+import { dependencyBasis, ruleContent, ruleDependencySatisfied } from './roadctl/rule-acceptance.mjs';
 // roadctl: optional helper for a board-format project (see docs/board-spec.md).
 // Core in this file; new parts live in scripts/roadctl/ (modules, see docs/developing-roadctl.md). Node standard library only. Files stay the source of truth: roadctl checks,
 // regenerates BOARD.md and makes small, mechanical edits. It never sets `approved` by itself
@@ -650,7 +650,13 @@ export function readyMilestones(board, { waiting = false, continued = false } = 
     const ids = (milestone.header.cards ?? '').split(',').map((id) => id.trim()).filter(Boolean);
     const ready = !milestone.errors.length && ids.length > 0 && ids.every((id) => {
       const card = cards.get(id);
-      return card && (statusOf(board, card) === 'done' || card.header.accepted === 'rule');
+      if (!card) return false;
+      if ((compareVersions(board.config.requires, '0.15.0') ?? -1) < 0) return statusOf(board, card) === 'done' || card.header.accepted === 'rule';
+      if (statusOf(board, card) === 'done') {
+        if (!card.header.rule_id) return true;
+        try { return card.header.rule_content === ruleContent(card) && card.header.rule_deps === dependencyBasis(board, card); } catch { return false; }
+      }
+      return ruleDependencySatisfied(board, card, moduleApi());
     });
     if (milestone.header.milestone_done === 'true') return [];
     const pending = ready || milestone.header.milestone_waiting === 'true';

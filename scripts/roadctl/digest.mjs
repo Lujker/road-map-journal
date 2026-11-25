@@ -168,7 +168,7 @@ function gitOwnerCommands(boards, api, sinceDay) {
     const milestones = path.join(b.dir, 'milestones');
     if (fs.existsSync(milestones)) for (const file of fs.readdirSync(milestones).filter((f) => f.endsWith('.md'))) {
       const milestone = api.parseCard(path.join(milestones, file));
-      for (const l of milestone.log ?? []) if (/^MILESTONE (CONTINUE|MOVE)\b/.test(l.text) && l.date >= sinceDay) out.push({ command: `milestone ${l.text.split(' ')[1].toLowerCase()}`, target: file.slice(0, -3), by: l.author, outcome: 'ok' });
+      for (const l of milestone.log ?? []) if (/^MILESTONE (CONTINUE|MOVE|DONE|RETURN)\b/.test(l.text) && l.date >= sinceDay) out.push({ command: `milestone ${l.text.split(' ')[1].toLowerCase()}`, target: file.slice(0, -3), by: l.author, outcome: 'ok' });
     }
     const m = readMandate(b, api);
     if (m?.approved && dated(`${m.approved.by}, ${m.approved.date}`) !== null) out.push({ command: 'mandate approve', target: projectOf(b), by: m.approved.by, outcome: 'ok' });
