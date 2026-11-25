@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { dependencyBasis, ruleContent, ruleDependencySatisfied } from './roadctl/rule-acceptance.mjs';
 // roadctl: optional helper for a board-format project (see docs/board-spec.md).
 // Core in this file; new parts live in scripts/roadctl/ (modules, see docs/developing-roadctl.md). Node standard library only. Files stay the source of truth: roadctl checks,
 // regenerates BOARD.md and makes small, mechanical edits. It never sets `approved` by itself
@@ -71,7 +72,7 @@ try {
   if (e?.code !== 'ERR_MODULE_NOT_FOUND' || !/roadctl[\\/]who-takes\.mjs/.test(String(e.message))) throw e;
 }
 
-export const VERSION = '0.14.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.15.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -334,7 +335,7 @@ export function boardRequires(config, version = VERSION) {
   return null;
 }
 const WHO_REQUIRES = '0.14.0'; // the first roadctl that reads profiles and orchestrator/profile pairs in --as and --to
-const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy'], ['0.13.0', 'owner-questions']]; // required modules for board format versions
+const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy'], ['0.13.0', 'owner-questions'], ['0.15.0', 'rule-acceptance'], ['0.15.0', 'milestone']]; // required modules for board format versions
 
 const statusOf = (board, card) => {
   const s = card.header.status ?? '';
@@ -639,9 +640,68 @@ export function autonomyRows(board, au = autonomyOf(board)) {
   return rows;
 }
 
+// ID is the filename without .md; header retains presentation metadata, including deferral.
+export function readyMilestones(board, { waiting = false, continued = false } = {}) {
+  const dir = path.join(board.dir, 'milestones');
+  if (!fs.existsSync(dir)) return [];
+  const cards = new Map(board.cards.map((c) => [c.header.id, c]));
+  return fs.readdirSync(dir).filter((f) => f.endsWith('.md')).sort().flatMap((f) => {
+    const milestone = parseCard(path.join(dir, f));
+    const ids = (milestone.header.cards ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+    const ready = !milestone.errors.length && ids.length > 0 && ids.every((id) => {
+      const card = cards.get(id);
+      if (!card) return false;
+      if ((compareVersions(board.config.requires, '0.15.0') ?? -1) < 0) return statusOf(board, card) === 'done' || card.header.accepted === 'rule';
+      if (statusOf(board, card) === 'done') {
+        if (!card.header.rule_id) return true;
+        try { return card.header.rule_content === ruleContent(card) && card.header.rule_deps === dependencyBasis(board, card); } catch { return false; }
+      }
+      return ruleDependencySatisfied(board, card, moduleApi());
+    });
+    if (milestone.header.milestone_done === 'true') return [];
+    const pending = ready || milestone.header.milestone_waiting === 'true';
+    return (continued ? milestone.header.milestone_continued === 'true' : waiting ? pending && milestone.header.milestone_continued !== 'true' : ready) ? [{ id: f.slice(0, -3), header: milestone.header, cards: ids }] : [];
+  });
+}
+
+const pendingMilestoneOperation = (board) => Boolean(STATE?.milestoneTransactionFile && fs.existsSync(STATE.milestoneTransactionFile(board, process.env)));
+
+export function ruleStale(board, card) {
+  if (!card.header.rule_id) return false;
+  try { return card.header.rule_content !== ruleContent(card) || card.header.rule_deps !== dependencyBasis(board, card); } catch { return true; }
+}
+
+export function workBasisStale(board, card) {
+  if (statusOf(board, card) !== 'doing' || !depsOf(card).length || (compareVersions(board.config.requires, '0.15.0') ?? -1) < 0) return false;
+  if (!card.header.work_deps) return true;
+  try { return card.header.work_deps !== dependencyBasis(board, card); } catch { return true; }
+}
+
+export function checkpointWorkBasis(board, card) {
+  if (!workBasisStale(board, card)) return false;
+  const byId = new Map(board.cards.map((c) => [c.header.id, c]));
+  if (depsOf(card).some((id) => !depMet(board, card, id, byId))) return false;
+  try {
+    const next = dependencyBasis(board, card);
+    writeCard(card, setHeader(readNorm(card), 'work_deps', next));
+    return true;
+  } catch { return false; }
+}
+
+export function milestoneSummary(board) {
+  if ((compareVersions(board.config.requires, '0.15.0') ?? -1) < 0) return null;
+  const waiting = readyMilestones(board, { waiting: true }).length;
+  const recovery = pendingMilestoneOperation(board);
+  const reason = recovery ? 'milestone operation awaits recovery' : waiting >= 2 ? 'two milestones await owner decision' : null;
+  return { waiting, blocked: Boolean(reason), reason };
+}
+const milestoneLine = (summary) => `${summary.waiting} milestone(s) awaiting owner decision${summary.reason ? `; starts paused: ${summary.reason}` : ''}`;
+
 /** seam (P5.28): `start-admit`: a module may refuse a START for a queued card that passed every core check: [{ text, module }]. */
 function startRefusals(board, card, row) {
   const out = [];
+  if (pendingMilestoneOperation(board)) out.push({ text: 'milestone operation awaits recovery', module: 'milestones' });
+  if (readyMilestones(board, { waiting: true }).length >= 2) out.push({ text: 'two milestones await owner decision', module: 'milestones' });
   for (const h of MODULE_REG.callHook('start-admit', { board, card, row, env: process.env, api: moduleApi() })) if (h.value?.admit === false) out.push({ text: sanitize(String(h.value.reason ?? `refused by module ${h.module}`), 100), module: h.module });
   return out;
 }
@@ -651,7 +711,8 @@ function depMet(board, card, id, byId) {
   const dc = byId.get(id);
   if (!dc) return false;
   const status = statusOf(board, dc);
-  if (status === 'done') return true;
+  if (status === 'done' && !dc.header.rule_id) return true;
+  if (status === 'done' && dc.header.rule_id) { try { return dc.header.rule_content === ruleContent(dc) && dc.header.rule_deps === dependencyBasis(board, dc); } catch { return false; } }
   return MODULE_REG.callHook('dep-satisfied', { board, card, by: dc, status, env: process.env, api: moduleApi() }).some((h) => h.value?.satisfied === true);
 }
 
@@ -679,7 +740,7 @@ function mandateStart(board) {
   for (const c of board.cards) {
     if (!c.header.id || statusOf(board, c) !== 'ready') continue;
     const b = approvalBasis(board, c, 'start');
-    if (b.ok) found.push({ id: c.header.id, title: c.header.title, rank: b.rank });
+    if (b.ok && !startRefusals(board, c, { id: c.header.id, status: 'ready' }).length) found.push({ id: c.header.id, title: c.header.title, rank: b.rank });
   }
   return found.sort((a, b) => a.rank - b.rank || naturalCompare(a.id, b.id))[0] ?? null;
 }
@@ -702,13 +763,14 @@ export function autonomyReport(project, board, reg = null) {
   else if (reg) candidates = Object.keys(reg.agents).filter((a) => isOrchestrator(a, reg));
   const would = candidates ? candidates.map((a) => ({ agent: a, orchestrator: isOrchestrator(a, reg), start: autonomyStart(board, a, reg)?.id ?? null })) : null;
   const rr = routineRows(board);
-  return { project, enabled: au.enabled, present: au.present, agents: au.agents, errors: au.errors, queue: rows, auto_not_queued: autoNotQueued, next: rows.find((r) => r.next)?.id ?? null, would_start: would, routines: { enabled: au.routines, items: rr } };
+  return { project, ...(milestoneSummary(board) ? { milestones: milestoneSummary(board) } : {}), enabled: au.enabled, present: au.present, agents: au.agents, errors: au.errors, queue: rows, auto_not_queued: autoNotQueued, next: rows.find((r) => r.next)?.id ?? null, would_start: would, routines: { enabled: au.routines, items: rr } };
 }
 
 export function formatAutonomy(r, prefix = '') {
   const L = [];
   const agents = r.agents.length ? r.agents.join(', ') : 'any orchestrator';
   L.push(`${prefix}autonomy ${r.enabled ? 'ON' : 'OFF'}${r.enabled ? '' : ' (nothing starts unattended; explicit delegations are not affected)'} | agents: ${sanitize(agents, 120)} | queue: ${r.queue.length}`);
+  if (r.milestones) L.push(`${prefix}milestones: ${milestoneLine(r.milestones)}`);
   for (const e of r.errors) L.push(`${prefix}  ERROR ${sanitize(e, 120)}; autonomy is treated as OFF, run roadctl lint`);
   for (const q of r.queue) {
     const mark = q.auto ? ' auto' : '';
@@ -1126,8 +1188,12 @@ export function brief(board) {
   const l = [`roadctl brief (${sanitize(board.config.title || path.basename(board.project), 60)}; board at ${path.relative(board.project, board.dir) || '.'})`];
   const needs = boardRequires(board.config); // P5.14
   if (needs) l.push(`REQUIRES ${needs}: update roadctl before any unattended work on this board (roadctl tick offers nothing here)`);
+  const milestones = milestoneSummary(board);
+  if (milestones) l.push(`MILESTONES ${milestoneLine(milestones)}`);
+  for (const c of board.cards.filter((card) => ruleStale(board, card))) l.push(`STALE RULE [${c.header.id}]: dependency or evidence changed; impact check required`);
+  for (const c of board.cards.filter((card) => workBasisStale(board, card))) l.push(`STALE WORK [${c.header.id}]: checkpoint and reassess dependency impact`);
   for (const c of by('doing')) l.push(`DOING [${c.header.id}] ${sanitize(c.header.title, 80)} | approved: ${approvedText(c)} | as_of ${sanitize(c.header.as_of, 10)}${nextOpen(c) ? ` | next ${nextOpen(c)}` : ''}`);
-  for (const c of by('review')) l.push(`REVIEW [${c.header.id}] ${sanitize(c.header.title, 80)} | awaiting owner acceptance, do not mark done`);
+  for (const c of by('review')) l.push(`REVIEW [${c.header.id}] ${sanitize(c.header.title, 80)} | ${c.header.accepted === 'rule' ? 'accepted by rule; ' : ''}awaiting owner acceptance, do not mark done`);
   for (const c of by('blocked')) l.push(`BLOCKED [${c.header.id}] ${sanitize(c.header.title, 60)} | ${sanitize(c.header.blocked, 80)}`);
   const ready = by('ready').map((c) => `${c.header.id}${scopesOf(c.header.approved).length ? '*' : ''}${scopesOf(c.header.approved).includes('auto') ? 'auto' : ''}`);
   if (ready.length) l.push(`READY ${ready.join(' ')}  (* = approved; unapproved cards are not permission to start; auto = the owner allowed unattended work)`);
@@ -1177,6 +1243,9 @@ export function cardRow(board, c) {
     id: c.header.id,
     title: c.header.title,
     status: statusOf(board, c),
+    ...(c.header.accepted === 'rule' ? { accepted: 'rule' } : {}),
+    ...(ruleStale(board, c) ? { rule_stale: true } : {}),
+    ...(workBasisStale(board, c) ? { work_stale: true } : {}),
     approved: scopesOf(c.header.approved),
     auto: scopesOf(c.header.approved).includes('auto'),
     queue: position || null,
@@ -1202,6 +1271,7 @@ export function statusSummary(project, board, { sync = null } = {}) {
   const delegated = delegationRows(board);
   return {
     project,
+    ...(milestoneSummary(board) ? { milestones: milestoneSummary(board) } : {}),
     counts,
     delegations: delegationCounts(delegated),
     delegated,
@@ -1209,6 +1279,8 @@ export function statusSummary(project, board, { sync = null } = {}) {
     routines: { switch: autonomyOf(board).routines, ...routineCounts(routineRows(board)) },
     doing: rows('doing'),
     review: rows('review'),
+    ...(board.cards.some((c) => ruleStale(board, c)) ? { stale_rule: board.cards.filter((c) => ruleStale(board, c)).map((c) => c.header.id) } : {}),
+    ...(board.cards.some((c) => workBasisStale(board, c)) ? { stale_work: board.cards.filter((c) => workBasisStale(board, c)).map((c) => c.header.id) } : {}),
     blocked: rows('blocked'),
     oldest_as_of: active.map((c) => c.header.as_of).sort()[0] ?? null,
     lint: { errors: f.filter((x) => x.level === 'error').length, warnings: f.filter((x) => x.level === 'warning').length },
@@ -1224,7 +1296,11 @@ export function formatStatus(summaries) {
   const row = (r) => r.map((x, i) => (i === 0 || i === r.length - 1 ? x.padEnd(w[i]) : x.padStart(w[i]))).join('  ').trimEnd();
   const out = [row(head), ...table.map(row)];
   for (const s of summaries) {
+    if (s.milestones) out.push(`${s.project}: milestones: ${milestoneLine(s.milestones)}`);
+    for (const id of s.stale_rule ?? []) out.push(`${s.project}: STALE RULE [${id}]: dependency or evidence changed; impact check required`);
+    for (const id of s.stale_work ?? []) out.push(`${s.project}: STALE WORK [${id}]: checkpoint and reassess dependency impact`);
     for (const c of s.doing) out.push(`${s.project}: DOING [${c.id}] ${sanitize(c.title, 80)} | approved: ${c.approved.join('+') || 'no'}`);
+    for (const c of s.review.filter((c) => c.accepted === 'rule')) out.push(`${s.project}: REVIEW [${c.id}] ${sanitize(c.title, 80)} | accepted by rule; awaiting owner acceptance`);
     if (s.routines?.total) out.push(`${s.project}: ROUTINES switch ${s.routines.switch ? 'on' : 'off'}, ${s.routines.total} routine(s), ${s.routines.enabled} on, due now ${s.routines.due}`);
     if (s.delegated?.length) {
       const n = s.delegations;
@@ -1321,6 +1397,7 @@ export function briefJson(board) {
   const rows = (s) => board.cards.filter((c) => statusOf(board, c) === s).map((c) => cardRow(board, c));
   return {
     title: board.config.title || path.basename(board.project),
+    ...(milestoneSummary(board) ? { milestones: milestoneSummary(board) } : {}),
     board: path.relative(board.project, board.dir) || '.',
     doing: rows('doing'),
     review: rows('review'),
@@ -1527,6 +1604,7 @@ function integrate(ctx, board, timeout) {
 
 export const pullBoard = repoLocked((...a) => pullBoardUnlocked(...a));
 function pullBoardUnlocked(board, { timeout = netTimeout() } = {}) {
+  if (pendingMilestoneOperation(board)) return { status: 'error', message: 'milestone operation awaits recovery; nothing was pulled' };
   const ctx = syncContext(board);
   if (!ctx) return { status: 'no-git', message: 'the board is not in a git repository' };
   if (!gitx(['remote'], ctx.root).out) return { status: 'no-remote', message: 'the board repository has no git remote' };
@@ -1542,6 +1620,7 @@ const defaultMessage = (ctx, board, pending) => {
 /** Commit only the board's paths and push. Never forces; lints first and again after a merge. */
 export const saveBoard = repoLocked((...a) => saveBoardUnlocked(...a));
 function saveBoardUnlocked(board, message, { timeout = netTimeout() } = {}) {
+  if (pendingMilestoneOperation(board)) return { status: 'error', message: 'milestone operation awaits recovery; nothing was committed' };
   const ctx = syncContext(board);
   if (!ctx) return { status: 'no-git', message: 'the board is not in a git repository' };
   regenerateIfStale(board.dir);
@@ -1652,6 +1731,8 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
     if (!basis.ok) reasons.push('the card has no approved record; the owner approves before work is delegated', ...basis.reasons);
   }
   if (CLOSED.has(st)) reasons.push(`the card is ${st}`);
+  if (st === 'ready' && pendingMilestoneOperation(board)) reasons.push('milestone operation awaits recovery');
+  if (st === 'ready' && readyMilestones(board, { waiting: true }).length >= 2) reasons.push('two milestones await owner decision');
   if ('delegate' in c.header || 'claim' in c.header) reasons.push('a delegation is already active on this card (one at a time); accept or return it first');
   const tgt = WHO.resolveTo(to, registry); // P5.41: role, profile, executor or orchestrator
   if (tgt.kind === 'unknown') reasons.push(tgt.error + (tgt.hint ? `; ${tgt.hint}` : ''));
@@ -1691,6 +1772,8 @@ function claimable(board, c, as, reg) {
   if (info.errors.length) return { reasons: [`the delegation is malformed (${info.errors[0]}); run roadctl lint`] };
   const d = info.delegate;
   if (CLOSED.has(statusOf(board, c))) return { reasons: [`the card is ${statusOf(board, c)}`] };
+  if (statusOf(board, c) === 'ready' && d.state === 'open' && pendingMilestoneOperation(board)) return { reasons: ['milestone operation awaits recovery'] };
+  if (statusOf(board, c) === 'ready' && d.state === 'open' && readyMilestones(board, { waiting: true }).length >= 2) return { reasons: ['two milestones await owner decision'] };
   if (statusOf(board, c) === 'blocked' && /^owner question /.test(c.header.blocked ?? '')) return { reasons: ['waiting for an owner answer'] };
   if (d.state === 'reported') return { reasons: ['the delegation was already reported and awaits acceptance'] };
   if (d.state === 'claimed' && !info.claim) return { reasons: ['state is claimed but there is no claim; run roadctl lint'] };
@@ -1737,8 +1820,15 @@ function claimCardUnlocked(board, id, { as, lease = '2h', workdir, registry = lo
   // taking over an expired claim: the previous holder may have left unfinished changes in its working directory (when that is on this machine)
   const prev = chk.d.state === 'claimed' ? chk.info.claim : null;
   const warnings = prev?.workdir && workdirDirty(prev.workdir) ? [`the previous claim of ${prev.agent} on ${id} named the working directory ${sanitize(prev.workdir, 200)}, which has uncommitted changes on this machine; reconcile it (look at git status and git diff there, ask the previous holder or the owner) before continuing, and do not overwrite someone else's changes`] : [];
+  let workDeps;
+  if ((compareVersions(board.config.requires, '0.15.0') ?? -1) >= 0 && statusOf(board, c) === 'ready' && depsOf(c).length) {
+    const byId = new Map(board.cards.map((x) => [x.header.id, x]));
+    if (depsOf(c).some((dep) => !depMet(board, c, dep, byId))) return { status: 'refused', message: 'dependency is not currently accepted' };
+    try { workDeps = dependencyBasis(board, c); } catch { return { status: 'refused', message: 'dependency basis is not current' }; }
+  }
   const original = fs.readFileSync(c.file);
   let t = setHeader(readNorm(c), 'delegate', formatDelegate({ ...chk.d, state: 'claimed' }));
+  if (workDeps) t = setHeader(t, 'work_deps', workDeps);
   if (statusOf(board, c) === 'ready') t = setHeader(t, 'status', 'doing'); // P5.41 a3: claiming starts the work
   else if (statusOf(board, c) === 'blocked' && /^owner answer /.test(c.header.blocked ?? '')) { t = setHeader(t, 'status', 'doing'); t = removeHeader(t, 'blocked'); }
   for (const [k, v] of chk.basis?.header ?? []) t = setHeader(t, k, v);
@@ -1867,6 +1957,7 @@ function reportCardUnlocked(board, id, { as, text, commit = null, timeout = netT
   const bad = need(info, 'claimed');
   if (bad) return { status: 'refused', message: bad };
   if (!info.claim || info.claim.agent !== who.executor) return { status: 'refused', message: `only the claimant may report (claimed by ${info.claim?.agent ?? 'nobody'})` };
+  if (workBasisStale(board, c)) return { status: 'refused', message: 'dependency changed: checkpoint the current work and reassess its impact before reporting' };
   // P5.41 a4: every criterion the delegation handed over must have an Evidence line
   const crits = info.delegate.criteria === 'all' ? c.criteria.map((x) => x.id) : (info.delegate.criteria ?? []);
   const missing = crits.filter((x) => !c.evidence.has(x));
@@ -3076,7 +3167,7 @@ function machinePause(env, io) {
 
 export function tickText(t) {
   if (t.decision === 'paused') return [`tick ${t.agent}: paused`, `pause: ${t.pause?.reason ?? 'no reason given'}${t.pause?.until ? ` (until ${t.pause.until})` : ''}`].join('\n'); // stable: no clock, so a monitor sees the same text until the owner changes the pause (seam, P5.5)
-  if (t.decision === 'idle') return [`tick ${t.agent}: idle`, ...t.sync.filter((l) => l.startsWith('requires: '))].join('\n'); // one line: nothing that can change while nothing happens (no limits probe, no sync noise); only a refusal for a too-new board (P5.14) is added
+  if (t.decision === 'idle') return [`tick ${t.agent}: idle`, ...t.sync.filter((l) => l.startsWith('requires: ') || l.startsWith('milestones: '))].join('\n'); // one line: nothing that can change while nothing happens (no limits probe, no sync noise); only a refusal for a too-new board (P5.14) is added
 
   return [`tick ${t.agent}: ${t.decision}`, ...t.items.map(itemText), limitsText(t.limits), ...t.sync].join('\n');
 }
@@ -3307,7 +3398,8 @@ export async function tickCommand(flags, args, io, env = process.env) {
       limits = { provider, state: 'not-checked' };
     }
     const decision = !items.length ? 'idle' : limits.state === 'reserve' ? 'blocked-reserve' : limits.state === 'unknown' ? 'blocked-unknown' : 'work';
-    const t = { agent: shown, as: asGiven, agentExecutor: agent, decision, limits, items, sync: [...pulled, ...unreadable, ...refused].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
+    const milestones = loaded.filter((b) => !boardRequires(b.board.config)).flatMap((b) => { const m = milestoneSummary(b.board); return m ? [`milestones: ${sanitize(b.name, 40)}: ${milestoneLine(m)}`] : []; });
+    const t = { agent: shown, as: asGiven, agentExecutor: agent, decision, limits, items, sync: [...pulled, ...unreadable, ...refused, ...milestones].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
     appendTickLedger(env, { time: isoAt(), agent, decision, counts: countKinds(items), limits: { provider: limits.provider, state: limits.state }, ...(filter ? { filter } : {}) });
     await MODULE_REG.runTickHooks({ agent, decision, limits, items, sync: t.sync, boardDirs: t.boardDirs, filter, routines: loaded.flatMap((b) => { try { return routineRows(b.board).map((r) => ({ project: b.name, ...r })); } catch { return []; } }), env, api: moduleApi() }, io); // module tick hooks (seam): no-op without hooks
     if (flags.json) out(JSON.stringify({ agent, decision, limits, items, sync: t.sync }, null, 2));
@@ -4300,8 +4392,8 @@ export const COMMANDS = {
   accept: {
     group: 'Delegate', effect: 'write', summary: 'the acceptor takes a reported result',
     purpose: 'The allowed acceptor (accept=by: the delegating agent; reviewer: an agent with can_accept in the registry, or any non-script agent without a registry; an agent name) takes the reported result. Never a script; accept=owner is refused because the owner accepts by hand. Removes delegate and claim; moves the card to review when every criterion has evidence, otherwise says which lack it.',
-    usage: ['roadctl accept <id> --as AGENT'],
-    flags: [['--as AGENT', 'the acceptor (required)']],
+    usage: ['roadctl accept <id> --as AGENT', 'roadctl accept <id> --rule --as AGENT --repo DIR [--snapshot]'],
+    flags: [['--as AGENT', 'the acceptor (required)'], ['--rule', 'accept by rule with recorded tests and independent review'], ['--repo DIR', 'clean repository containing the checked revision'], ['--snapshot', 'print the revision and basis for rule evidence without writing'], ['--recheck', 'recheck a stale rule acceptance using fresh test and independent review evidence']],
     examples: ['roadctl accept P4.2 --as claude-code@home-wsl'],
     changes: 'Removes the delegate and claim headers, one Log line, and possibly the status (doing -> review). Not committed: run roadctl save.', exits: '0 ok; 1 refused (not allowed, not reported); 2 usage error, unknown card or no board found',
   },
@@ -4467,7 +4559,7 @@ ROUTINE_SECTIONS.push(...MODULE_REG.routineSections);
 TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
-const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
+const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, criteriaProblems, readyMilestones, milestoneSummary, milestoneLine, ruleStale, workBasisStale, checkpointWorkBasis, depMet, withRepoLock, repoLockDead, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
   boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits, resolveAs: (name, reg) => WHO.resolveAs(name, reg) }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
@@ -4534,6 +4626,7 @@ function parse(argv) {
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
   for (const f of ['--file', '--wait', '--tests', '--repo', '--base', '--branch', '--dir', '--note']) withValue.add(f); // P5.41 B: lock, handoff, worktree
   withValue.add('--cwd'); // P5.43: `roadctl limit-checkpoint --cwd DIR`
+  withValue.add('--cards').add('--why'); // P5.35: milestone add and move
   withValue.add('--owner-answers'); // P5.48: the snapshot supplied at routine startup
   const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
   const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile', '--hash', '--since', '--accept-from', '--role', '--needs']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7; --hash: P5.33; --since, --accept-from: P5.27
@@ -4784,6 +4877,13 @@ async function mainRun(argv, io, audit) {
       }
       case 'accept': {
         if (!args[1] || !flags.as) throw new Error('usage: roadctl accept <id> --as AGENT');
+        if (flags.rule) {
+          const { acceptRule, ruleSnapshot } = await import('./roadctl/rule-acceptance.mjs');
+          if (flags.snapshot) return out(JSON.stringify(ruleSnapshot(board, args[1], flags.repo), null, 2)), 0;
+          const r = acceptRule(board, args[1], flags.as, moduleApi(), flags.repo, { recheck: Boolean(flags.recheck) });
+          if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
+          return out(`${args[1]}: ${flags.recheck ? 'rule acceptance rechecked' : 'accepted by rule; awaiting owner'}. Run roadctl save to publish`), 0;
+        }
         const r = acceptCard(board, args[1], { as: flags.as });
         if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
         return out(`${args[1]}: accepted${r.status === 'review' ? '; every criterion has evidence, moved to review (the owner still accepts the card)' : `; stays ${r.status}; ${r.note}`}. Run roadctl save to publish`), 0;

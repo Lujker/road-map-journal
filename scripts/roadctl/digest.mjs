@@ -165,6 +165,11 @@ function gitOwnerCommands(boards, api, sinceDay) {
       }
     }
     for (const r of b.routines ?? []) for (const l of r.log ?? []) if (/^(ON|OFF)\b/.test(l.text) && l.date >= sinceDay && r.header.id) out.push({ command: `routine ${l.text.slice(0, 3).trim().toLowerCase()}`, target: r.header.id, by: l.author, outcome: 'ok' });
+    const milestones = path.join(b.dir, 'milestones');
+    if (fs.existsSync(milestones)) for (const file of fs.readdirSync(milestones).filter((f) => f.endsWith('.md'))) {
+      const milestone = api.parseCard(path.join(milestones, file));
+      for (const l of milestone.log ?? []) if (/^MILESTONE (CONTINUE|MOVE|DONE|RETURN)\b/.test(l.text) && l.date >= sinceDay) out.push({ command: `milestone ${l.text.split(' ')[1].toLowerCase()}`, target: file.slice(0, -3), by: l.author, outcome: 'ok' });
+    }
     const m = readMandate(b, api);
     if (m?.approved && dated(`${m.approved.by}, ${m.approved.date}`) !== null) out.push({ command: 'mandate approve', target: projectOf(b), by: m.approved.by, outcome: 'ok' });
   }
@@ -423,10 +428,12 @@ function daily({ boards, refused, env, api, now, language }) {
   for (const b of boards) {
     const project = projectOf(b);
     const bw = dailyWords(b.config?.language);
+    const milestoneSummary = api.milestoneSummary(b);
+    if (milestoneSummary) lines.push(`${project}: milestones: ${api.milestoneLine(milestoneSummary)}`);
     if ((api.compareVersions(b.config.requires, '0.13.0') ?? -1) >= 0) {
       // P5.44 a1: an unreadable Questions section refuses its own card (a line of its own, from ownerItems), so one broken card
       // does not hide the decisions of the others or the rest of the overview
-      for (const item of ownerItems(b, now)) {
+      for (const item of ownerItems(b, now, api)) {
         if (item.type === 'refused') lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}`);
         else if (['decision', 'proposed', 'milestone'].includes(item.type)) lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}${item.undoable ? ' (undo available)' : ''}`);
       }

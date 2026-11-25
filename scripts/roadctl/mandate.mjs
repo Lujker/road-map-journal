@@ -144,7 +144,7 @@ export function admission(board, card, m, mode, api) {
     if (!(mode === 'delegate' ? ['ready', 'doing'] : ['ready']).includes(st)) reasons.push(`not ready (${st})`);
     if ('delegate' in h || 'claim' in h) reasons.push('delegated');
     const byId = new Map(board.cards.map((c) => [c.header.id, c]));
-    const open = (h.depends_on ?? '').split(',').map((x) => x.trim()).filter(Boolean).filter((d) => !byId.has(d) || statusOf(board, byId.get(d)) !== 'done');
+    const open = (h.depends_on ?? '').split(',').map((x) => x.trim()).filter(Boolean).filter((d) => !api.depMet(board, card, d, byId));
     if (open.length) reasons.push(`deps open: ${open.join(', ')}`);
     const lacking = Object.entries(LABELS).filter(([, names]) => !filled(card, names)).map(([label]) => label);
     if (lacking.length) reasons.push(`Plan or Delegation lacks (or only has the template for): ${lacking.join(', ')}`);
