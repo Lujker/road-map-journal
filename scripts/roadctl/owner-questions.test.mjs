@@ -720,3 +720,27 @@ test('P5.44 a1: one card with a broken Questions section refuses its own inbox i
   const now = f.run(['lint']);
   assert.match(now.stdout, /Questions section cannot be read, so tick offers nothing for this card/);
 });
+
+test('P5.35: a ready file milestone reaches inbox and daily digest, and defer hides it only until its deadline', (t) => {
+  const f = fixture(t);
+  const cards = path.join(f.board, 'cards');
+  fs.writeFileSync(path.join(cards, 'A.md'), '---\nid: A\ntitle: First\nstatus: done\n---\n');
+  fs.writeFileSync(path.join(cards, 'B.md'), '---\nid: B\ntitle: Second\nstatus: doing\n---\n');
+  const dir = path.join(f.board, 'milestones'); fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, 'M.md'), '---\nid: M\ntitle: Release\ncards: A, B\n---\n');
+  const items = (extra) => JSON.parse(f.run(['inbox', '--json'], undefined, extra).stdout).items;
+  assert.ok(!items().some((i) => i.target === 'M'));
+  fs.writeFileSync(path.join(cards, 'B.md'), '---\nid: B\ntitle: Second\nstatus: review\naccepted: rule\n---\n');
+  const ready = items().filter((i) => i.target === 'M');
+  assert.equal(ready.length, 1); assert.deepEqual(ready[0].cards, ['A', 'B']);
+  assert.deepEqual(inboxProblems({ version: 2, items: ready }), []);
+  fs.appendFileSync(path.join(cards, 'A.md'), '\n## Evidence\n- changed\n');
+  assert.notEqual(items().find((i) => i.target === 'M').hash, ready[0].hash);
+  assert.match(f.run(['digest', '--daily']).stdout, /milestone: M "Release" cards=A,B/);
+  const deferred = f.run(['inbox', 'defer', 'M', 'milestone', '--until', '2026-11-20T12:00:00Z', '--by', 'Owner']);
+  assert.equal(deferred.status, 0, deferred.stderr);
+  assert.ok(!items().some((i) => i.target === 'M'));
+  assert.doesNotMatch(f.run(['digest', '--daily']).stdout, /milestone: M/);
+  assert.ok(items({ ROADCTL_NOW: '2026-11-20T12:00:00Z' }).some((i) => i.target === 'M'));
+  assert.match(f.run(['digest', '--daily'], undefined, { ROADCTL_NOW: '2026-11-20T12:00:00Z' }).stdout, /milestone: M/);
+});

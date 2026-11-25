@@ -276,7 +276,10 @@ function inbox({ args, flags, api, env, out }) {
   if (args[1] === 'defer') {
     if (args.length !== 4 || !agentPattern.test(flags.by ?? '') || typeof flags.until !== 'string') throw new Error('usage: roadctl inbox defer ID QUESTION --until ISO --by OWNER --board DIR');
     const board = boardOf(flags, api);
-    const { item } = itemOf(board, args[2]);
+    const milestone = args[3] === 'milestone' && api.readyMilestones(board).find((m) => m.id === args[2]);
+    const existing = [...board.cards, ...(board.routines ?? [])].some((x) => x.header.id === args[2]);
+    if (milestone && existing) throw new Error('ambiguous milestone target');
+    const item = milestone ? { file: path.join(board.dir, 'milestones', `${milestone.id}.md`) } : itemOf(board, args[2]).item;
     const time = new Date(flags.until);
     if (!Number.isFinite(time.getTime()) || time.getTime() <= api.nowMs(env)) throw new Error('deferral must be a future time');
     let raw = rawItem(item);
@@ -288,7 +291,7 @@ function inbox({ args, flags, api, env, out }) {
       raw = putQuestions(raw, rows);
     } else {
       const type = args[3];
-      if (!['review', 'approval', 'escalation', 'proposed', 'milestone'].includes(type) || !ownerItems(board, Number.MAX_SAFE_INTEGER).some((x) => x.target === args[2] && x.type === type)) throw new Error('no matching inbox item');
+      if (!['review', 'approval', 'escalation', 'proposed', 'milestone'].includes(type) || !ownerItems(board, Number.MAX_SAFE_INTEGER, api).some((x) => x.target === args[2] && x.type === type)) throw new Error('no matching inbox item');
       raw = changeHeader(raw, 'inbox_defer', `${type} ${until}`);
     }
     write(item, log(raw, when(env, api).slice(0, 10), flags.by, `DEFER ${args[3]} until ${until}`));
@@ -297,14 +300,14 @@ function inbox({ args, flags, api, env, out }) {
   }
   if (args.length !== 1) throw new Error('usage: roadctl inbox --board DIR [--json]');
   const board = boardOf(flags, api);
-  const items = ownerItems(board, api.nowMs(env));
+  const items = ownerItems(board, api.nowMs(env), api);
   // P5.44 a1 round 2: version 2, because the v1 item types are a closed set: a v1 client refuses this envelope by its version instead of failing on one broken card
   if (flags.json) out(JSON.stringify({ version: 2, items }, null, 2));
   else if (!items.length) out('inbox: empty');
   else for (const i of items) out(`${i.type} ${i.target}: ${i.confirmation}`);
   return 0;
 }
-export function ownerItems(board, time) {
+export function ownerItems(board, time, api) {
   const items = [];
   for (const item of [...board.cards, ...(board.routines ?? [])]) {
     const raw = rawItem(item);
@@ -344,6 +347,15 @@ export function ownerItems(board, time) {
         items.push({ type: 'escalation', target: item.header.id, text: lastRun.text, hash, confirmation: `escalation: ${item.header.id} "${asLine(item.header.title ?? '')}" scope=${scope} hash=${hash.slice(0, 12)}`, quote: lastRun.text });
       }
     }
+  }
+  for (const milestone of api.readyMilestones(board)) {
+    if (!/^[A-Za-z0-9._-]+$/.test(milestone.id)) continue;
+    const defer = /^milestone (\S+)$/.exec(milestone.header.inbox_defer ?? '');
+    if (defer && Date.parse(defer[1]) > time) continue;
+    const raw = fs.readFileSync(path.join(board.dir, 'milestones', `${milestone.id}.md`), 'utf8');
+    const hash = sha(JSON.stringify([raw, ...milestone.cards.map((id) => rawItem(board.cards.find((c) => c.header.id === id)))]));
+    const title = asLine(milestone.header.title ?? milestone.id);
+    items.push({ type: 'milestone', target: milestone.id, title, cards: milestone.cards, hash, confirmation: `milestone: ${milestone.id} "${title}" cards=${milestone.cards.join(',')} hash=${hash.slice(0, 12)}` });
   }
   return items;
 }

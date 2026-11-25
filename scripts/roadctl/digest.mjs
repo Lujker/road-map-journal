@@ -426,7 +426,7 @@ function daily({ boards, refused, env, api, now, language }) {
     if ((api.compareVersions(b.config.requires, '0.13.0') ?? -1) >= 0) {
       // P5.44 a1: an unreadable Questions section refuses its own card (a line of its own, from ownerItems), so one broken card
       // does not hide the decisions of the others or the rest of the overview
-      for (const item of ownerItems(b, now)) {
+      for (const item of ownerItems(b, now, api)) {
         if (item.type === 'refused') lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}`);
         else if (['decision', 'proposed', 'milestone'].includes(item.type)) lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}${item.undoable ? ' (undo available)' : ''}`);
       }
