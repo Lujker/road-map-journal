@@ -666,6 +666,20 @@ export function readyMilestones(board, { waiting = false, continued = false } = 
 
 const pendingMilestoneOperation = (board) => Boolean(STATE?.milestoneTransactionFile && fs.existsSync(STATE.milestoneTransactionFile(board, process.env)));
 
+export function ruleStale(board, card) {
+  if (!card.header.rule_id) return false;
+  try { return card.header.rule_content !== ruleContent(card) || card.header.rule_deps !== dependencyBasis(board, card); } catch { return true; }
+}
+
+export function milestoneSummary(board) {
+  if ((compareVersions(board.config.requires, '0.15.0') ?? -1) < 0) return null;
+  const waiting = readyMilestones(board, { waiting: true }).length;
+  const recovery = pendingMilestoneOperation(board);
+  const reason = recovery ? 'milestone operation awaits recovery' : waiting >= 2 ? 'two milestones await owner decision' : null;
+  return { waiting, blocked: Boolean(reason), reason };
+}
+const milestoneLine = (summary) => `${summary.waiting} milestone(s) awaiting owner decision${summary.reason ? `; starts paused: ${summary.reason}` : ''}`;
+
 /** seam (P5.28): `start-admit`: a module may refuse a START for a queued card that passed every core check: [{ text, module }]. */
 function startRefusals(board, card, row) {
   const out = [];
@@ -732,13 +746,14 @@ export function autonomyReport(project, board, reg = null) {
   else if (reg) candidates = Object.keys(reg.agents).filter((a) => isOrchestrator(a, reg));
   const would = candidates ? candidates.map((a) => ({ agent: a, orchestrator: isOrchestrator(a, reg), start: autonomyStart(board, a, reg)?.id ?? null })) : null;
   const rr = routineRows(board);
-  return { project, enabled: au.enabled, present: au.present, agents: au.agents, errors: au.errors, queue: rows, auto_not_queued: autoNotQueued, next: rows.find((r) => r.next)?.id ?? null, would_start: would, routines: { enabled: au.routines, items: rr } };
+  return { project, ...(milestoneSummary(board) ? { milestones: milestoneSummary(board) } : {}), enabled: au.enabled, present: au.present, agents: au.agents, errors: au.errors, queue: rows, auto_not_queued: autoNotQueued, next: rows.find((r) => r.next)?.id ?? null, would_start: would, routines: { enabled: au.routines, items: rr } };
 }
 
 export function formatAutonomy(r, prefix = '') {
   const L = [];
   const agents = r.agents.length ? r.agents.join(', ') : 'any orchestrator';
   L.push(`${prefix}autonomy ${r.enabled ? 'ON' : 'OFF'}${r.enabled ? '' : ' (nothing starts unattended; explicit delegations are not affected)'} | agents: ${sanitize(agents, 120)} | queue: ${r.queue.length}`);
+  if (r.milestones) L.push(`${prefix}milestones: ${milestoneLine(r.milestones)}`);
   for (const e of r.errors) L.push(`${prefix}  ERROR ${sanitize(e, 120)}; autonomy is treated as OFF, run roadctl lint`);
   for (const q of r.queue) {
     const mark = q.auto ? ' auto' : '';
@@ -1156,6 +1171,9 @@ export function brief(board) {
   const l = [`roadctl brief (${sanitize(board.config.title || path.basename(board.project), 60)}; board at ${path.relative(board.project, board.dir) || '.'})`];
   const needs = boardRequires(board.config); // P5.14
   if (needs) l.push(`REQUIRES ${needs}: update roadctl before any unattended work on this board (roadctl tick offers nothing here)`);
+  const milestones = milestoneSummary(board);
+  if (milestones) l.push(`MILESTONES ${milestoneLine(milestones)}`);
+  for (const c of board.cards.filter((card) => ruleStale(board, card))) l.push(`STALE RULE [${c.header.id}]: dependency or evidence changed; impact check required`);
   for (const c of by('doing')) l.push(`DOING [${c.header.id}] ${sanitize(c.header.title, 80)} | approved: ${approvedText(c)} | as_of ${sanitize(c.header.as_of, 10)}${nextOpen(c) ? ` | next ${nextOpen(c)}` : ''}`);
   for (const c of by('review')) l.push(`REVIEW [${c.header.id}] ${sanitize(c.header.title, 80)} | ${c.header.accepted === 'rule' ? 'accepted by rule; ' : ''}awaiting owner acceptance, do not mark done`);
   for (const c of by('blocked')) l.push(`BLOCKED [${c.header.id}] ${sanitize(c.header.title, 60)} | ${sanitize(c.header.blocked, 80)}`);
@@ -1208,6 +1226,7 @@ export function cardRow(board, c) {
     title: c.header.title,
     status: statusOf(board, c),
     ...(c.header.accepted === 'rule' ? { accepted: 'rule' } : {}),
+    ...(ruleStale(board, c) ? { rule_stale: true } : {}),
     approved: scopesOf(c.header.approved),
     auto: scopesOf(c.header.approved).includes('auto'),
     queue: position || null,
@@ -1233,6 +1252,7 @@ export function statusSummary(project, board, { sync = null } = {}) {
   const delegated = delegationRows(board);
   return {
     project,
+    ...(milestoneSummary(board) ? { milestones: milestoneSummary(board) } : {}),
     counts,
     delegations: delegationCounts(delegated),
     delegated,
@@ -1240,6 +1260,7 @@ export function statusSummary(project, board, { sync = null } = {}) {
     routines: { switch: autonomyOf(board).routines, ...routineCounts(routineRows(board)) },
     doing: rows('doing'),
     review: rows('review'),
+    ...(board.cards.some((c) => ruleStale(board, c)) ? { stale_rule: board.cards.filter((c) => ruleStale(board, c)).map((c) => c.header.id) } : {}),
     blocked: rows('blocked'),
     oldest_as_of: active.map((c) => c.header.as_of).sort()[0] ?? null,
     lint: { errors: f.filter((x) => x.level === 'error').length, warnings: f.filter((x) => x.level === 'warning').length },
@@ -1255,6 +1276,8 @@ export function formatStatus(summaries) {
   const row = (r) => r.map((x, i) => (i === 0 || i === r.length - 1 ? x.padEnd(w[i]) : x.padStart(w[i]))).join('  ').trimEnd();
   const out = [row(head), ...table.map(row)];
   for (const s of summaries) {
+    if (s.milestones) out.push(`${s.project}: milestones: ${milestoneLine(s.milestones)}`);
+    for (const id of s.stale_rule ?? []) out.push(`${s.project}: STALE RULE [${id}]: dependency or evidence changed; impact check required`);
     for (const c of s.doing) out.push(`${s.project}: DOING [${c.id}] ${sanitize(c.title, 80)} | approved: ${c.approved.join('+') || 'no'}`);
     for (const c of s.review.filter((c) => c.accepted === 'rule')) out.push(`${s.project}: REVIEW [${c.id}] ${sanitize(c.title, 80)} | accepted by rule; awaiting owner acceptance`);
     if (s.routines?.total) out.push(`${s.project}: ROUTINES switch ${s.routines.switch ? 'on' : 'off'}, ${s.routines.total} routine(s), ${s.routines.enabled} on, due now ${s.routines.due}`);
@@ -1353,6 +1376,7 @@ export function briefJson(board) {
   const rows = (s) => board.cards.filter((c) => statusOf(board, c) === s).map((c) => cardRow(board, c));
   return {
     title: board.config.title || path.basename(board.project),
+    ...(milestoneSummary(board) ? { milestones: milestoneSummary(board) } : {}),
     board: path.relative(board.project, board.dir) || '.',
     doing: rows('doing'),
     review: rows('review'),
@@ -3114,7 +3138,7 @@ function machinePause(env, io) {
 
 export function tickText(t) {
   if (t.decision === 'paused') return [`tick ${t.agent}: paused`, `pause: ${t.pause?.reason ?? 'no reason given'}${t.pause?.until ? ` (until ${t.pause.until})` : ''}`].join('\n'); // stable: no clock, so a monitor sees the same text until the owner changes the pause (seam, P5.5)
-  if (t.decision === 'idle') return [`tick ${t.agent}: idle`, ...t.sync.filter((l) => l.startsWith('requires: '))].join('\n'); // one line: nothing that can change while nothing happens (no limits probe, no sync noise); only a refusal for a too-new board (P5.14) is added
+  if (t.decision === 'idle') return [`tick ${t.agent}: idle`, ...t.sync.filter((l) => l.startsWith('requires: ') || l.startsWith('milestones: '))].join('\n'); // one line: nothing that can change while nothing happens (no limits probe, no sync noise); only a refusal for a too-new board (P5.14) is added
 
   return [`tick ${t.agent}: ${t.decision}`, ...t.items.map(itemText), limitsText(t.limits), ...t.sync].join('\n');
 }
@@ -3345,7 +3369,8 @@ export async function tickCommand(flags, args, io, env = process.env) {
       limits = { provider, state: 'not-checked' };
     }
     const decision = !items.length ? 'idle' : limits.state === 'reserve' ? 'blocked-reserve' : limits.state === 'unknown' ? 'blocked-unknown' : 'work';
-    const t = { agent: shown, as: asGiven, agentExecutor: agent, decision, limits, items, sync: [...pulled, ...unreadable, ...refused].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
+    const milestones = loaded.filter((b) => !boardRequires(b.board.config)).flatMap((b) => { const m = milestoneSummary(b.board); return m && (m.waiting || m.blocked) ? [`milestones: ${sanitize(b.name, 40)}: ${milestoneLine(m)}`] : []; });
+    const t = { agent: shown, as: asGiven, agentExecutor: agent, decision, limits, items, sync: [...pulled, ...unreadable, ...refused, ...milestones].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
     appendTickLedger(env, { time: isoAt(), agent, decision, counts: countKinds(items), limits: { provider: limits.provider, state: limits.state }, ...(filter ? { filter } : {}) });
     await MODULE_REG.runTickHooks({ agent, decision, limits, items, sync: t.sync, boardDirs: t.boardDirs, filter, routines: loaded.flatMap((b) => { try { return routineRows(b.board).map((r) => ({ project: b.name, ...r })); } catch { return []; } }), env, api: moduleApi() }, io); // module tick hooks (seam): no-op without hooks
     if (flags.json) out(JSON.stringify({ agent, decision, limits, items, sync: t.sync }, null, 2));
@@ -4505,7 +4530,7 @@ ROUTINE_SECTIONS.push(...MODULE_REG.routineSections);
 TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
-const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, criteriaProblems, readyMilestones, depMet, withRepoLock, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
+const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, criteriaProblems, readyMilestones, milestoneSummary, milestoneLine, ruleStale, depMet, withRepoLock, repoLockDead, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
   boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits, resolveAs: (name, reg) => WHO.resolveAs(name, reg) }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {

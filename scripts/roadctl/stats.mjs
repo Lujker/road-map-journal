@@ -165,7 +165,7 @@ export function computeStats({ boards, env, api, since = '0000-00-00', acceptFro
     owner_wait: { review_to_acceptance: reviewWait(boards, { since, acceptFrom, today }), question_to_answer: { n: 0, median_days: null, p90_days: null } },
     escalations: { escalated_runs: outcome('escalated'), asks: runs.filter((r) => r.fields.needs_owner).length, top_problems: [...problems.values()].sort((a, b) => b.n - a.n || a.key.localeCompare(b.key)).slice(0, 10) },
     returns: { returned: returned.length, cards: new Set(returned).size, task_reports: taskRuns, share_of_reports: share(returned.length, taskRuns) },
-    mandate: { boards: boards.map((b) => { const m = readMandate(b, api); return { project: projectOf(b), level: m?.level ?? null, state: m?.state ?? 'none' }; }), started_by_mandate: { n: taken.length, cards: [...new Set(taken)].sort() }, proposed, undone_share: questionsValid ? share(decisions.filter((q) => q.state === 'undone').length, decisions.length) : null, blocking_questions_per_week: questionsValid ? blocking.length : null, milestone_returns: milestoneFormat ? milestoneReturns : null },
+    mandate: { boards: boards.map((b) => { const m = readMandate(b, api); return { project: projectOf(b), level: m?.level ?? null, state: m?.state ?? 'none' }; }), started_by_mandate: { n: taken.length, cards: [...new Set(taken)].sort() }, proposed, undone_share: questionsValid ? share(decisions.filter((q) => q.state === 'undone' && Date.parse(q.undone) <= now).length, decisions.length) : null, blocking_questions_per_week: questionsValid ? blocking.length : null, milestone_returns: milestoneFormat ? milestoneReturns : null },
   };
 }
 

@@ -302,9 +302,13 @@ function inbox({ args, flags, api, env, out }) {
   const board = boardOf(flags, api);
   const items = ownerItems(board, api.nowMs(env), api);
   // P5.44 a1 round 2: version 2, because the v1 item types are a closed set: a v1 client refuses this envelope by its version instead of failing on one broken card
-  if (flags.json) out(JSON.stringify({ version: 2, items }, null, 2));
-  else if (!items.length) out('inbox: empty');
-  else for (const i of items) out(`${i.type} ${i.target}: ${i.confirmation}`);
+  const milestones = api.milestoneSummary(board);
+  if (flags.json) out(JSON.stringify(milestones ? { version: 3, items, milestones } : { version: 2, items }, null, 2));
+  else {
+    if (milestones) out(`milestones: ${api.milestoneLine(milestones)}`);
+    if (!items.length) out('inbox: empty');
+    else for (const i of items) out(`${i.type} ${i.target}: ${i.confirmation}`);
+  }
   return 0;
 }
 export function ownerItems(board, time, api) {
@@ -320,6 +324,10 @@ export function ownerItems(board, time, api) {
       // P5.44 a1 round 2: the item keeps every field the contract requires (target, hash, confirmation), so a v2 client validates it as it validates the others
       items.push({ type: 'refused', target: item.header.id, hash: sha(raw), reason, confirmation: `${item.header.id} "${asLine(item.header.title ?? '')}": the Questions section cannot be read, so nothing is shown for this item: ${reason}` });
       continue;
+    }
+    if (board.cards.includes(item) && api.ruleStale(board, item)) {
+      const reason = 'rule acceptance is stale: dependency or evidence changed; impact check required';
+      items.push({ type: 'refused', target: item.header.id, hash: sha(raw), reason, confirmation: `${item.header.id}: ${reason}` });
     }
     for (const q of rows) {
       if (!['waiting', 'decided'].includes(q.state) || (q.defer_until && Date.parse(q.defer_until) > time)) continue;

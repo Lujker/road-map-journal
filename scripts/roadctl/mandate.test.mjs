@@ -616,13 +616,15 @@ test('P5.35: milestone done requires the shown hash and accepts its current card
   const r = rig({ requires: '0.15.0' });
   r.write(); r.approve();
   r.put('A', { status: 'done' });
-  r.put('B', { status: 'review', extra: `accepted: rule\nrule_id: ${'b'.repeat(64)}\n` });
-  r.editCard('B', (s) => s.replace('- [ ] a1:', '- [x] a1:') + '\n## Evidence\n- a1: verified\n');
-  const loaded = rc.loadBoard(r.board), cardB = loaded.cards.find((c) => c.header.id === 'B');
-  const basis = dependencyBasis(loaded, cardB), content = ruleContent(cardB);
-  r.editCard('B', (s) => s.replace('accepted: rule\n', `accepted: rule\nrule_deps: ${basis}\nrule_content: ${content}\n`));
+  for (const id of ['B', 'C']) {
+    r.put(id, { status: 'review', extra: `accepted: rule\nrule_id: ${id.toLowerCase().repeat(64)}\n` });
+    r.editCard(id, (s) => s.replace('- [ ] a1:', '- [x] a1:') + '\n## Evidence\n- a1: verified\n');
+    const loaded = rc.loadBoard(r.board), card = loaded.cards.find((c) => c.header.id === id);
+    const basis = dependencyBasis(loaded, card), content = ruleContent(card);
+    r.editCard(id, (s) => s.replace('accepted: rule\n', `accepted: rule\nrule_deps: ${basis}\nrule_content: ${content}\n`));
+  }
   const dir = path.join(r.board, 'milestones'); fs.mkdirSync(dir);
-  fs.writeFileSync(path.join(dir, 'one.md'), '---\nid: one\ncards: A, B\n---\n');
+  fs.writeFileSync(path.join(dir, 'one.md'), '---\nid: one\ncards: A, B, C\n---\n');
   const hash = JSON.parse(r.ok(['inbox', '--json']).stdout).items.find((x) => x.target === 'one').hash;
   const args = ['milestone', 'done', 'one', '--hash', hash, '--by', OWNER];
   assert.equal(r.run(args, { ROADCTL_UNATTENDED: '1' }).status, 1);
@@ -631,7 +633,7 @@ test('P5.35: milestone done requires the shown hash and accepts its current card
   const fresh = JSON.parse(r.ok(['inbox', '--json']).stdout).items.find((x) => x.target === 'one').hash;
   assert.equal(r.run(['milestone', 'done', 'one', '--hash', fresh, '--by', OWNER]).status, 0);
   assert.match(fs.readFileSync(path.join(dir, 'one.md'), 'utf8'), /MILESTONE DONE hash/);
-  assert.match(r.cardText('B'), /status: done/); assert.match(r.cardText('B'), /accepted: Owner, 2026-11-10/);
+  for (const id of ['B', 'C']) { assert.match(r.cardText(id), /status: done/); assert.match(r.cardText(id), /accepted: Owner, 2026-11-10/); }
   assert.ok(!JSON.parse(r.ok(['inbox', '--json']).stdout).items.some((x) => x.target === 'one'));
   assert.notEqual(r.run(['milestone', 'done', 'one', '--hash', fresh, '--by', OWNER]).status, 0);
 });
@@ -663,7 +665,9 @@ test('P5.35: interrupted milestone done resumes by original hash without overwri
   assert.notEqual(r.run(args).status, 0, 'a second milestone action cannot overlap'); lock.release();
   assert.notEqual(r.run(args).status, 0); assert.match(fs.readFileSync(bf, 'utf8'), /foreign change/); assert.ok(fs.existsSync(journal));
   fs.writeFileSync(bf, beforeB);
+  fs.writeFileSync(`${journal}.lock`, JSON.stringify({ pid: 2147483647, host: (await import('node:os')).hostname() }));
   assert.notEqual(r.run(['milestone', 'done', 'one', '--hash', 'b'.repeat(64), '--by', OWNER]).status, 0);
+  assert.ok(!fs.existsSync(`${journal}.lock`), 'a dead local lock owner is taken over immediately');
   const done = r.run(args); assert.equal(done.status, 0, done.stderr); assert.match(done.stdout, /recovered/);
   assert.equal(fs.readFileSync(af, 'utf8'), afterA); assert.equal(fs.readFileSync(bf, 'utf8'), afterB); assert.equal(fs.readFileSync(mf, 'utf8'), afterM); assert.ok(!fs.existsSync(journal));
   assert.ok(r.starts().some((x) => x.id === 'Q'));
@@ -712,4 +716,27 @@ test('P5.35: interrupted milestone return resumes only the original action and h
   const result = r.run(['milestone', 'return', 'one', '--hash', hash, '--by', OWNER]);
   assert.equal(result.status, 0, result.stderr); assert.match(result.stdout, /recovered/);
   assert.equal(fs.readFileSync(mf, 'utf8'), afterM); assert.ok(!fs.existsSync(journal));
+});
+
+test('P5.35 a13: tick, status, autonomy, inbox and daily digest agree on deferred milestone limit', FAKES_SKIP, () => {
+  const r = rig({ requires: '0.15.0' });
+  r.put('A', { status: 'done' }); r.put('B', { status: 'done' });
+  r.put('Q', { kind: 'fix', size: 'S', extra: 'approved: Owner, 2026-11-01, scope=implementation+auto\n' });
+  r.setConfig({ autonomy: { enabled: true, agents: [], queue: ['Q'] } });
+  const dir = path.join(r.board, 'milestones'); fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, 'one.md'), '---\nid: one\ncards: A\n---\n');
+  fs.writeFileSync(path.join(dir, 'two.md'), '---\nid: two\ncards: B\n---\n');
+  assert.equal(r.run(['inbox', 'defer', 'one', 'milestone', '--until', '2099-01-01', '--by', OWNER]).status, 0);
+  const expected = /2 milestone\(s\) awaiting owner decision; starts paused: two milestones await owner decision/;
+  for (const args of [['tick', '--as', ME, '--no-pull'], ['status'], ['brief'], ['autonomy'], ['inbox'], ['digest', '--daily']]) {
+    const result = r.run(args); assert.match(result.stdout, expected, `${args.join(' ')}: ${result.stderr}`);
+  }
+  const inbox = JSON.parse(r.ok(['inbox', '--json']).stdout);
+  assert.equal(inbox.version, 3); assert.deepEqual(inbox.milestones, { waiting: 2, blocked: true, reason: 'two milestones await owner decision' });
+  assert.ok(!inbox.items.some((x) => x.target === 'one'));
+  const tick = JSON.parse(r.run(['tick', '--as', ME, '--no-pull', '--json']).stdout);
+  assert.deepEqual(tickJsonProblems(tick), []); assert.match(tick.sync.join(' '), expected);
+  assert.equal(r.run(['milestone', 'continue', 'one', '--by', OWNER]).status, 0);
+  assert.match(r.run(['inbox']).stdout, /1 milestone\(s\) awaiting owner decision/);
+  assert.ok(r.starts().some((x) => x.id === 'Q'));
 });

@@ -171,3 +171,56 @@ test('P5.35: CLI accepts a current independent review on a 0.15 copy', () => {
   assert.equal(result.status, 0, result.stderr);
   assert.equal(loadBoard(board).cards[0].header.accepted, 'rule');
 });
+
+test('P5.35 a12: real milestone return invalidates active and accepted dependency chains until fresh review', async () => {
+  const { acceptRule, ruleSnapshot } = await import('./rule-acceptance.mjs');
+  const rc = await import('../roadctl.mjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rule-chain-'));
+  const board = path.join(dir, 'board'), repo = path.join(dir, 'repo');
+  fs.mkdirSync(path.join(board, 'cards'), { recursive: true }); fs.mkdirSync(repo);
+  fs.writeFileSync(path.join(board, 'config.json'), JSON.stringify({ board_version: 1, requires: RULE_REQUIRES, autonomy: { enabled: true, agents: [], queue: ['C'] } }));
+  approvedMandate(board);
+  const env = { ...process.env, HOME: dir, XDG_STATE_HOME: path.join(dir, 'state'), ROADCTL_REGISTRY: path.join(dir, 'registry.json'), ROADCTL_NOW: '2026-11-20T10:00:00.000Z', GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid' };
+  const registry = { providers: { test: { kind: 'api', models: { alpha: [], beta: [] } } } };
+  fs.writeFileSync(env.ROADCTL_REGISTRY, JSON.stringify(registry));
+  for (const args of [['init', '-q'], ['commit', '--allow-empty', '-qm', 'initial']]) assert.equal(spawnSync('git', args, { cwd: repo, env }).status, 0);
+  const api = { compareVersions: rc.compareVersions, boardRequires: rc.boardRequires, appendLog: rc.appendLog, loadRegistry: () => registry };
+  const file = (id) => path.join(board, 'cards', `${id}.md`);
+  const write = (id, status, dependency = '') => fs.writeFileSync(file(id), `---\nid: ${id}\ntitle: ${id}\nstatus: ${status}\n${dependency ? `depends_on: ${dependency}\n` : ''}${id === 'C' ? 'approved: Owner, 2026-11-20, scope=implementation+auto\n' : ''}---\n\n## Acceptance\n- [x] a1: works\n\n## Evidence\n- a1: tests passed\n`);
+  const proof = (id) => {
+    const snapshot = ruleSnapshot(rc.loadBoard(board), id, repo);
+    const p = { tests: { result: 'pass', command: 'node --test', ...snapshot }, worker: { agent: 'worker', model: 'alpha', run: 'one', source: 'run log' }, review: { agent: 'reviewer', model: 'beta', run: 'two', source: 'run log', result: 'pass', blockers: [], ...snapshot } };
+    let raw = fs.readFileSync(file(id), 'utf8');
+    raw = /^## Rule Evidence$/m.test(raw) ? raw.replace(/(^## Rule Evidence\n)[^\n]+/m, (_, h) => h + JSON.stringify(p)) : `${raw}\n## Rule Evidence\n${JSON.stringify(p)}\n`;
+    fs.writeFileSync(file(id), raw);
+  };
+  const accept = (id, recheck = false) => acceptRule(rc.loadBoard(board), id, 'orchestrator', api, repo, { recheck });
+  const runnable = () => rc.autonomyRows(rc.loadBoard(board)).some((x) => x.id === 'C' && x.eligible);
+  const cli = fileURLToPath(new URL('../roadctl.mjs', import.meta.url));
+  const run = (args) => spawnSync(process.execPath, [cli, ...args, '--board', board], { cwd: dir, env, encoding: 'utf8' });
+  const returned = () => {
+    const inbox = JSON.parse(run(['inbox', '--json']).stdout), milestone = inbox.items.find((x) => x.target === 'M');
+    const result = run(['milestone', 'return', 'M', '--cards', 'A', '--reason', 'rework', '--hash', milestone.hash, '--by', 'Owner']);
+    assert.equal(result.status, 0, result.stderr);
+  };
+  const rereviewA = () => {
+    fs.writeFileSync(file('A'), fs.readFileSync(file('A'), 'utf8').replace('status: doing', 'status: review'));
+    proof('A'); assert.equal(accept('A').ok, true);
+  };
+  write('A', 'review'); proof('A'); assert.equal(accept('A').ok, true);
+  write('B', 'doing', 'A'); proof('B'); write('C', 'ready', 'B');
+  fs.mkdirSync(path.join(board, 'milestones')); fs.writeFileSync(path.join(board, 'milestones', 'M.md'), '---\nid: M\ncards: A\n---\n');
+  returned();
+  assert.match(fs.readFileSync(file('B'), 'utf8'), /status: doing/, 'active B is not rolled back');
+  rereviewA();
+  fs.writeFileSync(file('B'), fs.readFileSync(file('B'), 'utf8').replace('status: doing', 'status: review'));
+  assert.equal(accept('B').ok, false, 'active B cannot accept with the old basis');
+  proof('B'); assert.equal(accept('B').ok, true); assert.equal(runnable(), true);
+  returned(); assert.equal(runnable(), false);
+  rereviewA(); assert.equal(runnable(), false, 'new A acceptance does not revive B');
+  for (const args of [['status'], ['brief'], ['inbox'], ['digest', '--daily']]) {
+    const view = run(args); assert.match(view.stdout, /STALE RULE.*B|B: rule acceptance is stale/i, args.join(' '));
+  }
+  assert.equal(accept('B', true).ok, false, 'old B evidence does not recheck');
+  proof('B'); assert.equal(accept('B', true).ok, true); assert.equal(runnable(), true);
+});

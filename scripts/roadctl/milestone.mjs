@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import crypto from 'node:crypto';
 import { changeHeader, log, ownerItems } from './owner-questions.mjs';
 import { RULE_REQUIRES, ruleDependencySatisfied } from './rule-acceptance.mjs';
@@ -37,7 +38,7 @@ function command(ctx) {
   if ((ctx.api.compareVersions(board.config.requires, RULE_REQUIRES) ?? -1) < 0 || ctx.api.boardRequires(board.config)) throw new Error(`board must require supported roadctl ${RULE_REQUIRES} or newer`);
   const journal = milestoneTransactionFile(board, ctx.env);
   const result = ctx.api.withRepoLock(board, () => {
-    const lock = acquireLock(`${journal}.lock`, { staleMs: 600000, strict: true });
+    const lock = acquireLock(`${journal}.lock`, { staleMs: 600000, strict: true, content: JSON.stringify({ pid: process.pid, host: os.hostname() }), isStale: ctx.api.repoLockDead });
     if (!lock.ok) throw new Error(`milestone operation is locked (${lock.reason})`);
     try { return runCommand({ ...ctx, board: ctx.api.loadBoard(dir), journal }); } finally { lock.release(); }
   });

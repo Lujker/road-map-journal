@@ -428,6 +428,8 @@ function daily({ boards, refused, env, api, now, language }) {
   for (const b of boards) {
     const project = projectOf(b);
     const bw = dailyWords(b.config?.language);
+    const milestoneSummary = api.milestoneSummary(b);
+    if (milestoneSummary && (milestoneSummary.waiting || milestoneSummary.blocked)) lines.push(`${project}: milestones: ${api.milestoneLine(milestoneSummary)}`);
     if ((api.compareVersions(b.config.requires, '0.13.0') ?? -1) >= 0) {
       // P5.44 a1: an unreadable Questions section refuses its own card (a line of its own, from ownerItems), so one broken card
       // does not hide the decisions of the others or the rest of the overview

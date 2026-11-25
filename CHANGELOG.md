@@ -4,7 +4,7 @@ Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. 
 
 ## Unreleased
 
-- P5.35: roadctl 0.15.0 adds owner-only milestone continue and move; milestone files using the new state require 0.15.0. Continuing leaves cards unaccepted; moving a pending milestone does not waive its decision.
+- P5.35: roadctl 0.15.0 adds owner-only milestone continue and move; milestone files using the new state require 0.15.0. Inbox JSON is version 3 on those boards and includes the milestone limit; older boards retain version 2. Continuing leaves cards unaccepted; moving a pending milestone does not waive its decision.
 
 - P5.35 slice 1: rule acceptance records, version guard, review visibility and revision-bound evidence.
 
