@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { dependencyBasis, ruleContent, ruleDependencySatisfied } from './roadctl/rule-acceptance.mjs';
 // roadctl: optional helper for a board-format project (see docs/board-spec.md).
 // Core in this file; new parts live in scripts/roadctl/ (modules, see docs/developing-roadctl.md). Node standard library only. Files stay the source of truth: roadctl checks,
 // regenerates BOARD.md and makes small, mechanical edits. It never sets `approved` by itself
@@ -50,6 +49,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+
+let dependencyBasis, ruleContent, ruleDependencySatisfied;
+try {
+  ({ dependencyBasis, ruleContent, ruleDependencySatisfied } = await import('./roadctl/rule-acceptance.mjs'));
+} catch (e) {
+  if (e?.code !== 'ERR_MODULE_NOT_FOUND' || e.url !== new URL('./roadctl/rule-acceptance.mjs', import.meta.url).href) throw e;
+}
 
 // seam (P5.28): the state directory and the lock helper live in scripts/roadctl/state.mjs (one definition for the core and the modules).
 // seam (P5.28): lone-copy fallback: a copy of this file without its roadctl/ folder uses the small inline versions below, with the same paths and the same

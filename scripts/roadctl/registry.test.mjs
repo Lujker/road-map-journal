@@ -214,3 +214,13 @@ test('a broken modules folder is not hidden: a module that fails to load stops r
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /missing-dependency\.mjs/);
 });
+
+test('a missing dependency of rule-acceptance is not mistaken for a missing optional module', () => {
+  const dir = tmp('rcm-rule-broken-');
+  fs.copyFileSync(SELF, path.join(dir, 'roadctl.mjs'));
+  fs.mkdirSync(path.join(dir, 'roadctl'));
+  fs.copyFileSync(path.join(scripts, 'roadctl', 'rule-acceptance.mjs'), path.join(dir, 'roadctl', 'rule-acceptance.mjs'));
+  const r = run(path.join(dir, 'roadctl.mjs'), ['version']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /mandate\.mjs/);
+});

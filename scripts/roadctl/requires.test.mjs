@@ -186,9 +186,10 @@ test('a2: a board without requires (or with one this copy satisfies) behaves as 
     r.ok(['routine', 'on', 'mr-status', '--by', 'Owner', '--board', r.boards['my-app']]); // P5.15: from 0.6.0 on a board approves the routine with its hash
     const k = JSON.parse(r.tick().stdout);
     assert.deepEqual(k.items.map((i) => i.kind), ['RUN'], `requires ${ok}`);
-    assert.deepEqual(k.sync, []);
+    assert.deepEqual(k.sync, ok === '0.0.1' ? [] : ['milestones: my-app: 0 milestone(s) awaiting owner decision']);
   }
   // an agent with nothing to do on a board without requires still gets exactly one line
+  r.setRequires('my-app', undefined);
   const idle = r.run(['tick', '--as', 'claude-code@nobody', '--no-pull']);
   assert.equal(idle.stdout, 'tick claude-code@nobody: idle\n');
   assert.equal(idle.status, 4);
