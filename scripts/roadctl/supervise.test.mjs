@@ -477,6 +477,26 @@ test('P5.2 a15: a routine switched off (or a board that requires a newer roadctl
 
 // ---------------------------------------------------------------- a11: the scheduler example
 
+test('P5.21 a4/a5/a7: external runner uses the routine owner and shares the supervisor lock', NEEDS, withRig(async (r) => {
+  r.routine();
+  const tick = (agent) => r.roadctl(['tick', '--as', agent, '--board', r.board, '--json']);
+  assert.ok(JSON.parse(tick(ME).stdout).items.some((x) => x.kind === 'RUN' && x.id === 'mr-status'));
+  assert.ok(!JSON.parse(tick('codex@home-wsl').stdout).items.some((x) => x.kind === 'RUN' && x.id === 'mr-status'));
+  const started = path.join(r.dir, 'started');
+  const release = path.join(r.dir, 'release');
+  const stub = `echo started > '${started}'; while [ ! -f '${release}' ]; do sleep 0.1; done; roadctl routine done mr-status --as '${ME}' --result ok 'stub finished' --board '${r.board}'`;
+  const first = r.start(r.sup('mr-status', ['sh', '-c', stub]));
+  assert.ok(await wait(() => fs.existsSync(started)), 'stub started under supervise');
+  const duplicate = r.roadctl(r.sup('mr-status', ['sh', '-c', `echo duplicate > '${r.dir}/duplicate'`]));
+  assert.equal(duplicate.status, EXIT.busy);
+  assert.equal(fs.existsSync(path.join(r.dir, 'duplicate')), false);
+  fs.writeFileSync(release, '');
+  const result = await first.done;
+  assert.equal(result.code, 0, result.err);
+  assert.match(r.routineText(), /stub finished/);
+  assert.equal(r.runs().filter((x) => x.id === 'mr-status' && x.outcome === 'ok').length, 1);
+}));
+
 test('P5.2 a11: the scheduler example runs the model under supervise: no routine done is recorded as failed and the next tick is idle; a reporting model is ok', NEEDS, withRig(async (r) => {
   r.routine();
   const config = path.join(r.board, 'config.json');
