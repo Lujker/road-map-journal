@@ -6,12 +6,21 @@ import { RULE_REQUIRES } from './rule-acceptance.mjs';
 
 function command({ args, flags, api, env, out }) {
   const [sub, id] = args.slice(1);
-  if (args.length !== 3 || !['continue', 'move'].includes(sub) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id ?? '') || typeof flags.by !== 'string' || !/^[A-Za-z0-9@._:-]{1,100}$/.test(flags.by)) throw new Error('usage: roadctl milestone continue ID --by OWNER | milestone move ID --to YYYY-MM-DD | --cards A,B --by OWNER');
+  if (args.length !== 3 || !['add', 'continue', 'move'].includes(sub) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id ?? '') || (sub !== 'add' && (typeof flags.by !== 'string' || !/^[A-Za-z0-9@._:-]{1,100}$/.test(flags.by)))) throw new Error('usage: roadctl milestone continue ID --by OWNER | milestone move ID --to YYYY-MM-DD | --cards A,B --by OWNER');
   const dir = api.findBoard(process.cwd(), typeof flags.board === 'string' ? flags.board : undefined, env);
   if (!dir) throw new Error('no board found');
   const board = api.loadBoard(dir);
   if ((api.compareVersions(board.config.requires, RULE_REQUIRES) ?? -1) < 0 || api.boardRequires(board.config)) throw new Error(`board must require supported roadctl ${RULE_REQUIRES} or newer`);
   const file = path.join(board.dir, 'milestones', `${id}.md`);
+  if (sub === 'add') {
+    if (typeof flags.cards !== 'string' || typeof flags.why !== 'string' || !flags.why.trim() || /[\r\n\x00-\x1f]/.test(flags.why) || flags.why.length > 500) throw new Error('add needs --cards A,B and --why TEXT');
+    const ids = flags.cards.split(',').map((x) => x.trim());
+    if (ids.some((x) => !x || !board.cards.some((c) => c.header.id === x)) || new Set(ids).size !== ids.length) throw new Error('cards must name distinct existing cards');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, `---\nid: ${id}\ncards: ${ids.join(', ')}\n---\n\n## Goal\n${flags.why.trim()}\n`, { flag: 'wx' });
+    out(`milestone ${id}: added`);
+    return 0;
+  }
   if (!fs.existsSync(file)) throw new Error('unknown milestone');
   const m = api.parseCard(file);
   if (m.errors.length) throw new Error('invalid milestone');
@@ -59,10 +68,10 @@ export default {
   commands: {
     milestone: {
       group: 'Owner only', effect: 'write', owner: { sub: ['continue', 'move'] }, hidden: true,
-      summary: 'continue or move a milestone',
+      summary: 'add, continue or move a milestone',
       purpose: 'Owner decisions on an existing milestone. Continue records consideration without accepting cards. Moving a date or cards does not waive a pending decision.',
-      usage: ['roadctl milestone continue ID --by OWNER', 'roadctl milestone move ID (--to YYYY-MM-DD | --cards A,B) --by OWNER'],
-      flags: [['--by OWNER', 'owner name'], ['--to DATE', 'new date'], ['--cards IDS', 'new card list']],
+      usage: ['roadctl milestone add ID --cards A,B --why TEXT', 'roadctl milestone continue ID --by OWNER', 'roadctl milestone move ID (--to YYYY-MM-DD | --cards A,B) --by OWNER'],
+      flags: [['--why TEXT', 'milestone purpose'], ['--by OWNER', 'owner name'], ['--to DATE', 'new date'], ['--cards IDS', 'new card list']],
       examples: ['roadctl milestone continue M-1 --by Owner'],
       changes: 'Writes the milestone and its Log and the owner audit.', exits: '0 ok; 1 refused; 2 invalid arguments.', run: command,
     },

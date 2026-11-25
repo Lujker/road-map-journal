@@ -4556,7 +4556,7 @@ function parse(argv) {
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
   for (const f of ['--file', '--wait', '--tests', '--repo', '--base', '--branch', '--dir', '--note']) withValue.add(f); // P5.41 B: lock, handoff, worktree
   withValue.add('--cwd'); // P5.43: `roadctl limit-checkpoint --cwd DIR`
-  withValue.add('--cards'); // P5.35: milestone move
+  withValue.add('--cards').add('--why'); // P5.35: milestone add and move
   withValue.add('--owner-answers'); // P5.48: the snapshot supplied at routine startup
   const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
   const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile', '--hash', '--since', '--accept-from', '--role', '--needs']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7; --hash: P5.33; --since, --accept-from: P5.27

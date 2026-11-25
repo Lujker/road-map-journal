@@ -560,3 +560,17 @@ test('P5.35: milestone move never waives a pending decision; continue is owner-o
   fs.unlinkSync(path.join(r.dir, 'state', 'road-map-journal', 'owner-commands.jsonl'));
   assert.match(r.ok(['digest', '--daily']).stdout, /milestone continue one/, 'Log reaches another machine without local audit');
 });
+
+test('P5.35: milestone add validates cards and purpose, never overwrites, and requires format 0.15', () => {
+  const r = rig({ requires: '0.14.0' });
+  r.put('A', { status: 'done' });
+  const args = ['milestone', 'add', 'new', '--cards', 'A', '--why', 'Review outcome'];
+  assert.notEqual(r.run(args).status, 0);
+  r.setConfig({ requires: '0.15.0' });
+  assert.notEqual(r.run(['milestone', 'add', 'bad', '--cards', 'missing', '--why', 'x']).status, 0);
+  assert.equal(r.run(args).status, 0);
+  const file = path.join(r.board, 'milestones', 'new.md'); const before = fs.readFileSync(file, 'utf8');
+  assert.match(before, /Review outcome/);
+  assert.notEqual(r.run(args).status, 0); assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.equal(rc.readyMilestones(rc.loadBoard(r.board))[0].id, 'new');
+});
