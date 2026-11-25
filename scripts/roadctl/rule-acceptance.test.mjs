@@ -61,7 +61,7 @@ test('P5.35 a3: rule acceptance stays in review and is visible in status and bri
 });
 
 test('P5.35 a1: rule acceptance requires green tests, every criterion and an unblocked review', async () => {
-  const { acceptRule, ruleSnapshot } = await import('./rule-acceptance.mjs');
+  const { acceptRule, ruleSnapshot, ruleDependencySatisfied } = await import('./rule-acceptance.mjs');
   const { compareVersions, appendLog } = await import('../roadctl.mjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rule-gate-'));
   fs.mkdirSync(path.join(dir, 'cards'));
@@ -121,6 +121,15 @@ test('P5.35 a1: rule acceptance requires green tests, every criterion and an unb
   const card = loadBoard(dir).cards[0];
   assert.equal(card.header.accepted, 'rule');
   assert.equal(card.header.status, 'review');
+  assert.equal(ruleDependencySatisfied(loadBoard(dir), card, api), true);
+  assert.equal(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo, { recheck: true }).ok, false, 'current acceptance is not repeated');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('- a1: tests passed', '- a1: rechecked'));
+  assert.equal(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo, { recheck: true }).ok, false, 'old test and review are stale');
+  const updated = ruleSnapshot(loadBoard(dir), 'A', repo);
+  Object.assign(proof.tests, updated); Object.assign(proof.review, updated);
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/(## Rule Evidence\n)[^\n]+/, (_, h) => h + JSON.stringify(proof)));
+  assert.equal(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo, { recheck: true }).ok, true);
+  assert.notEqual(loadBoard(dir).cards[0].header.rule_id, card.header.rule_id);
 });
 
 test('P5.35 a10: aliases and effort cannot disguise same model; unknowns and self-review fail', async () => {

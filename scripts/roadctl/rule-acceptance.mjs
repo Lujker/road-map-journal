@@ -26,7 +26,7 @@ export function canonicalModel(value, registry) {
 
 const deps = (card) => (card.header.depends_on ?? '').split(',').map((id) => id.trim()).filter(Boolean);
 const status = (board, card) => board.config.status_map?.[card.header.status] ?? card.header.status;
-export const ruleContent = (card) => crypto.createHash('sha256').update(JSON.stringify({ criteria: card.criteria, evidence: card.sections.Evidence ?? '', proof: card.sections['Rule Evidence'] ?? '', approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', depends_on: card.header.depends_on ?? '' })).digest('hex');
+export const ruleContent = (card) => crypto.createHash('sha256').update(JSON.stringify({ criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), proof: (card.sections['Rule Evidence'] ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', depends_on: card.header.depends_on ?? '' })).digest('hex');
 
 /** A unique acceptance id changes on each rule acceptance; dependencies are checked recursively without rewriting cards. */
 export function dependencyBasis(board, card, seen = new Set()) {
@@ -74,7 +74,7 @@ export function ruleSnapshot(board, id, repo) {
   return { revision, basis: `sha256:${crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex')}` };
 }
 
-export function acceptRule(board, id, as, api, repo) {
+export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
   const refuse = (reason) => ({ ok: false, reasons: [reason] });
   if ((api.compareVersions(board.config.requires, RULE_REQUIRES) ?? -1) < 0 || api.boardRequires(board.config)) return refuse(`board must require supported roadctl ${RULE_REQUIRES} or newer`);
   const mandate = readMandate(board, api);
@@ -82,8 +82,14 @@ export function acceptRule(board, id, as, api, repo) {
   if (!/^[A-Za-z0-9@._:-]+$/.test(as ?? '')) return refuse('an agent is required');
   const c = board.cards.find((x) => x.header.id === id);
   if (!c || c.errors.length) return refuse('card is missing or invalid');
-  if ((board.config.status_map?.[c.header.status] ?? c.header.status) !== 'review') return refuse('card must be in review');
-  if (c.header.accepted) return refuse('card already has an acceptance');
+  const st = board.config.status_map?.[c.header.status] ?? c.header.status;
+  if (recheck) {
+    if (!['review', 'done'].includes(st) || !c.header.rule_id) return refuse('recheck needs a prior rule acceptance in review or done');
+    try { if (c.header.rule_content === ruleContent(c) && c.header.rule_deps === dependencyBasis(board, c)) return refuse('acceptance is already current'); } catch { /* validate dependencies below */ }
+  } else {
+    if (st !== 'review') return refuse('card must be in review');
+    if (c.header.accepted) return refuse('card already has an acceptance');
+  }
   if (!c.criteria.length || c.criteria.some((x) => x.mark !== 'x' || !c.evidence.has(x.id))) return refuse('every criterion must be marked and have evidence');
   let proof;
   try { proof = JSON.parse(c.sections['Rule Evidence']); } catch { return refuse('missing or invalid Rule Evidence'); }
@@ -105,12 +111,12 @@ export function acceptRule(board, id, as, api, repo) {
   const raw = fs.readFileSync(c.file, 'utf8');
   const eol = raw.includes('\r\n') ? '\r\n' : '\n';
   let next = raw.replace(/\r\n/g, '\n');
-  next = changeHeader(next, 'accepted', 'rule');
+  if (!recheck) next = changeHeader(next, 'accepted', 'rule');
   next = changeHeader(next, 'rule_id', crypto.randomBytes(32).toString('hex'));
   next = changeHeader(next, 'rule_deps', dependencyHash);
   next = changeHeader(next, 'rule_content', ruleContent(c));
   fs.writeFileSync(c.file, eol === '\r\n' ? next.replace(/\n/g, eol) : next);
-  api.appendLog(board, id, 'ACCEPTED by rule; awaiting owner', { author: as });
+  api.appendLog(board, id, recheck ? 'RECHECKED rule acceptance' : 'ACCEPTED by rule; awaiting owner', { author: as });
   return { ok: true };
 }
 
