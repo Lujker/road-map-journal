@@ -71,7 +71,7 @@ try {
   if (e?.code !== 'ERR_MODULE_NOT_FOUND' || !/roadctl[\\/]who-takes\.mjs/.test(String(e.message))) throw e;
 }
 
-export const VERSION = '0.14.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.15.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -334,7 +334,7 @@ export function boardRequires(config, version = VERSION) {
   return null;
 }
 const WHO_REQUIRES = '0.14.0'; // the first roadctl that reads profiles and orchestrator/profile pairs in --as and --to
-const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy'], ['0.13.0', 'owner-questions'], ['0.15.0', 'rule-acceptance']]; // required modules for board format versions
+const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy'], ['0.13.0', 'owner-questions'], ['0.15.0', 'rule-acceptance'], ['0.15.0', 'milestone']]; // required modules for board format versions
 
 const statusOf = (board, card) => {
   const s = card.header.status ?? '';
@@ -640,7 +640,7 @@ export function autonomyRows(board, au = autonomyOf(board)) {
 }
 
 // ID is the filename without .md; header retains presentation metadata, including deferral.
-export function readyMilestones(board) {
+export function readyMilestones(board, { waiting = false, continued = false } = {}) {
   const dir = path.join(board.dir, 'milestones');
   if (!fs.existsSync(dir)) return [];
   const cards = new Map(board.cards.map((c) => [c.header.id, c]));
@@ -651,14 +651,15 @@ export function readyMilestones(board) {
       const card = cards.get(id);
       return card && (statusOf(board, card) === 'done' || card.header.accepted === 'rule');
     });
-    return ready ? [{ id: f.slice(0, -3), header: milestone.header, cards: ids }] : [];
+    const pending = ready || milestone.header.milestone_waiting === 'true';
+    return (continued ? milestone.header.milestone_continued === 'true' : waiting ? pending && milestone.header.milestone_continued !== 'true' : ready) ? [{ id: f.slice(0, -3), header: milestone.header, cards: ids }] : [];
   });
 }
 
 /** seam (P5.28): `start-admit`: a module may refuse a START for a queued card that passed every core check: [{ text, module }]. */
 function startRefusals(board, card, row) {
   const out = [];
-  if (readyMilestones(board).length >= 2) out.push({ text: 'two milestones await owner decision', module: 'milestones' });
+  if (readyMilestones(board, { waiting: true }).length >= 2) out.push({ text: 'two milestones await owner decision', module: 'milestones' });
   for (const h of MODULE_REG.callHook('start-admit', { board, card, row, env: process.env, api: moduleApi() })) if (h.value?.admit === false) out.push({ text: sanitize(String(h.value.reason ?? `refused by module ${h.module}`), 100), module: h.module });
   return out;
 }
@@ -1671,7 +1672,7 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
     if (!basis.ok) reasons.push('the card has no approved record; the owner approves before work is delegated', ...basis.reasons);
   }
   if (CLOSED.has(st)) reasons.push(`the card is ${st}`);
-  if (st === 'ready' && readyMilestones(board).length >= 2) reasons.push('two milestones await owner decision');
+  if (st === 'ready' && readyMilestones(board, { waiting: true }).length >= 2) reasons.push('two milestones await owner decision');
   if ('delegate' in c.header || 'claim' in c.header) reasons.push('a delegation is already active on this card (one at a time); accept or return it first');
   const tgt = WHO.resolveTo(to, registry); // P5.41: role, profile, executor or orchestrator
   if (tgt.kind === 'unknown') reasons.push(tgt.error + (tgt.hint ? `; ${tgt.hint}` : ''));
@@ -1711,7 +1712,7 @@ function claimable(board, c, as, reg) {
   if (info.errors.length) return { reasons: [`the delegation is malformed (${info.errors[0]}); run roadctl lint`] };
   const d = info.delegate;
   if (CLOSED.has(statusOf(board, c))) return { reasons: [`the card is ${statusOf(board, c)}`] };
-  if (statusOf(board, c) === 'ready' && d.state === 'open' && readyMilestones(board).length >= 2) return { reasons: ['two milestones await owner decision'] };
+  if (statusOf(board, c) === 'ready' && d.state === 'open' && readyMilestones(board, { waiting: true }).length >= 2) return { reasons: ['two milestones await owner decision'] };
   if (statusOf(board, c) === 'blocked' && /^owner question /.test(c.header.blocked ?? '')) return { reasons: ['waiting for an owner answer'] };
   if (d.state === 'reported') return { reasons: ['the delegation was already reported and awaits acceptance'] };
   if (d.state === 'claimed' && !info.claim) return { reasons: ['state is claimed but there is no claim; run roadctl lint'] };
@@ -4488,7 +4489,7 @@ ROUTINE_SECTIONS.push(...MODULE_REG.routineSections);
 TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
-const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, readyMilestones, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
+const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, readyMilestones, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
   boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits, resolveAs: (name, reg) => WHO.resolveAs(name, reg) }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
@@ -4555,6 +4556,7 @@ function parse(argv) {
   withValue.add('--reason').add('--until'); // seam (P5.5): `roadctl pause --reason TEXT --until SPAN`
   for (const f of ['--file', '--wait', '--tests', '--repo', '--base', '--branch', '--dir', '--note']) withValue.add(f); // P5.41 B: lock, handoff, worktree
   withValue.add('--cwd'); // P5.43: `roadctl limit-checkpoint --cwd DIR`
+  withValue.add('--cards'); // P5.35: milestone move
   withValue.add('--owner-answers'); // P5.48: the snapshot supplied at routine startup
   const repeated = new Set(['--did', '--decision', '--problem']); // seam (P5.13): summary fields; a repeated flag collects its values in an array
   const moduleValue = new Set(['--ask', '--not-checked', '--since-state', '--timeout', '--card', '--profile', '--hash', '--since', '--accept-from', '--role', '--needs']); // seam (P5.13); --timeout, --card: P5.2; --profile: P5.7; --hash: P5.33; --since, --accept-from: P5.27

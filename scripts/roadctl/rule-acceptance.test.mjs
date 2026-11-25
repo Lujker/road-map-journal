@@ -21,7 +21,11 @@ test('P5.35 a8: an old copy offers no work on a rule-acceptance board', () => {
   fs.writeFileSync(path.join(board, 'config.json'), JSON.stringify({ board_version: 1, requires: RULE_REQUIRES, autonomy: { enabled: true, agents: [], queue: ['B'] } }));
   fs.writeFileSync(path.join(board, 'cards', 'A.md'), '---\nid: A\ntitle: A\nstatus: review\naccepted: rule\n---\n');
   fs.writeFileSync(path.join(board, 'cards', 'B.md'), '---\nid: B\ntitle: B\nstatus: ready\ndepends_on: A\napproved: Owner, 2026-11-01, scope=implementation+auto\n---\n');
-  const bin = fileURLToPath(new URL('../roadctl.mjs', import.meta.url));
+  const source = fileURLToPath(new URL('../', import.meta.url));
+  const oldScripts = path.join(dir, 'scripts');
+  fs.cpSync(source, oldScripts, { recursive: true });
+  const bin = path.join(oldScripts, 'roadctl.mjs');
+  fs.writeFileSync(bin, fs.readFileSync(bin, 'utf8').replace("export const VERSION = '0.15.0';", "export const VERSION = '0.14.0';"));
   const r = spawnSync(process.execPath, [bin, 'tick', '--as', 'agent', '--no-pull', '--json', '--board', board], { cwd: dir, encoding: 'utf8', env: { ...process.env, HOME: dir, XDG_STATE_HOME: path.join(dir, 'state') } });
   assert.equal(r.status, 4, r.stderr);
   const result = JSON.parse(r.stdout);
@@ -118,7 +122,7 @@ test('P5.35 a10: aliases and effort cannot disguise same model; unknowns and sel
   assert.equal(canonicalModel('alias-a', { providers: { one: { models: { 'model-a': ['alias-a'], 'model-b': ['alias-a'] } } } }), null);
 });
 
-test('P5.35: CLI accepts a current independent review on a future 0.15 copy', () => {
+test('P5.35: CLI accepts a current independent review on a 0.15 copy', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rule-cli-'));
   const source = fileURLToPath(new URL('..', import.meta.url));
   const binDir = path.join(dir, 'bin');
@@ -126,7 +130,6 @@ test('P5.35: CLI accepts a current independent review on a future 0.15 copy', ()
   fs.copyFileSync(path.join(source, 'roadctl.mjs'), path.join(binDir, 'roadctl.mjs'));
   fs.cpSync(path.join(source, 'roadctl'), path.join(binDir, 'roadctl'), { recursive: true, filter: (f) => !f.endsWith('.test.mjs') });
   const bin = path.join(binDir, 'roadctl.mjs');
-  fs.writeFileSync(bin, fs.readFileSync(bin, 'utf8').replace("export const VERSION = '0.14.0'", "export const VERSION = '0.15.0'"));
   const board = path.join(dir, 'board');
   const repo = path.join(dir, 'repo');
   fs.mkdirSync(path.join(board, 'cards'), { recursive: true });

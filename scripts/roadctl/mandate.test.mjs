@@ -361,16 +361,16 @@ test('P5.33 a8: lint refuses the key that would open external systems and unknow
 // ---------------------------------------------------------------- a9: an older copy takes nothing
 
 test('P5.33 a9: an older copy (a version below requires) takes nothing from the board; requires and the module follow the rule of P5.14', FAKES_SKIP, () => {
-  assert.equal(rc.VERSION, '0.14.0'); // P5.41 slice 1 raised it; the mandate itself still needs 0.8.0
+  assert.equal(rc.VERSION, '0.15.0'); // P5.35 milestone format; the mandate itself still needs 0.8.0
   assert.equal(MANDATE_REQUIRES, '0.8.0');
   assert.match(rc.boardRequires({ requires: '0.8.0' }, '0.7.0'), /board requires roadctl 0\.8\.0 or newer; this is 0\.7\.0/);
   assert.equal(rc.boardRequires({ requires: '0.8.0' }), null);
   assert.equal(rc.boardRequires({}, '0.7.0'), null, 'a board that has not raised requires is not refused');
   // an older copy end to end: the board asks for more than this checkout is
-  const r = rig({ requires: '0.15.0' }); // newer than this copy (0.14.0)
+  const r = rig({ requires: '0.16.0' }); // newer than this copy
   r.write();
   const t = r.run(['tick', '--as', ME, '--no-pull']);
-  assert.match(t.stdout, /requires: my-app: board requires roadctl 0\.15\.0 or newer/);
+  assert.match(t.stdout, /requires: my-app: board requires roadctl 0\.16\.0 or newer/);
   assert.doesNotMatch(t.stdout, /START/);
   // this copy on a board that did not raise requires: the mandate is inert and lint says why
   const old = rig({ requires: false });
@@ -523,4 +523,40 @@ test('P5.35: new delegation and first claim stop at two milestones, ongoing work
   }
   r.ok(['delegate', 'ACTIVE', '--to', 'worker', '--by', ME]);
   r.ok(['claim', 'ACTIVE', '--as', 'worker']);
+});
+
+test('P5.35: milestone move never waives a pending decision; continue is owner-only and idempotent', FAKES_SKIP, () => {
+  const r = rig({ requires: '0.15.0' });
+  r.write(); r.approve();
+  r.put('A', { status: 'done' }); r.put('B', { status: 'done' }); r.put('C', { status: 'doing' });
+  const dir = path.join(r.board, 'milestones'); fs.mkdirSync(dir);
+  for (const [id, cards] of [['one', 'A'], ['two', 'B']]) fs.writeFileSync(path.join(dir, `${id}.md`), `---\nid: ${id}\ncards: ${cards}\n---\n`);
+  const run = (...args) => r.run(['milestone', ...args, '--by', OWNER]);
+  assert.deepEqual(r.starts(), []);
+  r.setConfig({ requires: '0.14.0' });
+  const old = fs.readFileSync(path.join(dir, 'one.md'), 'utf8');
+  assert.notEqual(run('move', 'one', '--to', '2099-01-01').status, 0);
+  assert.equal(fs.readFileSync(path.join(dir, 'one.md'), 'utf8'), old);
+  r.setConfig({ requires: '0.15.0' });
+  assert.equal(run('move', 'one', '--to', '2099-01-01').status, 0);
+  assert.deepEqual(r.starts(), []);
+  assert.equal(run('move', 'one', '--cards', 'C').status, 0);
+  assert.deepEqual(r.starts(), [], 'moving to an unfinished card does not clear the pending decision');
+  assert.equal(rc.readyMilestones(rc.loadBoard(r.board), { waiting: true }).length, 2);
+  assert.ok(JSON.parse(r.ok(['inbox', '--json']).stdout).items.some((i) => i.target === 'one'));
+  assert.equal(r.run(['milestone', 'continue', 'one', '--by', OWNER], { ROADCTL_UNATTENDED: '1' }).status, 1);
+  assert.equal(run('continue', 'one').status, 0);
+  assert.ok(r.starts().length);
+  const continued = JSON.parse(r.ok(['inbox', '--json']).stdout).items.find((i) => i.target === 'one');
+  assert.equal(continued.state, 'continued'); assert.match(continued.confirmation, /continued date=2099-01-01/);
+  const file = path.join(dir, 'one.md'); const before = fs.readFileSync(file, 'utf8');
+  assert.equal(run('continue', 'one').status, 0); assert.equal(fs.readFileSync(file, 'utf8'), before);
+  assert.match(before, /MILESTONE MOVE date 2099-01-01/); assert.match(before, /MILESTONE MOVE cards C/); assert.match(before, /MILESTONE CONTINUE/);
+  assert.match(r.cardText('C'), /status: doing/);
+  const audit = fs.readFileSync(path.join(r.dir, 'state', 'road-map-journal', 'owner-commands.jsonl'), 'utf8');
+  assert.match(audit, /"command":"milestone continue".*"outcome":"refused"/);
+  assert.match(audit, /"command":"milestone move".*"outcome":"ok"/);
+  assert.match(r.ok(['digest', '--daily']).stdout, /milestone move one/);
+  fs.unlinkSync(path.join(r.dir, 'state', 'road-map-journal', 'owner-commands.jsonl'));
+  assert.match(r.ok(['digest', '--daily']).stdout, /milestone continue one/, 'Log reaches another machine without local audit');
 });

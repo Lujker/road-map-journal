@@ -165,6 +165,11 @@ function gitOwnerCommands(boards, api, sinceDay) {
       }
     }
     for (const r of b.routines ?? []) for (const l of r.log ?? []) if (/^(ON|OFF)\b/.test(l.text) && l.date >= sinceDay && r.header.id) out.push({ command: `routine ${l.text.slice(0, 3).trim().toLowerCase()}`, target: r.header.id, by: l.author, outcome: 'ok' });
+    const milestones = path.join(b.dir, 'milestones');
+    if (fs.existsSync(milestones)) for (const file of fs.readdirSync(milestones).filter((f) => f.endsWith('.md'))) {
+      const milestone = api.parseCard(path.join(milestones, file));
+      for (const l of milestone.log ?? []) if (/^MILESTONE (CONTINUE|MOVE)\b/.test(l.text) && l.date >= sinceDay) out.push({ command: `milestone ${l.text.split(' ')[1].toLowerCase()}`, target: file.slice(0, -3), by: l.author, outcome: 'ok' });
+    }
     const m = readMandate(b, api);
     if (m?.approved && dated(`${m.approved.by}, ${m.approved.date}`) !== null) out.push({ command: 'mandate approve', target: projectOf(b), by: m.approved.by, outcome: 'ok' });
   }

@@ -60,14 +60,14 @@ function itemOf(board, id) {
   if (matches.length !== 1 || matches[0].errors?.length) throw new Error('target must identify one valid card or routine');
   return { item: matches[0], routine: !board.cards.includes(matches[0]) };
 }
-function changeHeader(raw, key, value) {
+export function changeHeader(raw, key, value) {
   return raw.replace(/^(---\n)([\s\S]*?)(\n---)/, (_, first, block, last) => {
     const lines = block.split('\n').filter((line) => !line.startsWith(`${key}:`));
     if (value !== null) lines.push(`${key}: ${value}`);
     return first + lines.join('\n') + last;
   });
 }
-function log(raw, date, by, message) {
+export function log(raw, date, by, message) {
   const entry = `- ${date} [${asLine(by)}] ${asLine(message)}`;
   if (!/^## Log$/m.test(raw)) return `${raw.replace(/\n*$/, '\n')}\n## Log\n${entry}\n`;
   return raw.replace(/(^## Log\n)([\s\S]*?)(?=^## |\s*$(?![\s\S]))/m, (_, header, body) => `${header}${body.replace(/\n*$/, '\n')}${entry}\n\n`);
@@ -276,7 +276,7 @@ function inbox({ args, flags, api, env, out }) {
   if (args[1] === 'defer') {
     if (args.length !== 4 || !agentPattern.test(flags.by ?? '') || typeof flags.until !== 'string') throw new Error('usage: roadctl inbox defer ID QUESTION --until ISO --by OWNER --board DIR');
     const board = boardOf(flags, api);
-    const milestone = args[3] === 'milestone' && api.readyMilestones(board).find((m) => m.id === args[2]);
+    const milestone = args[3] === 'milestone' && api.readyMilestones(board, { waiting: true }).find((m) => m.id === args[2]);
     const existing = [...board.cards, ...(board.routines ?? [])].some((x) => x.header.id === args[2]);
     if (milestone && existing) throw new Error('ambiguous milestone target');
     const item = milestone ? { file: path.join(board.dir, 'milestones', `${milestone.id}.md`) } : itemOf(board, args[2]).item;
@@ -348,14 +348,17 @@ export function ownerItems(board, time, api) {
       }
     }
   }
-  for (const milestone of api.readyMilestones(board)) {
+  const waiting = api.readyMilestones(board, { waiting: true });
+  const continued = api.readyMilestones(board, { continued: true });
+  for (const milestone of [...waiting, ...continued]) {
     if (!/^[A-Za-z0-9._-]+$/.test(milestone.id)) continue;
     const defer = /^milestone (\S+)$/.exec(milestone.header.inbox_defer ?? '');
     if (defer && Date.parse(defer[1]) > time) continue;
     const raw = fs.readFileSync(path.join(board.dir, 'milestones', `${milestone.id}.md`), 'utf8');
-    const hash = sha(JSON.stringify([raw, ...milestone.cards.map((id) => rawItem(board.cards.find((c) => c.header.id === id)))]));
+    const hash = sha(JSON.stringify([raw, ...milestone.cards.map((id) => { const card = board.cards.find((c) => c.header.id === id); return card ? rawItem(card) : null; })]));
     const title = asLine(milestone.header.title ?? milestone.id);
-    items.push({ type: 'milestone', target: milestone.id, title, cards: milestone.cards, hash, confirmation: `milestone: ${milestone.id} "${title}" cards=${milestone.cards.join(',')} hash=${hash.slice(0, 12)}` });
+    const state = milestone.header.milestone_continued === 'true' ? 'continued' : 'waiting';
+    items.push({ type: 'milestone', target: milestone.id, title, cards: milestone.cards, state, hash, confirmation: `milestone: ${milestone.id} "${title}" cards=${milestone.cards.join(',')}${state === 'continued' ? ' continued' : ''}${milestone.header.date ? ` date=${asLine(milestone.header.date)}` : ''} hash=${hash.slice(0, 12)}` });
   }
   return items;
 }
