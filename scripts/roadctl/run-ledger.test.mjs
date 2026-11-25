@@ -323,6 +323,24 @@ const dueAt = (r, minutes) => {
   return /^RUN my-app\/mr-status/m.test(t.stdout);
 };
 
+test('P5.21 a6: missed intervals offer one run and do not catch up after completion', FAKES_SKIP, () => {
+  const r = rig();
+  r.routine();
+  r.ok(['run', 'begin', 'mr-status', '--as', ME]);
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'initial']);
+  const late = r.tick(['--routine', 'mr-status', '--json'], r.at(601));
+  assert.equal(late.status, 0, late.stderr);
+  assert.equal(JSON.parse(late.stdout).items.filter((x) => x.kind === 'RUN' && x.id === 'mr-status').length, 1);
+  r.ok(['run', 'begin', 'mr-status', '--as', ME], r.at(601));
+  r.ok(['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'late run'], r.at(602));
+  for (const minute of [602, 721]) {
+    const idle = r.tick(['--routine', 'mr-status', '--json'], r.at(minute));
+    assert.equal(idle.status, 4, idle.stderr + idle.stdout);
+    assert.equal(JSON.parse(idle.stdout).decision, 'idle');
+  }
+  assert.equal(dueAt(r, 722), true, 'next interval starts at completion');
+});
+
 test('P5.4 a4: a skipped run (limits, the real path) starts the term of `every` again; last_run stays the real one; the tick inside the term is not-due and the RUN comes one term later', FAKES_SKIP, () => {
   const r = rig({ env: { FAKE_U5: '0.9' } });
   r.routine(); // every 2h, never run: due
