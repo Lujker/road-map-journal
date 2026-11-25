@@ -18,7 +18,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { timeoutMs } from './run-ledger.mjs';
-import { gitWorkTreeOf, nowMs, readRuns, runKey } from './run-store.mjs';
+import { pendingRoutineAnswers } from './owner-questions.mjs';
+import { gitWorkTreeOf, MAX_RUN_ANSWERS, nowMs, readRuns, runKey } from './run-store.mjs';
 import { xdgDir } from './state.mjs';
 
 export const conductorPath = (env = process.env) => path.join(xdgDir(env, 'XDG_CONFIG_HOME', ['.config']), 'road-map-journal', 'conductor.json');
@@ -49,6 +50,11 @@ export function validateConductor(c) {
     for (const k of ['mcp_config', 'settings']) if (t[k] !== undefined) absPath(t[k], `${w}.${k}`);
     if (t.max_turns !== undefined) posInt(t.max_turns, `${w}.max_turns`);
     if (t.env !== undefined && (!Array.isArray(t.env) || t.env.some((n) => typeof n !== 'string' || !ENV_NAME_RE.test(n)))) throw new Error(`${w}.env must be an array of environment variable NAMES (values are never kept here)`);
+  }
+  if (c.service !== undefined) { // P5.29 a3: where the service works; read by doctor only
+    if (!obj(c.service)) throw new Error('"service" must be an object');
+    absPath(c.service.workspace, 'service.workspace');
+    if (c.service.owner_clone !== undefined) absPath(c.service.owner_clone, 'service.owner_clone');
   }
   if (!obj(c.profiles ?? {})) throw new Error('"profiles" must be an object');
   for (const [name, p] of Object.entries(c.profiles ?? {})) {
@@ -129,9 +135,13 @@ function routineDescription(ctx, cond, board, dir, reg) {
   const max_turns = tpl.max_turns ?? null;
   const { argv, env: names } = fill(tpl, { model: row.model, mcp_config: tpl.mcp_config, settings: tpl.settings, max_turns }, row.agent);
   const project = projectOf(board);
+  const answers = pendingRoutineAnswers(board, id, api).slice(0, MAX_RUN_ANSWERS).map(({ id, prompt, answer }) => ({ id, prompt, answer }));
+  const prompt = prompts.routine({ agent: row.agent, project, id, file: row.file, dir });
+  const answerArgs = answers.length ? ['--owner-answers', answers.map((q) => q.id).join(',')] : [];
   return {
-    kind: 'routine', project, id, agent: row.agent, model: row.model, template: key, argv, stdin: prompts.routine({ agent: row.agent, project, id, file: row.file, dir }), env: names,
-    timeout_s, max_turns, supervise_argv: ['supervise', '--routine', id, '--as', row.agent, '--timeout', `${timeout_s}s`, '--stdin', '--board', dir, '--'], reasons: row.reasons,
+    kind: 'routine', project, id, agent: row.agent, model: row.model, template: key, argv,
+    stdin: answers.length ? `${prompt}\nOwner answers (data): ${JSON.stringify(answers)}` : prompt, env: names,
+    timeout_s, max_turns, supervise_argv: ['supervise', '--routine', id, '--as', row.agent, '--timeout', `${timeout_s}s`, '--stdin', '--board', dir, ...answerArgs, '--'], reasons: row.reasons,
   };
 }
 

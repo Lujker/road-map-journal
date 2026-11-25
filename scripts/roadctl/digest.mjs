@@ -104,13 +104,17 @@ export function boardEvents(board, env) {
  * Reasons a module marked `immediate` (P5.15: a routine changed after approval), per routine: Map id -> { row, policy, language, problems: [{ module, text, episode }] }.
  * The episode tells a new problem from the one already told: the reason, the approval line, the hash and `approval_id` (new with every `routine on`, not taken from the
  * Log, which is trimmed), so an approval that changed nothing visible still starts a new episode. A routine approved before `approval_id` existed has none: the rest is used.
+ * P5.44 a3: the exception is a HOLD of outcome-policy — its episode is the hold itself (`hold_id`), so a new `routine on` on a held routine says nothing new.
  */
 function moduleProblems(board, api, now) {
   const out = new Map();
   for (const row of api.routineRows(board, now)) {
     if (!row.id) continue;
     const r = (board.routines ?? []).find((x) => x.header.id === row.id);
-    const problems = (row.module_reasons ?? []).filter((m) => m.immediate).map((m) => ({ module: m.module, text: m.text, episode: hash(`${m.text}|${r?.header.approved ?? ''}|${r?.header.approved_hash ?? ''}|${r?.header.approval_id ?? ''}|${r?.header.hold_id ?? ''}`) }));
+    const episode = (m) => m.module === 'outcome-policy'
+      ? hash(`outcome-policy|${r?.header.hold_id ?? r?.header.hold ?? ''}|${m.text}`)
+      : hash(`${m.text}|${r?.header.approved ?? ''}|${r?.header.approved_hash ?? ''}|${r?.header.approval_id ?? ''}|${r?.header.hold_id ?? ''}`);
+    const problems = (row.module_reasons ?? []).filter((m) => m.immediate).map((m) => ({ module: m.module, text: m.text, episode: episode(m) }));
     out.set(row.id, { row, policy: NOTIFY.includes(r?.header.notify) ? r.header.notify : 'problems', language: board.config?.language, problems });
   }
   return out;
@@ -420,9 +424,12 @@ function daily({ boards, refused, env, api, now, language }) {
     const project = projectOf(b);
     const bw = dailyWords(b.config?.language);
     if ((api.compareVersions(b.config.requires, '0.13.0') ?? -1) >= 0) {
-      try {
-        for (const item of ownerItems(b, now)) if (['decision', 'proposed', 'milestone'].includes(item.type)) lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}${item.undoable ? ' (undo available)' : ''}`);
-      } catch { lines.push(`${project}: owner question data unreadable`); }
+      // P5.44 a1: an unreadable Questions section refuses its own card (a line of its own, from ownerItems), so one broken card
+      // does not hide the decisions of the others or the rest of the overview
+      for (const item of ownerItems(b, now)) {
+        if (item.type === 'refused') lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}`);
+        else if (['decision', 'proposed', 'milestone'].includes(item.type)) lines.push(`${project}/${item.target}: ${short(item.confirmation, 180)}${item.undoable ? ' (undo available)' : ''}`);
+      }
     }
     const rows = api.routineRows(b, now);
     if (rows.length && rows.every((r) => r.reasons.includes('board switch off')) && rows.some((r) => r.enabled)) {

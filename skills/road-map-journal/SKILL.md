@@ -16,7 +16,7 @@ Use for requests about a roadmap, development plan, queue, work journal, item st
 
 ## Discover first
 
-Identify the project root and read its instructions. Locate existing roadmaps, queues, item notes, and handoff documents; names and locations vary. Read the relevant item, its acceptance criteria, current queue and linked notes. Check the relevant implementation, version-control state if available, and evidence when the request needs a current-state assessment. Do not assume Git, a specific directory layout, or a particular status vocabulary. If the project has `board/config.json`, its plan is a card board: read [Board projects](references/board.md) before editing. For multiple repositories, follow existing links; ask for an inaccessible authoritative location rather than inventing a replacement.
+Identify the project root and read its instructions. Locate existing roadmaps, queues, item notes, and handoff documents; names and locations vary. Read the relevant item, its acceptance criteria, current queue and linked notes. Check the relevant implementation, version-control state if available, and evidence when the request needs a current-state assessment. Do not assume Git, a specific directory layout, or a particular status vocabulary. When roadctl is available, use `roadctl where` to find a board, including one outside the project. If the project has a board, read [Board projects](references/board.md) before editing. For multiple repositories, follow existing links; ask for an inaccessible authoritative location rather than inventing a replacement.
 
 Select the mode implied by the request:
 
@@ -41,7 +41,7 @@ On a board using `roadctl` owner questions, set the board’s `requires` to at l
 
 For work that spans several items, agents or sessions, has a budget, or where the owner authorizes a track or continuous mode, read [Long-running work](references/long-running.md) first.
 
-When a card goes to another agent, give it with `roadctl handoff` instead of a hand-written assignment, work in a worktree per card (`roadctl worktree`), run tests under the shared lock (`roadctl lock`), and review by the rule in [Handing work over](references/handoff.md): return only for a violated criterion, a failing test or incompatibility, or a reproducible defect; the rest is a "later" list; two rounds at most.
+When a card goes to another agent on a board with these roadctl commands, use `roadctl handoff`, a worktree per card (`roadctl worktree`), and the shared test lock (`roadctl lock`); follow [Handing work over](references/handoff.md). Without them, use the portable handoff protocol in [Long-running work](references/long-running.md) and the project's own isolation and test conventions.
 
 ## Status and evidence
 
@@ -53,7 +53,7 @@ After an authorized edit, check the affected status, queue, links, and consisten
 
 ## References
 
-- [Setup: connect once and use every day](references/setup.md) — install the skill and roadctl, hooks, where the board is, the registry and the agent name (`ROADCTL_AS`), `roadctl doctor`, the daily cycle, updating. Read it to «подключить, настроить, новый агент или машина».
+- [Setup: connect once and use every day](references/setup.md) — install the skill and roadctl, hooks, where the board is, the registry and the agent name (`ROADCTL_AS`), `roadctl doctor`, how to check a connection from the working session (loaded skill, actual CLI, board, profile, state directory, hooks configured or confirmed, a test card end to end), the daily cycle, updating. Read it to «подключить, настроить, проверить подключение, новый агент или машина».
 - [Generic templates](references/templates.md) — optional starting points, adapted to the project.
 - [Scenarios](references/scenarios.md) — concise examples of mode and scope choices.
 - [Long-running work](references/long-running.md) — tracks, checkpoints, handoff and recovery, pause and stop, acceptance, budgets, shared checkouts.

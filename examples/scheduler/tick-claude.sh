@@ -22,6 +22,7 @@ ROADCTL="${ROADCTL:-$HOME/.local/bin/roadctl}"
 prompt="$(mktemp)"
 trap 'rm -f "$prompt"' EXIT
 
+cd "$WORKDIR" || exit 1
 "$ROADCTL" tick --as "$AGENT" --prompt > "$prompt"
 code=$?
 case "$code" in
@@ -31,6 +32,5 @@ case "$code" in
   *) echo "tick: roadctl failed with exit code $code" >&2; exit "$code" ;;
 esac
 
-cd "$WORKDIR" || exit 1
 read -r -a extra <<< "${CLAUDE_EXTRA_ARGS:-}"
 timeout --kill-after=30s "${CLAUDE_TIMEOUT:-30m}" claude -p --model "${MODEL:-opus}" --max-turns "${MAX_TURNS:-30}" ${extra[@]+"${extra[@]}"} "$(cat "$prompt")"

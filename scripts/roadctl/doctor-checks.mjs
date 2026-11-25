@@ -12,6 +12,7 @@ import path from 'node:path';
 import { INSTALLED_JSON, declaredVersion, fingerprint, readInstalledJson } from './fingerprint.mjs';
 import { readConductor } from './launch.mjs';
 import { pauseLine, readPause } from './pause.mjs';
+import { hookLogPath } from './state.mjs';
 
 export const STATUSES = ['ok', 'warn', 'fail', 'skip'];
 export const CLOCK_TOLERANCE_MS = 5 * 60e3;
@@ -177,13 +178,46 @@ export function checkInstalledCopy(ctx) {
 
 const copyList = (dir) => Object.keys(fingerprint(dir).files);
 
+/** The target of a roadctl launcher: a symlink itself, the `exec node '...' "$@"` form written today, or the older `HELPER`/`Installed copy` form. Null when the file is not a launcher. */
+export function launcherTarget(file, home = '') {
+  try {
+    let f = file;
+    try {
+      f = fs.realpathSync(file);
+    } catch {
+      /* read the file as given */
+    }
+    const text = fs.readFileSync(f, 'utf8');
+    const exec = /^exec node '(.+)' "\$@"$/m.exec(text);
+    if (exec) return exec[1].replaceAll("'\\''", "'");
+    const helper = /^HELPER="\$\{ROADCTL_HELPER:-\$HOME\/([^}"]+)\}"/m.exec(text);
+    if (helper) return path.join(home || String(process.env.HOME ?? ''), ...helper[1].split('/'));
+    const comment = /^# Installed copy:\s*(\S*roadctl\.mjs)/m.exec(text);
+    if (comment) return path.resolve(comment[1].replace(/^~(?=$|\/)/, home || String(process.env.HOME ?? '')).replace(/^\$HOME/, home || String(process.env.HOME ?? '')));
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 export function checkLauncher(ctx) {
   if (ctx.platform === 'win32') return res('launcher', 'skip', 'not checked on native Windows (the launcher is a POSIX script)');
   const bin = path.join(ctx.home, '.local', 'bin');
   const file = path.join(bin, 'roadctl');
-  if (!fs.existsSync(file)) return res('launcher', 'warn', `no launcher ${tilde(file, ctx.home)}`, 'node scripts/update-installed.mjs --roadctl --apply   (from a checkout of road-map-journal) writes it; or call the installed file directly');
-  const onPath = String(ctx.env.PATH ?? '').split(':').some((d) => d && path.resolve(d) === path.resolve(bin));
-  return onPath ? res('launcher', 'ok', `${tilde(file, ctx.home)} exists and ${tilde(bin, ctx.home)} is in PATH`) : res('launcher', 'warn', `${tilde(file, ctx.home)} exists but ${tilde(bin, ctx.home)} is not in PATH here`, 'add it to PATH for non-interactive shells too (cron, ssh commands, wsl.exe -e), not only in the login profile');
+  const found = which('roadctl', ctx.env, ctx.platform);
+  if (!found) {
+    if (!fs.existsSync(file)) return res('launcher', 'warn', `no roadctl in PATH and no launcher ${tilde(file, ctx.home)}`, 'node scripts/update-installed.mjs --roadctl --apply   (from a checkout of road-map-journal) writes it; or call the installed file directly');
+    const onPath = String(ctx.env.PATH ?? '').split(':').some((d) => d && path.resolve(d) === path.resolve(bin));
+    return onPath ? res('launcher', 'warn', `${tilde(file, ctx.home)} exists but roadctl is not found in PATH here`, 'check that the file is executable and this PATH is the one a non-interactive shell gets') : res('launcher', 'warn', `${tilde(file, ctx.home)} exists but ${tilde(bin, ctx.home)} is not in PATH here`, 'add it to PATH for non-interactive shells too (cron, ssh commands, wsl.exe -e), not only in the login profile');
+  }
+  const target = launcherTarget(found, ctx.home);
+  if (!target) return res('launcher', 'ok', `roadctl in PATH is ${tilde(found, ctx.home)} (not roadctl's own launcher, so its target is not read)`);
+  if (!fs.existsSync(target)) return res('launcher', 'fail', `roadctl in PATH is ${tilde(found, ctx.home)} -> ${tilde(target, ctx.home)}, which does not exist`, 'reinstall the copy: node scripts/update-installed.mjs --roadctl --apply   (from a checkout of road-map-journal)');
+  const dir = path.dirname(target);
+  const fp = fingerprint(dir);
+  const place = same(dir, installedDir(ctx)) ? 'the installed copy' : same(dir, ctx.runDir) ? 'the copy that runs doctor' : 'another copy';
+  const hint = place === 'another copy' ? 'doctor and the agent may run different code: run node scripts/update-installed.mjs --roadctl --apply from the checkout you want, or put that copy first in PATH' : null;
+  return res('launcher', hint ? 'warn' : 'ok', `roadctl in PATH is ${tilde(found, ctx.home)} -> ${tilde(target, ctx.home)} (version ${fp.version ?? 'unknown'}, sha ${fp.short ?? 'unknown'}, ${place})`, hint);
 }
 
 // ---------------------------------------------------------------- environment: variables, clock, wsl.exe and ssh
@@ -316,7 +350,7 @@ export function checkState(ctx) {
   const dir = stateDirOf(ctx);
   const w = writableOrCreatable(dir);
   const shown = tilde(dir, ctx.home);
-  if (!w.ok) out.push(res('state-dir', 'warn', `state directory ${shown} ${w.exists ? 'is not writable' : 'cannot be created'}: tick would run WITHOUT its lock and could not keep a ledger`, 'make it writable, or point XDG_STATE_HOME at a writable place'));
+  if (!w.ok) out.push(res('state-dir', 'warn', `state directory ${shown} ${w.exists ? 'is not writable' : 'cannot be created'}: tick cannot acquire its lock or keep a ledger`, 'make it writable, or point XDG_STATE_HOME at a writable place'));
   else if (!w.exists) out.push(res('state-dir', 'ok', `state directory ${shown} does not exist yet; it is created by the first tick`));
   else {
     const locks = fs.readdirSync(dir).filter((n) => /^tick-.*\.lock$/.test(n));
@@ -449,9 +483,26 @@ const HOOK_KINDS = [
   { kind: 'hermes', install: '--hermes', exe: 'hermes', dir: (ctx) => path.join(ctx.env.HERMES_HOME?.trim() || ctx.home, '.hermes'), file: 'config.yaml', marker: '# roadctl-managed begin' },
 ];
 
-/** The roadctl hooks (session-start / pre-compact / stop, and the limit-stop observer) for each harness whose command is in PATH; missing hooks mean a session runs without the brief and the stop handoff. */
+/** Hook runs recorded by `roadctl hook` (P5.50): a settings file proves configuration; only this log proves the host called a hook. */
+export function hookRuns(ctx) {
+  try {
+    return fs.readFileSync(hookLogPath(ctx.env), 'utf8').split('\n').filter(Boolean).flatMap((line) => {
+      try {
+        const r = JSON.parse(line);
+        return typeof r?.at === 'string' && typeof r?.event === 'string' && typeof r?.host === 'string' ? [{ at: r.at, event: r.event, host: r.host }] : [];
+      } catch {
+        return [];
+      }
+    });
+  } catch {
+    return [];
+  }
+}
+
+/** The roadctl hooks (session-start / pre-compact / stop, and the limit-stop observer) for each harness whose command is in PATH. A configured file is reported apart from a confirmed run: doctor reads the record `roadctl hook` writes (P5.50). */
 export function checkHooks(ctx) {
   const out = [];
+  const runs = hookRuns(ctx);
   for (const h of HOOK_KINDS) {
     if (!which(h.exe, ctx.env, ctx.platform)) {
       out.push(res('hooks', 'skip', `${h.exe} is not in PATH: no ${h.kind} hooks to check`, `install ${h.exe}, or run roadctl hook-install ${h.install} --apply on the machine where it runs`));
@@ -459,9 +510,14 @@ export function checkHooks(ctx) {
     }
     const file = path.join(h.dir(ctx), h.file);
     const installed = (() => { try { return fs.readFileSync(file, 'utf8').includes(h.marker); } catch { return false; } })();
-    out.push(installed
-      ? res('hooks', 'ok', `${h.kind} hooks are installed (${tilde(file, ctx.home)})`, null, h.kind)
-      : res('hooks', 'warn', `${h.kind} is in PATH but its roadctl hooks are not installed at ${tilde(file, ctx.home)}`, `roadctl hook-install ${h.install} --apply`, h.kind));
+    const fired = runs.filter((r) => r.host === h.kind).at(-1) ?? null;
+    if (!installed) {
+      out.push(res('hooks', 'warn', `${h.kind} is in PATH but its roadctl hooks are not installed at ${tilde(file, ctx.home)}${fired ? ` (a hook run was recorded at ${fired.at}, from a file that is gone now)` : ''}`, `roadctl hook-install ${h.install} --apply`, h.kind));
+    } else if (!fired) {
+      out.push(res('hooks', 'warn', `${h.kind} hooks are configured at ${tilde(file, ctx.home)}, but no hook run has been recorded: this proves the configuration only, not that ${h.kind} calls it`, `start a new ${h.kind} session in a project with a board, work normally, then run roadctl doctor again; if no run appears, review the hooks in ${h.kind === 'claude' ? '/hooks' : h.kind === 'codex' ? 'the Codex hook settings' : 'the Hermes config'}. The record is written by the roadctl a hook calls: install this copy first with node scripts/update-installed.mjs --roadctl --apply`, h.kind));
+    } else {
+      out.push(res('hooks', 'ok', `${h.kind} hooks are configured at ${tilde(file, ctx.home)} and confirmed: ${fired.event} ran at ${fired.at}`, null, h.kind));
+    }
   }
   return out;
 }
@@ -485,9 +541,23 @@ export function checkSkill(ctx) {
 }
 
 export function checkBoards(ctx, loaded) {
+  const out = [];
+  let current = null;
+  try {
+    current = ctx.api.findBoard(ctx.cwd, ctx.flags.board ? String(ctx.flags.board) : undefined, ctx.env);
+  } catch {
+    current = null; // --board without config.json is reported by checkPaths
+  }
+  out.push(current
+    ? res('board-current', 'ok', `board for ${tilde(ctx.cwd, ctx.home)} is ${tilde(current, ctx.home)}`, null, path.basename(path.dirname(current)))
+    : res('board-current', 'warn', `no board found for ${tilde(ctx.cwd, ctx.home)}${ctx.flags.board ? ` (--board ${tilde(String(ctx.flags.board), ctx.home)})` : ''}`, 'run from a project with a board, pass --board DIR, or: roadctl boards add <dir>'));
   const boards = boardsOf(ctx);
-  if (!boards.length) return [res('boards', 'warn', 'no board found (no board/config.json above the working directory, no workspace, no boards list)', 'run from a project with a board, or: roadctl boards add <dir>, or set ROADCTL_WORKSPACE')];
-  const out = [res('boards', 'ok', `${boards.length} board(s): ${names(boards.map((b) => b.name), 8)}`)];
+  if (!boards.length) {
+    out.push(res('boards', 'warn', 'no board found (no board/config.json above the working directory, no workspace, no boards list)', 'run from a project with a board, or: roadctl boards add <dir>, or set ROADCTL_WORKSPACE'));
+    return out;
+  }
+  const listed = boards.slice(0, 8).map((b) => `${b.name} (${tilde(b.dir, ctx.home)})`);
+  out.push(res('boards', 'ok', `${boards.length} board(s): ${listed.join(', ')}${boards.length > listed.length ? ` (+${boards.length - listed.length} more)` : ''}`));
   const inst = installedDir(ctx);
   const installedVersion = fs.existsSync(path.join(inst, 'roadctl.mjs')) ? declaredVersion(inst) : null;
   const roots = new Set();
@@ -583,6 +653,53 @@ export function checkLaunch(ctx, loaded) {
   return out;
 }
 
+/** The git work tree that holds `dir` (real path), or null. */
+function repoRootOf(ctx, dir) {
+  if (!dir || !fs.existsSync(dir)) return null;
+  const g = gitq(ctx, ['rev-parse', '--show-toplevel'], dir);
+  if (!g.ok || !g.out) return null;
+  try {
+    return fs.realpathSync(g.out);
+  } catch {
+    return g.out;
+  }
+}
+
+/**
+ * P5.29 a3: the service (P5.25) works in a clone of its own. Its configuration is the `service` object of the local conductor.json: `workspace` (the folder
+ * of the clone the service reads and commits in) and, optionally, `owner_clone` (the clone the owner works in). The owner's clone is `owner_clone`, else the
+ * default workspace of the owner: the pointer file and ~/projects/agent-workspace (not ROADCTL_WORKSPACE: a service started with its own clone sets that variable).
+ * Same repository: warn, because a pull, a commit and an owner's uncommitted edit would meet in one working tree.
+ */
+export function checkServiceClone(ctx) {
+  const c = readConductor(ctx.env, ctx.platform);
+  if (c.state !== 'ok') return res('service-clone', 'skip', 'no usable conductor.json: nothing says where the service works (see the launch-templates line)');
+  const svc = c.conductor.service;
+  if (svc === undefined) return res('service-clone', 'skip', 'conductor.json has no "service" section: no service clone is configured yet', 'when the service is set up, give it a clone of its own: "service": { "workspace": "/path/to/service-clone" }');
+  const shown = tilde(svc.workspace, ctx.home);
+  const root = repoRootOf(ctx, svc.workspace);
+  if (!root) return res('service-clone', 'warn', `service.workspace ${shown} is not a git clone (or does not exist): the service cannot pull or commit there`, 'clone the boards repository into that folder: git clone ORIGIN FOLDER');
+  const owners = [];
+  const add = (d) => {
+    const r = repoRootOf(ctx, d);
+    if (r && !owners.includes(r)) owners.push(r);
+  };
+  if (svc.owner_clone) {
+    add(svc.owner_clone);
+    if (!owners.length) return res('service-clone', 'warn', `service.owner_clone ${tilde(svc.owner_clone, ctx.home)} is not a git clone (or does not exist): doctor cannot tell whether ${shown} is a clone of its own`, 'fix owner_clone to the clone the owner works in, or remove it to use the default workspace of the owner');
+  } else {
+    try {
+      add(fs.readFileSync(path.join(ctx.home, '.local', 'share', 'road-map-journal', 'workspace'), 'utf8').trim().split(/\r?\n/)[0]);
+    } catch {
+      /* optional pointer file */
+    }
+    add(path.join(ctx.home, 'projects', 'agent-workspace'));
+    add(path.join(ctx.home, 'Projects', 'agent-workspace'));
+  }
+  if (owners.includes(root)) return res('service-clone', 'warn', `service.workspace ${shown} is the working clone of the owner (${tilde(root, ctx.home)}): the service and the owner would pull, commit and edit in one working tree`, 'give the service a clone of its own: git clone ORIGIN SERVICE_FOLDER, and point service.workspace at it; both clones share the remote and meet through pull and save');
+  return res('service-clone', 'ok', `the service works in ${shown}, a clone of its own (not the working clone of the owner)`);
+}
+
 export const CHECKS = [
   ['runtime', checkRuntime],
   ['installed-copy', checkInstalledCopy],
@@ -597,5 +714,6 @@ export const CHECKS = [
   ['hooks', checkHooks],
   ['skill', checkSkill],
   ['launch-templates', (ctx, loaded) => checkLaunch(ctx, loaded)],
+  ['service-clone', checkServiceClone],
   ['boards', (ctx, loaded) => checkBoards(ctx, loaded)],
 ];

@@ -9,7 +9,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { syncRoadctl } from '../update-installed.mjs';
+import { launcherContent, syncRoadctl } from '../update-installed.mjs';
 import * as rc from '../roadctl.mjs';
 import { doctorJsonProblems } from '../testkit/doctor-schema.mjs';
 import { FAKES_SKIP, installFakes, readCalls } from '../testkit/fakes.mjs';
@@ -73,7 +73,7 @@ function rig({ git = true, registry = true, extraFakes = {}, fakeNames, env: ext
     PATH: `${bin}${path.delimiter}${GIT_DIR}`, HOME: home, USERPROFILE: home, XDG_STATE_HOME: path.join(root, 'state'), XDG_CACHE_HOME: path.join(root, 'cache'), XDG_CONFIG_HOME: path.join(root, 'cfg'),
     ROADCTL_WORKSPACE: ws, ROADCTL_REGISTRY: regFile, FAKE_LOG: path.join(root, 'calls.jsonl'), ...clock(shift(60)), ...extraEnv,
   };
-  const run = (args, { cwd = ws, env: e = {}, script = SELF } = {}) => spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', env: { ...env, ...e }, timeout: 60000 });
+  const run = (args, { cwd = ws, env: e = {}, script = SELF, input } = {}) => spawnSync(process.execPath, [script, ...args], { cwd, encoding: 'utf8', env: { ...env, ...e }, timeout: 60000, input });
   const json = (args, opts) => {
     const r = run([...args, '--json'], opts);
     assert.ok([0, 1].includes(r.status), `${args.join(' ')}: exit ${r.status}: ${r.stderr}`);
@@ -307,7 +307,7 @@ test('a5: the state directory: not writable is a warning that names the lost loc
   try {
     const d = r.json(['doctor']).by('state-dir');
     assert.equal(d.status, 'warn');
-    assert.match(d.detail, /not writable: tick would run WITHOUT its lock/);
+    assert.match(d.detail, /not writable: tick cannot acquire its lock/);
   } finally {
     fs.chmodSync(dir, 0o755);
   }
@@ -465,23 +465,82 @@ test('P5.47 a3: agent-name — ROADCTL_AS resolves to an executor, a profile or 
   assert.equal(bad.r.status, 1);
 });
 
-test('P5.47 a3: hooks — a harness in PATH without its hooks is a warning with the fix command; with them it is ok', () => {
+test('P5.47 a3 + P5.50 a2: hooks — missing, configured but not yet confirmed, and confirmed by a recorded run', () => {
   const r = rig({ git: false });
   const claude = () => r.json(['doctor']).all('hooks').find((c) => c.subject === 'claude');
   assert.equal(claude().status, 'warn', 'claude (the fake) is in PATH but has no settings.json');
   assert.match(claude().hint, /^roadctl hook-install --claude --user --apply$/, 'user-level: the file the check reads, not the project-local one');
   const codex = r.json(['doctor']).all('hooks').find((c) => c.subject === 'codex');
   assert.match(codex.hint, /^roadctl hook-install --codex --apply$/, 'Codex hooks are user-level already: no --user');
-  // the hint is the command that fixes it: follow it (on this temp HOME) and the check turns ok
+  // the hint is the command that fixes it: follow it (on this temp HOME) and the check tells configuration from confirmation
   const fix = r.run(['hook-install', '--claude', '--user', '--apply']);
   assert.equal(fix.status, 0, fix.stderr + fix.stdout);
-  assert.equal(claude().status, 'ok', 'doctor accepts what its own hint installed');
+  const configured = claude();
+  assert.equal(configured.status, 'warn', 'a settings file alone is not proof that the harness calls the hook');
+  assert.match(configured.detail, /hooks are configured at .*no hook run has been recorded: this proves the configuration only/);
+  assert.match(configured.hint, /start a new claude session/);
+  // a real hook run is recorded by `roadctl hook` and confirms the check
+  const hook = r.run(['hook', 'session-start', '--board', r.board], { input: JSON.stringify({ cwd: r.ws }) });
+  assert.equal(hook.status, 0, hook.stderr + hook.stdout);
+  const confirmed = claude();
+  assert.equal(confirmed.status, 'ok');
+  assert.match(confirmed.detail, /and confirmed: session-start ran at \d{4}-\d\d-\d\dT/);
   fs.rmSync(path.join(r.home, '.claude'), { recursive: true, force: true });
   assert.equal(claude().status, 'warn');
+  assert.match(claude().detail, /not installed/);
   fs.mkdirSync(path.join(r.home, '.claude'), { recursive: true });
   fs.writeFileSync(path.join(r.home, '.claude', 'settings.json'), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: 'command', command: 'node', args: ['roadctl.mjs', 'hook', 'session-start'] }] }] } }));
-  assert.equal(claude().status, 'ok');
+  assert.equal(claude().status, 'ok', 'the earlier recorded run still confirms a re-installed file');
   assert.equal(r.json(['doctor']).all('hooks').find((c) => c.subject === 'codex').status, 'warn', 'codex (the fake) is in PATH but has no hooks.json');
+});
+
+test('P5.50 a2: a git pre-commit run is not a harness session and does not confirm its hooks', () => {
+  const r = rig({ git: false });
+  assert.equal(r.run(['hook-install', '--claude', '--user', '--apply']).status, 0);
+  assert.equal(r.run(['hook', 'pre-commit', '--board', r.board]).status, 0);
+  const claude = r.json(['doctor']).all('hooks').find((c) => c.subject === 'claude');
+  assert.equal(claude.status, 'warn');
+  assert.match(claude.detail, /no hook run has been recorded/);
+});
+
+test('P5.50 a2: launcher — doctor names the roadctl a non-interactive shell finds, its target and version; a missing target fails', () => {
+  const r = rig({ git: false });
+  r.install();
+  const bin = path.join(r.home, '.local', 'bin');
+  fs.mkdirSync(bin, { recursive: true });
+  fs.writeFileSync(path.join(bin, 'roadctl'), launcherContent(r.installedFile('roadctl.mjs')), { mode: 0o755 });
+  const env = { PATH: `${bin}${path.delimiter}${r.env.PATH}` };
+  const d = r.json(['doctor'], { env }).by('launcher');
+  assert.equal(d.status, 'ok');
+  assert.match(d.detail, /roadctl in PATH is .*\.local[\\/]bin[\\/]roadctl -> .*roadctl\.mjs \(version \d+\.\d+\.\d+, sha [0-9a-f]+, the installed copy\)/);
+  // the older launcher form (before P5.47) names the helper in HELPER, not in an exec line: still read
+  fs.writeFileSync(path.join(bin, 'roadctl'), '#!/bin/sh\nHELPER="${ROADCTL_HELPER:-$HOME/.local/share/road-map-journal/roadctl.mjs}"\nexec "$HELPER" "$@"\n', { mode: 0o755 });
+  const older = r.json(['doctor'], { env }).by('launcher');
+  assert.equal(older.status, 'ok');
+  assert.match(older.detail, /-> .*roadctl\.mjs \(version \d+\.\d+\.\d+, sha [0-9a-f]+, the installed copy\)/);
+  fs.rmSync(r.installedFile('roadctl.mjs'));
+  const gone = r.json(['doctor'], { env }).by('launcher');
+  assert.equal(gone.status, 'fail');
+  assert.match(gone.detail, /does not exist/);
+  assert.equal(gone.hint, 'reinstall the copy: node scripts/update-installed.mjs --roadctl --apply   (from a checkout of road-map-journal)');
+});
+
+test('P5.50 a2: board-current and boards name the actual board path, not only its name', () => {
+  const r = rig({ git: false });
+  const d = r.json(['--board', r.board, 'doctor']);
+  const current = d.by('board-current');
+  assert.equal(current.status, 'ok');
+  assert.ok(current.detail.includes(r.board), current.detail);
+  assert.ok(d.by('boards').detail.includes(r.board), d.by('boards').detail);
+  const none = r.json(['--board', path.join(r.root, 'nowhere'), 'doctor']).by('board-current');
+  assert.equal(none.status, 'warn');
+  assert.match(none.detail, /no board found for/);
+});
+
+test('P5.50 a1: the setup reference tells a working session how to check its connection and what doctor cannot prove', () => {
+  const text = fs.readFileSync(path.join(scripts, '..', 'skills', 'road-map-journal', 'references', 'setup.md'), 'utf8');
+  for (const part of ['## Check the connection from the session', 'The skill is loaded, not only installed', 'command -v roadctl', 'roadctl --version', 'export ROADCTL_AS=', 'roadctl where', 'roadctl claim TEST-1', 'roadctl lock --', 'roadctl report TEST-1', 'Hooks: configured is not confirmed', 'What doctor cannot prove']) assert.ok(text.includes(part), part);
+  assert.doesNotMatch(text, /^## Check the machine$/m, 'one section, not a duplicate doctor note');
 });
 
 test('P5.47 a3: skill — a missing installed skill is a warning with the install command; an installed one is ok', () => {
@@ -630,4 +689,58 @@ test('help and docs: doctor is in the overview, has complete help, and docs/road
   for (const id of ids) assert.ok(docs.includes(`\`${id}\``), `docs/roadctl.md names the check ${id}`);
   const schema = fs.readFileSync(path.join(scripts, 'testkit', 'doctor-schema.mjs'), 'utf8');
   assert.ok(docs.includes('scripts/testkit/doctor-schema.mjs') && schema.includes('doctorJsonProblems'));
+});
+
+// ---------------------------------------------------------------- P5.29 a3: the service works in a clone of its own
+
+test('P5.29 a3: doctor warns when the service config points at the working clone of the owner, and is quiet for a clone of its own (both branches, explicit and default owner clone)', FAKES_SKIP, () => {
+  const r = rig();
+  const conductor = (service) => {
+    const dir = path.join(r.env.XDG_CONFIG_HOME, 'road-map-journal');
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'conductor.json'), JSON.stringify({ version: 1, templates: {}, ...(service ? { service } : {}) }), { mode: 0o600 });
+  };
+  const line = () => r.json(['doctor']).by('service-clone');
+  assert.equal(line().status, 'skip', 'no conductor.json');
+  conductor(null);
+  assert.equal(line().status, 'skip', 'no service section');
+  // the service clone: a second clone of the same origin
+  const svc = path.join(r.root, 'service-clone');
+  gitIn(r.root, ['clone', '-q', r.origin, svc]);
+  conductor({ workspace: svc, owner_clone: r.ws });
+  const ok = line();
+  assert.equal(ok.status, 'ok');
+  assert.match(ok.detail, /a clone of its own/);
+  // the service config points at the owner's working clone (explicit owner_clone)
+  conductor({ workspace: r.ws, owner_clone: r.ws });
+  const bad = line();
+  assert.equal(bad.status, 'warn');
+  assert.match(bad.detail, /working clone of the owner/);
+  assert.match(bad.hint, /clone of its own/);
+  // a folder inside the owner's clone is the same work tree
+  conductor({ workspace: path.join(r.ws, 'projects'), owner_clone: r.ws });
+  assert.equal(line().status, 'warn');
+  // without owner_clone the owner's clone is the default workspace in the home folder
+  const own = path.join(r.home, 'projects', 'agent-workspace');
+  gitIn(r.root, ['clone', '-q', r.origin, own]);
+  conductor({ workspace: own });
+  assert.equal(line().status, 'warn', 'the default workspace of the owner');
+  conductor({ workspace: svc });
+  assert.equal(line().status, 'ok', 'a clone of its own next to the default workspace');
+  // not a clone at all
+  conductor({ workspace: path.join(r.root, 'nowhere') });
+  assert.equal(line().status, 'warn');
+  assert.match(line().detail, /not a git clone/);
+  // owner_clone that does not exist, or is a folder without a clone: warn, never ok (the check cannot tell the clones apart)
+  conductor({ workspace: svc, owner_clone: path.join(r.root, 'no-such-clone') });
+  const gone = line();
+  assert.equal(gone.status, 'warn');
+  assert.match(gone.detail, /service\.owner_clone .* is not a git clone/);
+  const plain = path.join(r.root, 'plain-folder');
+  fs.mkdirSync(plain);
+  conductor({ workspace: svc, owner_clone: plain });
+  assert.equal(line().status, 'warn', 'a folder that is not a clone');
+  // a relative path is a configuration error caught with the file
+  conductor({ workspace: 'relative/clone' });
+  assert.equal(r.json(['doctor']).by('launch-templates').status, 'fail');
 });

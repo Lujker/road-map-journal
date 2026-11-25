@@ -93,8 +93,8 @@ test('P5.24 a7: routine question blocks its RUN and the next RUN prompt includes
   r = f.run(['tick', '--as', 'worker', '--routine', 'r1', '--no-pull', '--json']); assert.ok(!JSON.parse(r.stdout).items.some((i) => i.id === 'r1'));
   r = f.run(['answer', 'r1', 'rq', '--by', 'Owner'], { answer: true }); assert.equal(r.status, 0, r.stderr);
   r = f.run(['tick', '--as', 'worker', '--routine', 'r1', '--no-pull', '--prompt']); assert.equal(r.status, 0, r.stderr); assert.match(r.stdout, /owner answers \(data\).*"answer":true/);
-  r = f.run(['run', 'begin', 'r1', '--as', 'worker'], undefined, { ROADCTL_NOW: '2026-11-20T10:00:30.000Z' }); assert.equal(r.status, 0, r.stderr); // the run that received the answer started after it
-  r = f.run(['routine', 'done', 'r1', '--as', 'worker', '--result', 'ok', 'done'], undefined, { ROADCTL_NOW: '2026-11-20T10:01:00.000Z' }); assert.equal(r.status, 0, r.stderr);
+  r = f.run(['run', 'begin', 'r1', '--as', 'worker', '--run', 'r-answer', '--owner-answers', 'rq'], undefined, { ROADCTL_NOW: '2026-11-20T10:00:30.000Z' }); assert.equal(r.status, 0, r.stderr); // the launched run received rq
+  r = f.run(['routine', 'done', 'r1', '--as', 'worker', '--run', 'r-answer', '--result', 'ok', 'done'], undefined, { ROADCTL_NOW: '2026-11-20T10:01:00.000Z' }); assert.equal(r.status, 0, r.stderr);
   r = f.run(['tick', '--as', 'worker', '--routine', 'r1', '--no-pull', '--prompt'], undefined, { ROADCTL_NOW: '2026-11-20T13:00:00.000Z' }); assert.equal(r.status, 0, r.stderr); assert.doesNotMatch(r.stdout, /owner answers \(data\)/);
 });
 
@@ -569,6 +569,22 @@ test('P5.24 a5/a11: a missing scope blocks, and a Tell the owner rule is matched
   assert.doesNotMatch(f.read(), /"state":"decided"/);
 });
 
+test('P5.44 a2: a Tell the owner subject in one point of a choice question blocks it, as the main prompt would', (t) => {
+  const f = fixture(t);
+  const mandate = '---\nmandate: 1\nlevel: L3\nkinds: fix, docs\nmax_size: M\nmerge: branch\nbudget: cards_per_day=2, runs_per_week=10\n---\n\n## Goals\n- G1 (priority 1): ship\n\n## Forbidden\n- nothing\n\n## Tell the owner\n- Deploy to production\n';
+  fs.writeFileSync(path.join(f.board, 'mandate.md'), mandate);
+  const shown = JSON.parse(f.run(['mandate', 'show', '--json']).stdout);
+  assert.equal(f.run(['mandate', 'approve', '--by', 'Owner', '--hash', shown.hash]).status, 0);
+  fs.writeFileSync(f.card, f.read().replace('status: doing', `status: doing\nkind: fix\nsize: S\ngoal: G1\nby_mandate: ${shown.hash}`));
+  // the main prompt says nothing of the rule; one point does, and the area is inside the card: still blocking
+  const r = f.run(['ask', 'W-3', '--as', 'worker'], { question: { id: 'point-tell', kind: 'choice', prompt: 'Choose the next step', reason: 'reversible', scope: ['implementation'], points: [{ id: 'p1', prompt: 'Deploy to production now?', options: ['yes', 'no'] }, { id: 'p2', prompt: 'Wait?', options: ['yes', 'no'] }], recommended: { p1: 'no', p2: 'yes' } } });
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(f.read(), /"blocking":true/);
+  assert.match(f.read(), /a subject of Tell the owner in the mandate/);
+  assert.doesNotMatch(f.read(), /"state":"decided"/);
+  assert.match(f.read(), /status: blocked/);
+});
+
 test('P5.24 a11: a stored blocking field may only raise the strictness', async (t) => {
   const { readQuestions } = await import('./owner-questions-data.mjs');
   const bad = { id: 'bad', kind: 'confirm', prompt: 'Proceed?', reason: 'irreversible', scope: ['external'], created: '2026-11-20T10:00:00.000Z', state: 'decided', blocking: false, recommended: true, undo_until: '2026-11-21T10:00:00.000Z' };
@@ -579,8 +595,13 @@ test('P5.24 a11: a stored blocking field may only raise the strictness', async (
   assert.equal(rows.length, 1); assert.equal(rows[0].blocking, true);
   const f = fixture(t);
   fs.writeFileSync(f.card, `${f.read().trimEnd()}\n\n## Questions\n${JSON.stringify([bad])}\n`);
+  // P5.44 a1: the bad record refuses its own item with the reason; inbox itself still answers
   const r = f.run(['inbox', '--json']);
-  assert.equal(r.status, 2); assert.match(r.stderr, /invalid blocking class/);
+  assert.equal(r.status, 0, r.stderr);
+  const refused = JSON.parse(r.stdout).items.find((i) => i.target === 'W-3');
+  assert.equal(refused.type, 'refused');
+  assert.match(refused.reason, /invalid blocking class/);
+  assert.match(refused.confirmation, /^W-3 \"[^\"]+\": the Questions section cannot be read, so nothing is shown for this item/);
 });
 
 test('P5.24 a11: RESUME follows the work after a reassignment; the previous agent gets nothing', (t) => {
@@ -653,4 +674,49 @@ test('P5.24 a5/a11: the undo window follows the zone offset across a DST change'
   assert.equal(askAt('q1', '2026-03-07T20:00:00.000Z'), '2026-03-08T07:30:00.000Z');
   // asked after that moment: the next overview is the following day, and the offset is that of the target moment
   assert.equal(askAt('q2', '2026-03-08T07:45:00.000Z'), '2026-03-09T07:30:00.000Z');
+});
+
+test('P5.44 a1: one card with a broken Questions section refuses its own inbox item and daily line; the other items still show, and a board below 0.13.0 is not linted for the format', (t) => {
+  const f = fixture(t);
+  // a good card with a reversible decision, and a broken one next to it
+  assert.equal(f.run(['ask', 'W-3', '--as', 'worker'], q('good', 'reversible')).status, 0);
+  fs.writeFileSync(path.join(f.board, 'cards', 'broken.md'), '---\nid: B-1\ntitle: Broken\nstatus: doing\n---\n\n## Goal\nx\n\n## Questions\nnot json\n');
+  const inbox = f.run(['inbox', '--json']);
+  assert.equal(inbox.status, 0, inbox.stderr);
+  const items = JSON.parse(inbox.stdout).items;
+  assert.equal(items.find((i) => i.target === 'W-3' && i.type === 'decision')?.question.id, 'good', 'the good item is still there');
+  // P5.44 a1 round 2: version 2 carries the refused item in the same shape as the others, so a v2 client validates it;
+  // a strict v1 client refuses the answer by its version (a closed set of item types), never by one half-valid item
+  assert.equal(JSON.parse(inbox.stdout).version, 2);
+  assert.deepEqual(inboxProblems(JSON.parse(inbox.stdout)), [], 'the whole answer fits the documented v2 contract');
+  const refused = items.find((i) => i.target === 'B-1');
+  assert.equal(refused?.type, 'refused');
+  assert.match(refused.hash, /^[a-f0-9]{64}$/, 'the required hash is there, like on every other item');
+  assert.match(refused.reason, /invalid Questions JSON/);
+  assert.match(refused.confirmation, /^B-1 "Broken": the Questions section cannot be read/);
+  const v1Client = (v) => {
+    const V1 = ['question', 'decision', 'review', 'approval', 'escalation', 'proposed', 'milestone'];
+    if (!v || v.version !== 1 || !Array.isArray(v.items)) return 'refused: unknown inbox version';
+    return v.items.every((i) => V1.includes(i.type) && /^[a-f0-9]{64}$/.test(i.hash ?? '') && typeof i.confirmation === 'string') ? 'ok' : 'refused: invalid item';
+  };
+  assert.equal(v1Client(JSON.parse(inbox.stdout)), 'refused: unknown inbox version', 'v1 reads the version, not a broken item');
+  assert.equal(v1Client({ ...JSON.parse(inbox.stdout), version: 1 }), 'refused: invalid item', 'and if it ignored the version it would reject the new type, which is why the version is raised');
+  const text = f.run(['inbox']);
+  assert.equal(text.status, 0, text.stderr);
+  assert.match(text.stdout, /^decision W-3: Undo W-3\/good: /m);
+  assert.match(text.stdout, /^refused B-1: B-1 "Broken": the Questions section cannot be read/m);
+  // the daily overview: the broken card gets a line of its own and the decision is still listed
+  const daily = f.run(['digest', '--daily']);
+  assert.equal(daily.status, 0, daily.stderr);
+  assert.match(daily.stdout, /\/B-1: B-1 "Broken": the Questions section cannot be read/m);
+  assert.match(daily.stdout, /\/W-3: Undo W-3\/good: /m);
+  assert.doesNotMatch(daily.stdout, /owner question data unreadable/, 'the whole board is no longer refused for one card');
+  // the format belongs to 0.13.0: a board below it is not checked for it
+  const cfg = path.join(f.board, 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg, 'utf8')), requires: '0.12.0' }));
+  const old = f.run(['lint']);
+  assert.doesNotMatch(old.stdout + old.stderr, /Questions section cannot be read/);
+  fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg, 'utf8')), requires: '0.13.0' }));
+  const now = f.run(['lint']);
+  assert.match(now.stdout, /Questions section cannot be read, so tick offers nothing for this card/);
 });

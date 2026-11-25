@@ -52,7 +52,7 @@ export function readPause(dir, now) {
   try {
     text = fs.readFileSync(pauseFile(dir), 'utf8');
   } catch (e) {
-    if (e.code === 'ENOENT' || e.code === 'ENOTDIR') return null;
+    if (e.code === 'ENOENT') return null;
     return { state: 'paused', since: null, by: null, reason: 'the pause file cannot be read', until: null, unreadable: true };
   }
   let j;

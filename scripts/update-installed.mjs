@@ -199,7 +199,7 @@ export function syncRoadctl(home, srcFile, apply = true) {
 
 /** The text of the launcher `~/.local/bin/roadctl` (P5.47): a POSIX script that runs the installed helper. The marker line says it is ours. */
 export const LAUNCHER_MARKER = '# road-map-journal launcher, written by scripts/update-installed.mjs --roadctl';
-export const launcherContent = (dest) => `#!/bin/sh\n${LAUNCHER_MARKER}\n# refresh: node scripts/update-installed.mjs --roadctl --apply (from a checkout)\nexec node ${JSON.stringify(dest)} "$@"\n`;
+export const launcherContent = (dest) => `#!/bin/sh\n${LAUNCHER_MARKER}\n# refresh: node scripts/update-installed.mjs --roadctl --apply (from a checkout)\nexec node '${dest.replaceAll("'", "'\\''")}' "$@"\n`;
 
 /**
  * Make `roadctl` a command: write `~/.local/bin/roadctl` (mode 0755) that runs the installed helper `dest`. Only when the file is missing or already ours (the marker line); a

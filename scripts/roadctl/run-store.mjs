@@ -14,6 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { LOCK_STALE_MS, acquireLock, stateDir as sharedStateDir } from './state.mjs'; // seam (P5.28): one state directory and one lock helper
 
+export const MAX_RUN_ANSWERS = 40;
 export const MAX_LINE = 4096; // bytes of one line including the newline (Cyrillic text is two bytes a character)
 export const TICKS_ROTATE_BYTES = 1024 * 1024;
 export const RUNS_ROTATE_BYTES = 4 * 1024 * 1024;
@@ -28,8 +29,8 @@ export const PROBLEM_KINDS = ['transient', 'permanent', 'unknown'];
 /** Outcomes of a run that did not finish by itself: they count as attempts when the same routine is offered again. */
 export const BAD_OUTCOMES = new Set(['crashed', 'failed', 'timeout', 'aborted']);
 /** The fields of a run record, in the order `roadctl runs --json` prints them. docs/roadctl.md describes each one. */
-export const RUN_FIELDS = ['run_id', 'kind', 'id', 'project', 'agent', 'model', 'host', 'source', 'started', 'finished', 'duration_s', 'outcome', 'reason', 'attempt', 'roadctl', 'usage', 'did', 'decisions', 'problems', 'needs_owner', 'not_checked', 'writes', 'ref', 'note', 'count', 'deadline'];
-const DEFAULTS = { project: null, agent: null, model: null, host: null, source: 'agent', started: null, finished: null, duration_s: null, outcome: 'started', reason: null, attempt: 1, roadctl: null, usage: null, did: [], decisions: [], problems: [], needs_owner: null, not_checked: null, writes: [], ref: null, note: null, count: 1, deadline: null };
+export const RUN_FIELDS = ['run_id', 'kind', 'id', 'project', 'agent', 'model', 'host', 'source', 'started', 'finished', 'duration_s', 'outcome', 'reason', 'attempt', 'roadctl', 'usage', 'did', 'decisions', 'problems', 'needs_owner', 'not_checked', 'writes', 'ref', 'note', 'count', 'deadline', 'owner_answer_ids'];
+const DEFAULTS = { project: null, agent: null, model: null, host: null, source: 'agent', started: null, finished: null, duration_s: null, outcome: 'started', reason: null, attempt: 1, roadctl: null, usage: null, did: [], decisions: [], problems: [], needs_owner: null, not_checked: null, writes: [], ref: null, note: null, count: 1, deadline: null, owner_answer_ids: [] };
 
 // ---------------------------------------------------------------- time, names, paths
 
@@ -182,7 +183,7 @@ export function foldRuns(lines) {
     const cur = map.get(line.run_id);
     const open = !cur || cur.outcome === 'started' || cur.outcome === undefined;
     if (!cur) map.set(line.run_id, { ...rest });
-    else if (event === 'begin' || event === 'skip') Object.assign(cur, Object.fromEntries(Object.entries(rest).filter(([k]) => !(k in cur) || cur[k] == null)));
+    else if (event === 'begin' || event === 'skip') Object.assign(cur, Object.fromEntries(Object.entries(rest).filter(([k]) => k !== 'owner_answer_ids' && (!(k in cur) || cur[k] == null))));
     else if (event === 'note') Object.assign(cur, { note: rest.note });
     else if (event === 'skips') Object.assign(cur, { count: rest.count, finished: rest.finished });
     else if (event === 'crash') {
@@ -270,6 +271,10 @@ export function beginRun(env, p) {
     let run_id = p.runId || runIdFor(key, p.anchor, attempt);
     for (let salt = 1; runs.has(run_id); salt++) run_id = runIdFor(key, p.anchor, `${attempt}.${salt}`);
     const rec = { event: 'begin', run_id, kind: p.kind, id: p.id, project: p.project ?? null, agent: p.agent, model: p.model ?? null, host: hostName(env), source: p.source ?? 'agent', started: isoAt(p.now), outcome: 'started', attempt, roadctl: p.version ?? null, deadline: p.deadlineMs ? isoAt(p.deadlineMs) : null };
+    if (p.ownerAnswerIds?.length) {
+      rec.owner_answer_ids = [...p.ownerAnswerIds];
+      if (Buffer.byteLength(JSON.stringify(rec)) >= MAX_LINE) return { status: 'unavailable', reason: 'the run and its answer IDs do not fit in the ledger' };
+    }
     if (!appendLine(ledgerPaths(env).runs, rec)) return { status: 'unavailable', reason: 'runs.jsonl cannot be written' };
     return { status: 'begun', run: normalize({ ...DEFAULTS, ...rec }) };
   });

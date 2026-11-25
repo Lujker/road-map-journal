@@ -4,7 +4,7 @@ import path from 'node:path';
 const pathFor = (dir, file) => path.join(dir, file);
 import { makeQuestion, answerQuestion, undoQuestion, addQuestion, putQuestions, questionsFromItem } from './owner-questions-data.mjs';
 import { admission, readMandate, TELL_OWNER_FLOOR } from './mandate.mjs';
-import { locateRun } from './run-store.mjs';
+import { locateRun, MAX_RUN_ANSWERS } from './run-store.mjs';
 
 const REQUIRES = '0.13.0';
 const DAY_MS = 864e5;
@@ -14,15 +14,26 @@ const asLine = (s) => String(s).replace(/[\r\n|]/g, ' ').replace(/[`<>\[\]]/g, '
 const when = (env, api) => new Date(api.nowMs(env)).toISOString();
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-/**
- * Delivery of owner answers to a routine is an explicit mark in git, not a comparison of times. The routine header `answers_received` lists the ids of the answers that a
- * FINISHED run received (written by `routine done` in the same commit as the run, so every clone sees it after a pull). An answered question whose id is not listed is
- * offered in the prompt of every RUN again: repeating is allowed, losing is not. `routine done` marks an answer only when the run is known to have started after it
- * (the begin of the run in the local run ledger: `run begin` or `supervise`, the same machine that is running) and ended with a result of its own (ok or escalated, not
- * failed, not the supervisor's record of a run without a result, a timeout or a crash). A bare `routine done` with no begin cannot tell what the run saw: it marks nothing.
- */
+// Pending answers are offered again until a run with an explicit snapshot records its own result.
 export const receivedIds = (header) => new Set(String(header?.answers_received ?? '').split(',').map((x) => x.trim()).filter(Boolean));
-export const MAX_RECEIVED = 40;
+
+export function pendingRoutineAnswers(board, id, api) {
+  if ((api.compareVersions(board.config?.requires, REQUIRES) ?? -1) < 0) return [];
+  const routine = board.routines.find((r) => r.header.id === id);
+  if (!routine) return [];
+  const got = receivedIds(routine.header);
+  return questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && !got.has(q.id));
+}
+
+export function routineAnswerIds(value, board, id, api) {
+  if (value === undefined) return [];
+  const ids = typeof value === 'string' ? value.split(',') : [];
+  if (!ids.length || ids.length > MAX_RUN_ANSWERS || ids.some((id) => !/^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/.test(id))) {
+    throw new Error('--owner-answers needs a comma-separated list of up to 40 question IDs');
+  }
+  const pending = new Set(pendingRoutineAnswers(board, id, api).map((q) => q.id));
+  return [...new Set(ids)].filter((id) => pending.has(id));
+}
 
 function input() {
   const buffer = Buffer.alloc(16385);
@@ -149,8 +160,10 @@ function classify(board, item, question, api) {
     if (mandate.state !== 'approved' || mandate.problems.length) why.push('the mandate is not in force');
     else if (!admission(board, item, mandate, 'work', api).ok) why.push('outside the mandate');
     // the rule is matched by the question's own text as well as by a named area: the asking agent cannot talk around it
+    // P5.44 a2: every text the owner reads counts, the points of a choice question too (a subject in a point is the same subject)
     const tell = [...TELL_OWNER_FLOOR, ...mandate.tell_extra].map((t) => t.toLowerCase()).filter((t) => t.length >= 3);
-    if (tell.some((t) => prompt.includes(t) || scope.some((a) => t.includes(a)))) why.push('a subject of Tell the owner in the mandate');
+    const texts = [prompt, ...(Array.isArray(question?.points) ? question.points.map((p) => String(p?.prompt ?? '').toLowerCase()) : [])];
+    if (tell.some((t) => texts.some((x) => x.includes(t)) || scope.some((a) => t.includes(a)))) why.push('a subject of Tell the owner in the mandate');
   }
   return { blocking: why.length > 0, why };
 }
@@ -285,7 +298,8 @@ function inbox({ args, flags, api, env, out }) {
   if (args.length !== 1) throw new Error('usage: roadctl inbox --board DIR [--json]');
   const board = boardOf(flags, api);
   const items = ownerItems(board, api.nowMs(env));
-  if (flags.json) out(JSON.stringify({ version: 1, items }, null, 2));
+  // P5.44 a1 round 2: version 2, because the v1 item types are a closed set: a v1 client refuses this envelope by its version instead of failing on one broken card
+  if (flags.json) out(JSON.stringify({ version: 2, items }, null, 2));
   else if (!items.length) out('inbox: empty');
   else for (const i of items) out(`${i.type} ${i.target}: ${i.confirmation}`);
   return 0;
@@ -295,7 +309,16 @@ export function ownerItems(board, time) {
   for (const item of [...board.cards, ...(board.routines ?? [])]) {
     const raw = rawItem(item);
     const deferred = (type) => { const m = /^(review|approval|escalation|proposed|milestone) (\S+)$/.exec(item.header.inbox_defer ?? ''); return Boolean(m && m[1] === type && Date.parse(m[2]) > time); };
-    for (const q of questionsFromItem(raw)) {
+    let rows = [];
+    try { rows = questionsFromItem(raw); }
+    catch (e) {
+      // P5.44 a1: one unreadable Questions section refuses its own item and names the reason; the other items are still listed
+      const reason = asLine(e.message).slice(0, 200);
+      // P5.44 a1 round 2: the item keeps every field the contract requires (target, hash, confirmation), so a v2 client validates it as it validates the others
+      items.push({ type: 'refused', target: item.header.id, hash: sha(raw), reason, confirmation: `${item.header.id} "${asLine(item.header.title ?? '')}": the Questions section cannot be read, so nothing is shown for this item: ${reason}` });
+      continue;
+    }
+    for (const q of rows) {
       if (!['waiting', 'decided'].includes(q.state) || (q.defer_until && Date.parse(q.defer_until) > time)) continue;
       const content = JSON.stringify(q);
       const undoable = undoWouldPass(board, item, q, time, !board.cards.includes(item));
@@ -374,6 +397,8 @@ export default {
     },
     /** A card whose Questions section cannot be read is refused by tick (no RESUME); lint names it here. */
     'board-lint'({ board, api }) {
+      // P5.44 a1: the format belongs to 0.13.0, so a board below it is not checked for it (nothing writes or reads it there)
+      if ((api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) return {};
       const findings = [];
       for (const card of board.cards) {
         try { questionsFromItem(rawItem(card)); } catch (e) { findings.push({ level: 'error', file: `cards/${card.name}`, text: `the Questions section cannot be read, so tick offers nothing for this card: ${api.sanitize(e.message, 200)}` }); }
@@ -388,24 +413,25 @@ export default {
         if (!routine) return {};
         const project = path.basename(board.project);
         const explicit = flags?.run ?? (/^[A-Za-z0-9._:-]{1,64}$/.test(env.ROADCTL_RUN_ID ?? '') ? env.ROADCTL_RUN_ID : undefined);
-        const run = locateRun(env, { kind: 'routine', project, id, runId: explicit, anchor: routine.header.last_run ?? null }).run;
-        const started = Date.parse(run?.started ?? '');
-        if (!Number.isFinite(started) || run?.outcome !== 'started') return {}; // no begin: nothing is known about what the run saw
-        const got = receivedIds(routine.header);
-        const fresh = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && !got.has(q.id) && Date.parse(q.answered) < started).map((q) => q.id);
-        if (!fresh.length) return {};
-        return { header: { answers_received: [...got, ...fresh].slice(-MAX_RECEIVED).join(',') } };
+        if (!explicit) return {};
+        const plan = locateRun(env, { kind: 'routine', project, id, runId: explicit });
+        const run = plan.run;
+        if (plan.problem || run?.agent !== as || !['started', 'crashed'].includes(run?.outcome) || !run.owner_answer_ids.length) return {};
+        const delivered = new Set(run.owner_answer_ids);
+        return { header: { answers_received: (current) => {
+          try {
+            const got = receivedIds(current.header);
+            const fresh = questionsFromItem(rawItem(current)).filter((q) => q.state === 'answered' && delivered.has(q.id) && !got.has(q.id));
+            if (fresh.length) return [...got, ...fresh.map((q) => q.id)].join(',');
+          } catch { /* leave unreadable question data and its delivery mark alone */ }
+        } } };
       } catch { return {}; }
     },
     'tick-before'({ agent, items, boardDirs, env, api }) {
       const run = {};
       for (const item of items.filter((x) => x.kind === 'RUN')) {
         const board = api.loadBoard(boardDirs[item.project]);
-        if ((api.compareVersions(board.config.requires, REQUIRES) ?? -1) < 0) continue;
-        const routine = board.routines.find((r) => r.header.id === item.id);
-        if (!routine) continue;
-        const got = receivedIds(routine.header);
-        const answers = questionsFromItem(rawItem(routine)).filter((q) => q.state === 'answered' && !got.has(q.id)).map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
+        const answers = pendingRoutineAnswers(board, item.id, api).slice(0, MAX_RUN_ANSWERS).map((q) => ({ id: q.id, prompt: q.prompt, answer: q.answer }));
         if (answers.length) run[`${item.project}/${item.id}`] = { owner_answers: answers };
       }
       // P5.24 a11: a card whose decision the owner undid is a RESUME task for its current holder, not a plain TAKE —
@@ -430,7 +456,7 @@ export default {
     },
   },
   commands: {
-    ask: spec('record a question for the owner', 'Reads JSON {question:{id,kind,prompt,reason,scope?,points?,recommended?},checkpoint?}; kind is confirm, choice or text, reason is reversible, irreversible or outside-mandate. Reversible needs a recommended answer; the undo window is roadctl\'s own (the next daily overview from "digest" in board/config.json, else 24 hours) and an undo_until in the input is ignored. roadctl decides the class: an irreversible reason, an external area (scope or card), a scope outside the card, a card outside the mandate or a subject of its Tell the owner (matched by the question text too) makes the question blocking and no decision is written; a question without scope is blocking as well, because the area of the decision must be named. A claimed card needs checkpoint {did,next,in_flight}. Blocking questions release the lease; reversible decisions let the agent continue. The card file stays uncommitted: run roadctl save before roadctl report.', ['roadctl ask ID --board DIR --as AGENT < question.json'], [['--board DIR', 'board directory'], ['--as AGENT', 'asking agent']], ['roadctl ask W-3 --board ./board --as worker < question.json'], 'Writes the question and checkpoint to the target file.', ask),
+    ask: spec('record a question for the owner', 'Reads JSON {question:{id,kind,prompt,reason,scope?,points?,recommended?},checkpoint?}; kind is confirm, choice or text, reason is reversible, irreversible or outside-mandate. Reversible needs a recommended answer; the undo window is roadctl\'s own (the next daily overview from "digest" in board/config.json, else 24 hours) and an undo_until in the input is ignored. roadctl decides the class: an irreversible reason, an external area (scope or card), a scope outside the card, a card outside the mandate or a subject of its Tell the owner (matched by the question text too: the prompt and every point of a choice) makes the question blocking and no decision is written; a question without scope is blocking as well, because the area of the decision must be named. A claimed card needs checkpoint {did,next,in_flight}. Blocking questions release the lease; reversible decisions let the agent continue. The card file stays uncommitted: run roadctl save before roadctl report.', ['roadctl ask ID --board DIR --as AGENT < question.json'], [['--board DIR', 'board directory'], ['--as AGENT', 'asking agent']], ['roadctl ask W-3 --board ./board --as worker < question.json'], 'Writes the question and checkpoint to the target file.', ask),
     inbox: spec('list owner questions and decisions', 'Lists questions and owner decisions as text or versioned JSON; a decision is undoable only while roadctl undo would pass. Every item has one confirmation built from roadctl data (target, title, area, hash); agent wording and escalation text are kept apart as a quote.', ['roadctl inbox --board DIR [--json]'], [['--board DIR', 'board directory'], ['--json', 'print JSON'], ['--until ISO', 'hide a question until this time'], ['--by OWNER', 'owner name for deferral']], ['roadctl inbox --board ./board --json'], 'Reads board files; defer writes the item.', inbox, { effect: 'write', owner: { sub: ['defer'] } }),
     answer: spec('answer an owner question', 'Owner only; reads JSON {answer:VALUE}: a boolean for confirm, a string for text or a map of point IDs to answers for choice. Choice points may be answered separately. Writes the item Log and owner audit; refuses in an unattended run.', ['roadctl answer ID QUESTION --board DIR --by OWNER < answer.json'], [['--board DIR', 'board directory'], ['--by OWNER', 'owner name']], ['roadctl answer W-3 q1 --board ./board --by Owner < answer.json'], 'Writes the answer and Log entry.', (ctx) => resolve(ctx), { owner: true }),
     undo: spec('undo a reversible decision', 'Owner only; reads JSON {comment:TEXT}, returns a reported card for rework and refuses after undo_until or in an unattended run.', ['roadctl undo ID QUESTION --board DIR --by OWNER < comment.json'], [['--board DIR', 'board directory'], ['--by OWNER', 'owner name']], ['roadctl undo W-3 q1 --board ./board --by Owner < comment.json'], 'Writes the undo and Log entry.', (ctx) => resolve(ctx, true), { owner: true }),

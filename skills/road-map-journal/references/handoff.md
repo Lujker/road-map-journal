@@ -21,7 +21,7 @@ For a coordinator that gives cards to other agents and for an agent that takes o
 
 Return the work only for: (1) a violated criterion of the card, (2) a failing test or an incompatibility, (3) a defect you can reproduce with a concrete scenario (input, wrong result). Everything else (style, naming, a better idea, a risk without a scenario) goes into a "later" list in the verdict. It is not a return.
 
-- At most two review rounds per card. After the second the coordinator decides and what is left goes to a follow-up card.
+- At most two review rounds per card. After the second, stop and escalate any remaining blocker; only non-blocking follow-ups go to another card.
 - A second review looks only at the earlier blockers and the new diff, not at the whole card.
 - The verdict starts with one line: accept, accept with follow-ups, or return. Then each blocker with `file:line` and the scenario, then the "later" list.
 - A reviewer is read-only: no commits, no `approve`, `done` or `accept`.

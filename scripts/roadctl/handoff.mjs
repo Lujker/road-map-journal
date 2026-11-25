@@ -17,7 +17,7 @@ export const REVIEW_RULE = [
   'Review rule:',
   '- Return the work only for: (1) a violated criterion of the card, (2) a failing test or an incompatibility, (3) a defect you can reproduce with a concrete scenario (input -> wrong result).',
   '- Everything else (style, naming, a better idea, a risk without a scenario) goes to a "later" list in your verdict. It is not a return.',
-  '- At most two review rounds per card; after the second the coordinator decides and what is left goes to a follow-up card.',
+  '- At most two review rounds per card; after the second, stop and escalate any remaining blocker; only non-blocking follow-ups go to another card.',
   '- A second review looks only at the earlier blockers and the new diff, not at the whole card again.',
   '- First line of the verdict: accept / accept with follow-ups / return.',
 ];
@@ -47,7 +47,7 @@ export function handoffLines({ card, to, role, tests, base, note, repo, executor
   const id = card.header.id;
   const branch = branchFor(id, card.header.title);
   const dir = repo ? dirFor(repo, id) : `../<repo>-${String(id).toLowerCase()}`;
-  const open = card.criteria.filter((c) => c.mark !== 'x');
+  const open = role === 'reviewer' ? card.criteria : card.criteria.filter((c) => c.mark !== 'x');
   const L = [`Assignment ${id}: ${clean(card.header.title, 160)}`, `For: ${to} | role: ${role}${executor ? ` | ${executor}` : ''}`, ''];
   L.push('Goal:', ...firstParagraphs(card.sections.Goal).split('\n').map((l) => `  ${l}`), '');
   L.push(`Criteria${role === 'reviewer' ? ' to check' : ''} (full text: roadctl show ${id}):`, ...(open.length ? open.map((c) => `- ${c.id}: ${clean(c.text, 300)}`) : ['- (no open criterion on the card: ask the coordinator what to do before you start)']), '');
@@ -76,7 +76,7 @@ export default {
     handoff: {
       group: 'Delegate', effect: 'read', hidden: true,
       summary: 'print the standard assignment text for a card (worker, reviewer, fixer)',
-      purpose: 'Builds the assignment for one card from the card and the registry and prints it: the goal, the open criteria, the branch and worktree (the names that `roadctl worktree add ID` creates), the test command under the shared build lock (--tests, else the Checks line of the card Delegation section), what the executor must not do (main, push, tags, approve, done, other worktrees, the installed roadctl), the report format and how to save limits (short caveman style, codegraph, rtk). --role reviewer adds the review rule (return only for a violated criterion, a failing test or incompatibility, or a reproducible defect; otherwise a "later" list; at most two rounds; verdict first); --role fixer lists the findings from --note and tells to fix only those. --to is any name the coordinator uses (an executor, a profile, an orchestrator pair): it is printed and used in the report commands; a name that the registry knows adds its roles. The text is the same for every harness and orchestrator; nothing is sent or written.',
+      purpose: 'Builds the assignment for one card from the card and the registry and prints it: the goal, the open criteria, the branch and worktree (the names that `roadctl worktree add ID` creates), the test command under the shared build lock (--tests, else the Checks line of the card Delegation section), what the executor must not do (main, push, tags, approve, done, other worktrees, the installed roadctl), the report format and how to save limits (short caveman style, codegraph, rtk). --role reviewer adds the review rule (return only for a violated criterion, a failing test or incompatibility, or a reproducible defect; otherwise a "later" list; at most two rounds; verdict first); --role fixer lists the findings from --note and tells to fix only those. --to is any name the coordinator uses (an executor, a profile, an orchestrator pair): it is printed and used in the report commands; a name that the registry knows adds its roles, and a profile adds its own row (the executor it maps to, the roles and model of that executor, and the openbot name) in the same `For:` line. The text is the same for every harness and orchestrator; nothing is sent or written.',
       usage: [USAGE.slice(7)],
       flags: [['--to WHO', 'who gets the assignment (the value they will give to --as)'], ['--role ROLE', 'worker (default), reviewer or fixer'], ['--tests COMMAND', 'the test command to run under the lock (default: Checks of the card)'], ['--base REF', 'the branch the work starts from (default main)'], ['--note TEXT', 'fixer: the review findings; other roles: a note from the coordinator'], ['--repo DIR', 'the repository (default: the git work tree of the current directory)'], ['--json', 'machine-readable: { card, to, role, text }']],
       examples: ['roadctl handoff P5.41 --to pi-developer', 'roadctl handoff P5.41 --to pi-developer --role reviewer', 'roadctl handoff W-3 --to claude-code@home-wsl --role fixer --note "a2: empty file on export" --tests "node --test"'],
@@ -96,6 +96,15 @@ export default {
           const reg = api.loadRegistry();
           const a = reg?.agents?.[to];
           if (a) executor = `registry: roles ${(a.roles ?? []).join(', ') || '-'}${a.model ? `, model ${clean(a.model, 40)}` : ''}`;
+          else {
+            // P5.46 a5: a profile (or a pair) shows its own registry row, and the executor it maps to
+            const who = api.resolveAs(to, reg);
+            if (who && !who.error && who.kind === 'profile') {
+              const ex = reg?.agents?.[who.executor] ?? {};
+              const p = reg?.agent_profiles?.[who.profile] ?? {};
+              executor = clean(`registry: profile ${who.profile}${who.variant ? ` (variant ${who.variant})` : ''} -> ${who.executor}; roles ${(ex.roles ?? []).join(', ') || '-'}${ex.model ? `, model ${ex.model}` : ''}${p.openbot?.name && p.openbot.name !== who.profile ? `, openbot ${p.openbot.name}` : ''}`, 300);
+            }
+          }
         } catch { /* a broken registry is not the business of a text */ }
         const lines = handoffLines({ card, to, role, tests: typeof flags.tests === 'string' ? clean(flags.tests, 300) : null, base: typeof flags.base === 'string' ? clean(flags.base, 60) : 'main', note: typeof flags.note === 'string' ? flags.note : null, repo: repoOf(flags), executor });
         if (flags.json) out(JSON.stringify({ card: id, to, role, text: lines.join('\n') }, null, 2));

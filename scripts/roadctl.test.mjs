@@ -831,6 +831,20 @@ test('save refuses on lint errors and on unpushed commits outside the board', ()
   assert.ok(!p.serverLog().includes('private work'));
 });
 
+test('save refuses unpushed outside paths even when later commits undo them', () => {
+  const p = pair();
+  const before = g(p.server, 'rev-parse', 'main');
+  fs.writeFileSync(path.join(p.a, 'private.txt'), 'private');
+  g(p.a, 'add', 'private.txt');
+  g(p.a, 'commit', '-q', '-m', 'add private');
+  g(p.a, 'rm', '-q', 'private.txt');
+  g(p.a, 'commit', '-q', '-m', 'remove private');
+  const result = p.run(p.a, ['save', '--json']);
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  assert.equal(out(result).status, 'foreign-commits');
+  assert.equal(g(p.server, 'rev-parse', 'main'), before);
+});
+
 test('hooks: the session brief reports the sync state; autosync pulls at start and saves at Stop; the reminder is not disturbed', () => {
   const p = pair();
   p.run(p.a, ['log', 'W-3', 'from a']);
@@ -3405,7 +3419,7 @@ test('P5.4 a5: the old parser (0.11.0) reads what 0.12.0 writes: last_result sta
   assert.doesNotMatch(t.run(ME, [], { ROADCTL_NOW: '2026-11-11T13:00:00Z' }).stdout, /^RUN /m, 'the new copy holds it');
 });
 
-test('P5.24 answer delivery, two clones: the answer is offered on both until a run on the other clone, that began after it and ended ok, marks it in git; then both stop offering it', LSKIP, () => {
+test('P5.24 answer delivery, two clones: the answer is offered on both until a run on the other clone, that took its ID at begin and ended ok, marks it in git; then both stop offering it', LSKIP, () => {
   const p = pair();
   // each clone is its own machine: its own state directory (run ledger), limits cache and PATH with the fake claude (known limits, 10% used), so the test
   // never depends on an installed claude or on the limits cache of the machine it runs on (on CI: no claude, limits unknown, the gate would stay shut)
@@ -3428,9 +3442,9 @@ test('P5.24 answer delivery, two clones: the answer is offered on both until a r
   assert.equal(out(run(p.b, ['pull', '--json'], '2026-11-10T10:02:00Z')).status, 'pulled');
   assert.match(prompt(p.a, '2026-11-10T12:30:00Z'), /Use plan B/, 'offered on the clone where it was given');
   assert.match(prompt(p.b, '2026-11-10T12:30:00Z'), /Use plan B/, 'and on the other clone');
-  // the run on clone b: begin after the answer, a result of its own, published by routine done
-  ok(p.b, ['run', 'begin', 'mr-status', '--as', ME], '2026-11-10T12:31:00Z');
-  ok(p.b, ['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'handled it'], '2026-11-10T12:32:00Z');
+  // the run on clone b: take the ID at begin, a result of its own, published by routine done
+  ok(p.b, ['run', 'begin', 'mr-status', '--as', ME, '--run', 'r-b', '--owner-answers', 'owner-q'], '2026-11-10T12:31:00Z');
+  ok(p.b, ['routine', 'done', 'mr-status', '--as', ME, '--run', 'r-b', '--result', 'ok', 'handled it'], '2026-11-10T12:32:00Z');
   assert.match(g(p.server, 'show', 'main:projects/my-app/board/routines/mr-status.md'), /^answers_received: owner-q$/m, 'the mark is on the server');
   assert.doesNotMatch(prompt(p.b, '2026-11-10T14:40:00Z'), /Use plan B/);
   assert.match(prompt(p.a, '2026-11-10T14:40:00Z'), /Use plan B/, 'clone a has not pulled yet: it still offers it (repeating is allowed)');
@@ -3535,6 +3549,26 @@ test('P5.4 a9: the transition to HOLD is one immediate problem in digest, not re
   const d3 = t.bcli(['digest']);
   assert.equal((d3.stdout.match(/held: after 3 failed runs in a row/g) ?? []).length, 1, `the second HOLD is told too (two events in all): ${d3.stdout}`);
   assert.doesNotMatch(t.bcli(['digest']).stdout, /held:/, 'and only once');
+});
+
+test('P5.44 a3: one HOLD is one episode in digest: approving the held routine again does not tell the same hold a second time', LSKIP, () => {
+  const t = tenv();
+  raiseOutcome(t.c.board);
+  routineOn(t);
+  const hold = () => rc.loadBoard(t.c.board).routines.find((x) => x.header.id === 'mr-status').header;
+  for (let i = 0; i < 3; i++) assert.equal(t.bcli(['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', 'x']).status, 0);
+  const id = hold().hold_id;
+  const approval = hold().approval_id;
+  const d1 = t.bcli(['digest']);
+  assert.equal(d1.status, 0, d1.stderr);
+  assert.equal((d1.stdout.match(/held: after 3 failed runs in a row/g) ?? []).length, 1, `one immediate hold problem: ${d1.stdout}`);
+  // the owner approves the held routine once more: a new approval episode, the same hold; nothing about the hold is news
+  assert.equal(t.bcli(['routine', 'on', 'mr-status', '--by', 'Lujker', '--source', 'chat 2026-11-13']).status, 0);
+  assert.notEqual(hold().approval_id, approval, 'a new approval_id');
+  assert.equal(hold().hold_id, id, 'the hold episode did not change');
+  const d2 = t.bcli(['digest']);
+  assert.equal(d2.status, 0, d2.stderr);
+  assert.doesNotMatch(d2.stdout, /held:/, `the same hold is not told again: ${d2.stdout}`);
 });
 
 // ---------------------------------------------------------------- P4.11: one routine per scheduler job, a time window for routines, the working directory of a claim
@@ -3798,6 +3832,83 @@ test('P5.41 a1: --as and ROADCTL_AS accept an executor, a profile and orchestrat
   assert.equal(dcli(r8, ['claim', 'W-3', '--as', CODEX]).status, 0);
 });
 
+test('registered profile can delegate a ready card and accept its report under its own name', () => {
+  const root = project();
+  const env = { ROADCTL_REGISTRY: PROFILE_REG() };
+  const run = (args) => dcli(root, args, env);
+  edit(root, 'W-5', (t) => t.replace('depends_on: W-2', `depends_on: W-2\n${APPROVED}`));
+  const id = 'W-5';
+  const delegator = 'claude-developer';
+  assert.equal(run(['delegate', id, '--to', 'codex-developer', '--by', delegator]).status, 0);
+  const claim = run(['claim', id, '--as', 'codex-developer']);
+  assert.equal(claim.status, 0, claim.stderr + claim.stdout);
+  assert.match(cardText(root, id), /^status: doing$/m);
+  edit(root, id, (t) => t.replace('## Log', '## Evidence\n\n## Log'));
+  evidenceOf(root, id, ['a1', 'a2']);
+  const report = run(['report', id, '--as', 'codex-developer', 'checked']);
+  assert.equal(report.status, 0, report.stderr + report.stdout);
+  assert.match(run(['accept', id, '--as', ME]).stderr, /only claude-developer may accept/);
+  assert.equal(run(['accept', id, '--as', delegator]).status, 0);
+});
+
+test('claim by profile survives an unrelated upstream commit', () => {
+  const p = pair();
+  const env = { ROADCTL_REGISTRY: PROFILE_REG(), ROADCTL_NOW: T0 };
+  const run = (w, args) => p.run(w, args, '', env);
+  assert.equal(run(p.a, ['delegate', 'W-3', '--to', 'worker', '--by', ME]).status, 0);
+  assert.equal(run(p.a, ['save']).status, 0);
+  assert.equal(run(p.b, ['pull']).status, 0);
+  assert.equal(run(p.b, ['log', 'W-5', 'unrelated change']).status, 0);
+  assert.equal(run(p.b, ['save']).status, 0);
+  const result = run(p.a, ['claim', 'W-3', '--as', 'pi-developer', '--json']);
+  assert.equal(result.status, 0, result.stderr + result.stdout);
+  assert.equal(out(result).status, 'claimed');
+  assert.equal(out(result).claim.agent, 'pi-worker@home-wsl');
+});
+
+const A2_PROFILE_REG = () => writeRegistry({ // P5.46 a2: a profile on the api provider (a deterministic limits answer, no probe)
+  ...TICK_REGISTRY,
+  agent_profiles: { 'pi-developer': { executor: HERMES, openbot: { name: 'pi-developer' }, openbot_variants: [{ name: 'pi-developer-small' }] } },
+});
+
+test('P5.46 a2: tick, limits --check and routine done take a profile, a variant and orchestrator/profile from --as', LSKIP, () => {
+  const reg = A2_PROFILE_REG();
+  const t = tenv();
+  const env = { ROADCTL_REGISTRY: reg };
+  // limits --check: the profile names the executor and its provider
+  const lim = cli(t.c.ws, ['limits', '--check', 'pi-developer'], '', { ...t.env, ...env });
+  assert.equal(lim.status, 0, lim.stderr);
+  assert.match(lim.stdout, /^hermes@windows \(profile pi-developer\) \(provider some-api\): allowed/m);
+  const pair = cli(t.c.ws, ['limits', '--check', 'openbot@home-wsl/pi-developer'], '', { ...t.env, ...env });
+  assert.equal(pair.status, 0, pair.stderr);
+  assert.match(pair.stdout, /\(profile pi-developer\) \(provider some-api\): allowed/);
+  const variant = cli(t.c.ws, ['limits', '--check', 'pi-developer-small'], '', { ...t.env, ...env });
+  assert.equal(variant.status, 0, variant.stderr);
+  assert.match(variant.stdout, /hermes@windows \(profile pi-developer\)/);
+  // a name the registry does not know is still refused, as before
+  assert.equal(cli(t.c.ws, ['limits', '--check', 'nonsense'], '', { ...t.env, ...env }).status, 2);
+  // tick: a routine of the executor is offered to its profile, and the text names both
+  assert.equal(t.bcli(['routine', 'new', 'r1', 'Collect', '--agent', HERMES, '--model', 'none', '--env', 'laptop', '--every', '2h'], env).status, 0);
+  assert.equal(t.bcli(['routine', 'on', 'r1', '--by', 'Owner', '--source', 'chat 2026-11-21'], env).status, 0);
+  assert.equal(t.bcli(['autonomy', 'routines', 'on', '--by', 'Owner'], env).status, 0);
+  const tick = t.run('pi-developer', [], env);
+  assert.equal(tick.status, 0, tick.stderr);
+  assert.match(tick.stdout, /^tick pi-developer \(hermes@windows\): work$/m);
+  assert.match(tick.stdout, /^RUN my-app\/r1 /m);
+  assert.equal(JSON.parse(t.run('pi-developer', ['--json'], env).stdout).items[0].kind, 'RUN', 'the JSON item is the executor\'s');
+  const pairedTick = t.run('openbot@home-wsl/pi-developer', ['--prompt'], env);
+  assert.equal(pairedTick.status, 0, pairedTick.stderr);
+  assert.match(pairedTick.stdout, /roadctl limits --check openbot@home-wsl\/pi-developer;/);
+  assert.match(pairedTick.stdout, /routine done <id> --as openbot@home-wsl\/pi-developer --result/);
+  // routine done as the profile records the run under the executor
+  const done = t.bcli(['routine', 'done', 'r1', '--as', 'pi-developer', '--result', 'ok', 'checked'], env);
+  assert.equal(done.status, 0, done.stderr);
+  assert.match(fs.readFileSync(path.join(t.c.board, 'routines', 'r1.md'), 'utf8'), /\[hermes@windows\] RUN ok: checked/);
+  // the executor's own name still works as before
+  assert.equal(t.bcli(['routine', 'done', 'r1', '--as', 'openbot@home-wsl/pi-developer', '--result', 'ok', 'paired'], env).status, 0);
+  assert.equal(t.bcli(['routine', 'done', 'r1', '--as', HERMES, '--result', 'ok', 'again'], env).status, 0);
+});
+
 test('P5.41 a2: delegate --to takes role, profile, executor and orchestrator; claim matches by the rules; the Log writes both names', () => {
   const reg = PROFILE_REG();
   const env = { ROADCTL_REGISTRY: reg };
@@ -3837,6 +3948,67 @@ test('P5.41 a2: delegate --to takes role, profile, executor and orchestrator; cl
   assert.equal(dg(r4, 'pi-worker@home-wsl').status, 0);
   assert.equal(dcli(r4, ['claim', 'W-3', '--as', 'pi-developer'], env).status, 0, 'pi-developer is pi-worker@home-wsl by profile');
   assert.match(cardText(r4), /CLAIMED by pi-developer \(pi-worker@home-wsl\)/);
+});
+
+test('P5.46 a4: delegate --to a name the registry does not know warns that claim will refuse; a known name does not', LSKIP, () => {
+  const reg = PROFILE_REG();
+  const env = { ROADCTL_REGISTRY: reg, ROADCTL_NOW: T0 };
+  // a name that looks like an executor but is not in the registry: the delegation is written, and the warning names the claim that will refuse
+  const root = project();
+  const r = dcli(root, ['delegate', 'W-3', '--to', 'claude-worker@home-wsl', '--by', ME, '--criteria', 'a2'], env);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stderr, /^roadctl delegate: WARNING: the registry does not know claude-worker@home-wsl: a plain "roadctl claim W-3 --as claude-worker@home-wsl" will refuse/m);
+  assert.match(cardText(root), /^delegate: to=claude-worker@home-wsl /m, 'the delegation is still written');
+  assert.match(dcli(root, ['claim', 'W-3', '--as', 'claude-worker@home-wsl'], env).stderr, /unknown claude-worker@home-wsl/, 'the warning was true');
+  // a role that exists in the registry but that no agent has: nobody can claim it
+  const base = JSON.parse(fs.readFileSync(reg, 'utf8'));
+  const root2 = project();
+  const r2 = dcli(root2, ['delegate', 'W-3', '--to', 'auditor', '--by', ME], { ...env, ROADCTL_REGISTRY: writeRegistry({ ...base, roles: { ...base.roles, auditor: {} } }) });
+  assert.equal(r2.status, 0, r2.stderr);
+  assert.match(r2.stderr, /WARNING: no agent of the registry has the role auditor/);
+  // a known executor and a known profile: two names that work, no warning
+  for (const to of ['codex@home-wsl', 'pi-developer']) {
+    const rk = dcli(project(), ['delegate', 'W-3', '--to', to, '--by', ME], env);
+    assert.equal(rk.status, 0, rk.stderr);
+    assert.doesNotMatch(rk.stderr, /WARNING/, to);
+  }
+  // without a registry nothing changes: no warning, and a claim by the name still works
+  const p2 = project();
+  const noReg = cli(p2, ['delegate', 'W-3', '--to', 'heredoc@elsewhere', '--by', ME], '', { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 });
+  assert.equal(noReg.status, 0, noReg.stderr);
+  assert.doesNotMatch(noReg.stderr, /WARNING/);
+});
+
+test('P5.46 a3: a delegation to a profile is also taken by that profile\'s executor under its own name, and tasks --for finds it', LSKIP, () => {
+  // the same registry, with an api provider for pi-worker@home-wsl so the limits gate is deterministic and no probe runs
+  const base = JSON.parse(fs.readFileSync(PROFILE_REG(), 'utf8'));
+  const reg = writeRegistry({
+    ...base,
+    providers: { 'some-api': { kind: 'api' } },
+    agents: { ...base.agents, 'pi-worker@home-wsl': { host: 'pi', provider: 'some-api', roles: ['worker'] } },
+    agent_profiles: { ...base.agent_profiles, 'pi-researcher': { executor: 'pi-worker@home-wsl' } },
+  });
+  const env = { ROADCTL_REGISTRY: reg, ROADCTL_NOW: T0 };
+  const root = project();
+  assert.equal(dcli(root, ['delegate', 'W-3', '--to', 'pi-developer', '--by', ME, '--criteria', 'a2'], env).status, 0);
+  const t = tenv();
+  // tasks --for: the executor of the profile sees the open delegation, another executor does not
+  const seen = cli(root, ['tasks', '--for', 'pi-worker@home-wsl', '--json'], '', env);
+  assert.equal(seen.status, 0, seen.stderr);
+  assert.deepEqual(JSON.parse(seen.stdout).map((x) => [x.id, x.to]), [['W-3', 'pi-developer']]);
+  assert.deepEqual(JSON.parse(cli(root, ['tasks', '--for', 'codex-developer', '--json'], '', env).stdout), [], 'another profile of the registry is not eligible');
+  assert.match(dcli(root, ['claim', 'W-3', '--as', 'pi-researcher'], env).stderr, /addressed to profile pi-developer/);
+  // claim: by the executor name itself, and the Log writes it
+  assert.equal(dcli(root, ['claim', 'W-3', '--as', 'pi-worker@home-wsl'], env).status, 0);
+  assert.match(cardText(root), /^claim: pi-worker@home-wsl /m);
+  // tick offers the TAKE of a profile delegation to that executor too
+  const t2 = tenv();
+  assert.equal(t2.bcli(['delegate', 'W-3', '--to', 'pi-developer', '--by', ME, '--criteria', 'a2'], { ROADCTL_REGISTRY: reg }).status, 0);
+  const tick = t2.run('pi-worker@home-wsl', [], { ROADCTL_REGISTRY: reg });
+  assert.equal(tick.status, 0, tick.stderr);
+  assert.match(tick.stdout, /^TAKE my-app\/W-3 /m);
+  assert.doesNotMatch(t2.run('pi-researcher', [], { ROADCTL_REGISTRY: reg }).stdout, /TAKE my-app\/W-3/);
+  assert.doesNotMatch(t2.run(CODEX, [], { ROADCTL_REGISTRY: reg }).stdout, /TAKE my-app\/W-3/, 'codex@home-wsl is not that profile\'s executor');
 });
 
 test('P5.41 a3: claim moves ready -> doing when approved; without approval it refuses', () => {
@@ -4094,4 +4266,125 @@ test('tick --json contract: every decision and every item kind fits the schema o
   bad((j) => { j.items[0].routine = 'x'; }, /items\[0\].routine/);
   bad((j) => { j.limits.state = 'maybe'; }, /limits.state/);
   bad((j) => { j.decision = 'idle'; }, /idle with items/);
+});
+
+test('P5.46 a1: delegate refuses an analysis-only approval before writing a delegation', () => {
+  const root = project();
+  edit(root, 'W-3', (t) => t.replace('scope=implementation', 'scope=analysis'));
+  const before = cardText(root);
+  const result = dcli(root, ['delegate', 'W-3', '--to', 'worker', '--by', ME]);
+  assert.equal(result.status, 1, result.stderr + result.stdout);
+  assert.match(result.stderr, /approval needs scope=implementation/);
+  assert.equal(cardText(root), before);
+});
+
+// ---------------------------------------------------------------- P5.29: one clone, one repository lock; a clone of its own for the service
+
+const asyncIn = (w, p, args, env = {}) => new Promise((resolve) => {
+  const c = spawn(process.execPath, [SELF, ...args, '--board', p.bd(w)], { cwd: w, env: { ...process.env, ROADCTL_DATE: '2026-11-10', ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0, ...env } });
+  let so = '';
+  let se = '';
+  c.stdout.on('data', (d) => (so += d));
+  c.stderr.on('data', (d) => (se += d));
+  c.on('close', (code) => resolve({ status: code, stdout: so, stderr: se }));
+});
+const repoLockOf = (w) => path.join(w, '.git', 'roadctl-repo.lock');
+
+test('P5.29 a1: report and save of one clone run at once; both records reach the server, no index.lock is left, the repository lock is gone', async () => {
+  const { p, run } = claimed2();
+  assert.equal(run(p.b, ['log', 'W-4', 'note written while the report runs', '--author', 'agent']).status, 0);
+  for (let round = 0; round < 2; round++) {
+    const [rep, sav] = await Promise.all([
+      asyncIn(p.b, p, ['report', 'W-3', '--as', CODEX, `report round ${round} [a2]`, '--json']),
+      asyncIn(p.b, p, ['save', `save round ${round}`, '--json']),
+    ]);
+    if (round === 0) assert.equal(out(rep).status, 'reported', rep.stdout + rep.stderr);
+    assert.ok(['pushed', 'nothing-to-save'].includes(out(sav).status), sav.stdout + sav.stderr);
+    assert.equal(fs.existsSync(path.join(p.b, '.git', 'index.lock')), false, 'no index.lock is left');
+    assert.equal(fs.existsSync(repoLockOf(p.b)), false, 'the repository lock is released');
+    if (round === 0) assert.equal(run(p.b, ['log', 'W-4', 'second note', '--author', 'agent']).status, 0);
+  }
+  const files = g(p.server, 'log', '--name-only', '--format=%s', 'main');
+  assert.match(files, /report W-3 by codex@home-wsl/, 'the report commit is on the server');
+  assert.equal(out(run(p.a, ['pull', '--json'])).status, 'pulled');
+  assert.match(card3(p.a, p), /REPORT: report round 0 \[a2\]/, 'the report is in the card');
+  assert.match(fs.readFileSync(path.join(p.bd(p.a), 'cards', 'W-4-integratsiya-postavshchika.md'), 'utf8'), /note written while the report runs/, 'the saved note is in the other card');
+  assert.equal(g(p.b, 'status', '--porcelain', '--', 'projects'), '', 'nothing is left uncommitted');
+});
+
+test('P5.29 a1: a held repository lock is taken over only when its owner is dead: a live owner with an old file blocks (busy, nothing changed), a dead pid is taken over, a foreign host waits for the big fuse', () => {
+  const { p, run } = claimed2();
+  const lock = repoLockOf(p.b);
+  const env = { ROADCTL_REPO_LOCK_WAIT_MS: '300' };
+  const hold = (o, ageMs = 0) => {
+    fs.writeFileSync(lock, JSON.stringify(o));
+    const t = new Date(fs.statSync(lock).mtimeMs - ageMs);
+    fs.utimesSync(lock, t, t);
+  };
+  const before = g(p.b, 'rev-parse', 'HEAD');
+  // a live owner (this very process) whose lock file is 10 minutes old: age alone opens nothing
+  hold({ pid: process.pid, host: os.hostname() }, 10 * 60 * 1000);
+  const r = run(p.b, ['report', 'W-3', '--as', CODEX, 'blocked by the lock [a2]', '--json'], env);
+  assert.equal(r.status, 1);
+  assert.equal(out(r).status, 'busy');
+  assert.equal(out(run(p.b, ['pull', '--json'], env)).status, 'busy', 'a second pull does not get in either');
+  assert.equal(g(p.b, 'rev-parse', 'HEAD'), before, 'no commit');
+  assert.doesNotMatch(card3(p.b, p), /blocked by the lock/, 'the card is untouched');
+  assert.equal(JSON.parse(fs.readFileSync(lock, 'utf8')).pid, process.pid, 'the lock of the live owner is not removed');
+  // a lock of another host cannot be checked: waits, even when old (below the fuse)
+  hold({ pid: 1, host: 'some-other-host' }, 10 * 60 * 1000);
+  assert.equal(out(run(p.b, ['pull', '--json'], env)).status, 'busy');
+  // an unreadable lock proves nothing about its owner
+  fs.writeFileSync(lock, 'garbage');
+  assert.equal(out(run(p.b, ['pull', '--json'], env)).status, 'busy');
+  // a foreign lock older than the fuse (6 h) is taken over, with a warning
+  hold({ pid: 1, host: 'some-other-host' }, 7 * 3600 * 1000);
+  const fuse = run(p.b, ['pull', '--json'], env);
+  assert.equal(out(fuse).status, 'up-to-date');
+  assert.match(fuse.stderr, /taking over the repository lock of host some-other-host/);
+  // a dead owner on this host (a pid that has ended) is taken over at once, whatever the age
+  const dead = spawnSync(process.execPath, ['-e', '0']).pid;
+  hold({ pid: dead, host: os.hostname() });
+  assert.equal(out(run(p.b, ['report', 'W-3', '--as', CODEX, 'after the takeover [a2]', '--json'], env)).status, 'reported');
+  assert.equal(fs.existsSync(lock), false);
+});
+
+test('P5.29 a1: repoLockDead decides by liveness: same host + ESRCH is dead, EPERM or a live pid is alive, foreign or unreadable never by age below the fuse', () => {
+  const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'rc-rl-')), 'l');
+  const put = (o) => fs.writeFileSync(f, typeof o === 'string' ? o : JSON.stringify(o));
+  const opt = (alive) => ({ host: 'h', alive });
+  put({ pid: 42, host: 'h' });
+  assert.equal(rc.repoLockDead(f, 1e12, opt(() => true)), false, 'live pid, any age');
+  assert.equal(rc.repoLockDead(f, 0, opt(() => false)), true, 'dead pid, fresh file');
+  put({ pid: 42, host: 'x' });
+  assert.equal(rc.repoLockDead(f, 3600e3, opt(() => false)), false, 'foreign host is not checked by pid');
+  put('{"pid":"7"}');
+  assert.equal(rc.repoLockDead(f, 1e12, opt(() => false)), false, 'no host: unreadable');
+});
+
+test('P5.29 a2: the service has a clone of its own: its commits and the owner\'s commits in another clone of one bare repository do not disturb each other; a plain pull joins them', () => {
+  const p = pair(); // a: the owner, b: the service clone
+  const env = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 };
+  const sh = (w, args) => p.run(w, args, '', env);
+  // the owner has an uncommitted edit in the working clone; the service works in its own clone meanwhile
+  assert.equal(sh(p.a, ['log', 'W-3', 'owner thinks in the working clone', '--author', 'owner']).status, 0);
+  assert.equal(sh(p.b, ['new', 'W-9', 'Service card']).status, 0);
+  assert.equal(out(sh(p.b, ['save', 'service adds W-9', '--json'])).status, 'pushed');
+  assert.equal(out(sh(p.b, ['pull', '--json'])).status, 'up-to-date', 'the service sees nothing of the owner\'s unsaved edit');
+  assert.match(g(p.a, 'status', '--porcelain'), /W-3/, 'the owner\'s edit is untouched by the service');
+  assert.equal(fs.existsSync(repoLockOf(p.a)) || fs.existsSync(repoLockOf(p.b)), false);
+  // the owner saves; a plain pull in the service clone brings it, no conflict
+  assert.equal(out(sh(p.a, ['save', 'owner decision', '--json'])).status, 'pushed');
+  const pulled = out(sh(p.b, ['pull', '--json']));
+  assert.equal(pulled.status, 'pulled');
+  assert.match(fs.readFileSync(path.join(p.bd(p.b), 'cards', 'W-3-eksport-csv.md'), 'utf8'), /owner thinks in the working clone/);
+  // both sides touch the same card: save in the owner's clone rebases over the service commit (the usual pull), nothing is lost
+  assert.equal(sh(p.b, ['log', 'W-3', 'service line', '--author', 'agent']).status, 0);
+  assert.equal(out(sh(p.b, ['save', '--json'])).status, 'pushed');
+  assert.equal(sh(p.a, ['log', 'W-4', 'owner line elsewhere', '--author', 'owner']).status, 0);
+  assert.equal(out(sh(p.a, ['save', '--json'])).status, 'pushed');
+  assert.equal(out(sh(p.b, ['pull', '--json'])).status, 'pulled');
+  assert.equal(out(sh(p.a, ['pull', '--json'])).status, 'up-to-date', 'the owner\'s save had already joined the service commit');
+  assert.match(card3(p.a, p), /service line/);
+  assert.equal(g(p.a, 'rev-parse', 'HEAD'), g(p.b, 'rev-parse', 'HEAD'), 'the clones agree');
 });
