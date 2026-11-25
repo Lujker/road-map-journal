@@ -606,3 +606,67 @@ test('P5.35 a2/a12: rule dependencies need a current chain and a live L3 mandate
   r.write({ level: 'L2' }); r.approve();
   assert.ok(!r.starts().some((x) => x.id === 'C'));
 });
+
+test('P5.35: milestone done requires the shown hash and accepts its current cards', async () => {
+  const { dependencyBasis, ruleContent } = await import('./rule-acceptance.mjs');
+  const r = rig({ requires: '0.15.0' });
+  r.write(); r.approve();
+  r.put('A', { status: 'done' });
+  r.put('B', { status: 'review', extra: `accepted: rule\nrule_id: ${'b'.repeat(64)}\n` });
+  r.editCard('B', (s) => s.replace('- [ ] a1:', '- [x] a1:') + '\n## Evidence\n- a1: verified\n');
+  const loaded = rc.loadBoard(r.board), cardB = loaded.cards.find((c) => c.header.id === 'B');
+  const basis = dependencyBasis(loaded, cardB), content = ruleContent(cardB);
+  r.editCard('B', (s) => s.replace('accepted: rule\n', `accepted: rule\nrule_deps: ${basis}\nrule_content: ${content}\n`));
+  const dir = path.join(r.board, 'milestones'); fs.mkdirSync(dir);
+  fs.writeFileSync(path.join(dir, 'one.md'), '---\nid: one\ncards: A, B\n---\n');
+  const hash = JSON.parse(r.ok(['inbox', '--json']).stdout).items.find((x) => x.target === 'one').hash;
+  const args = ['milestone', 'done', 'one', '--hash', hash, '--by', OWNER];
+  assert.equal(r.run(args, { ROADCTL_UNATTENDED: '1' }).status, 1);
+  r.editCard('A', (s) => `${s}\n## Evidence\n- changed\n`);
+  assert.notEqual(r.run(args).status, 0);
+  const fresh = JSON.parse(r.ok(['inbox', '--json']).stdout).items.find((x) => x.target === 'one').hash;
+  assert.equal(r.run(['milestone', 'done', 'one', '--hash', fresh, '--by', OWNER]).status, 0);
+  assert.match(fs.readFileSync(path.join(dir, 'one.md'), 'utf8'), /MILESTONE DONE hash/);
+  assert.match(r.cardText('B'), /status: done/); assert.match(r.cardText('B'), /accepted: Owner, 2026-11-10/);
+  assert.ok(!JSON.parse(r.ok(['inbox', '--json']).stdout).items.some((x) => x.target === 'one'));
+  assert.notEqual(r.run(['milestone', 'done', 'one', '--hash', fresh, '--by', OWNER]).status, 0);
+});
+
+test('P5.35: interrupted milestone done resumes by original hash without overwriting outside edits', async () => {
+  const { acquireLock, milestoneTransactionFile } = await import('./state.mjs');
+  const r = rig({ requires: '0.15.0' });
+  r.put('A', { status: 'review' }); r.put('B', { status: 'review' });
+  const dir = path.join(r.board, 'milestones'); fs.mkdirSync(dir);
+  const mf = path.join(dir, 'one.md'); fs.writeFileSync(mf, '---\nid: one\ncards: A, B\n---\n');
+  const af = path.join(r.board, 'cards', 'A-card.md'), bf = path.join(r.board, 'cards', 'B-card.md');
+  const beforeA = fs.readFileSync(af, 'utf8'), beforeB = fs.readFileSync(bf, 'utf8'), beforeM = fs.readFileSync(mf, 'utf8');
+  const finish = (s) => `${s.replace('status: review', 'status: done\naccepted: Owner, 2026-11-10').replace('- [ ] a1:', '- [x] a1:')}\n## Evidence\n- a1: verified\n`;
+  const afterA = finish(beforeA), afterB = finish(beforeB), afterM = beforeM.replace('cards: A, B', 'cards: A, B\nmilestone_done: true');
+  const hash = 'a'.repeat(64), journal = milestoneTransactionFile(rc.loadBoard(r.board), r.env);
+  fs.mkdirSync(path.dirname(journal), { recursive: true });
+  assert.equal(spawnSync('git', ['init', '-q', r.ws], { encoding: 'utf8' }).status, 0);
+  fs.writeFileSync(journal, JSON.stringify({ action: 'done', id: 'one', hash, entries: [
+    { id: 'A', before: beforeA, after: afterA }, { id: 'B', before: beforeB, after: afterB }, { id: '@milestone', before: beforeM, after: afterM },
+  ] }));
+  r.put('Q', { kind: 'fix', size: 'S', extra: 'approved: Owner, 2026-11-01, scope=implementation+auto\n' });
+  r.setConfig({ autonomy: { enabled: true, agents: [], queue: ['Q'] } });
+  assert.ok(!r.starts().some((x) => x.id === 'Q'), 'a partial operation blocks new starts');
+  fs.writeFileSync(af, afterA); fs.writeFileSync(bf, `${beforeB}\nforeign change\n`);
+  const save = r.run(['save', 'pending']); assert.notEqual(save.status, 0); assert.match(save.stdout + save.stderr, /awaits recovery/);
+  assert.ok(!fs.readdirSync(dir).some((name) => name.includes('transaction') || name.endsWith('.lock')));
+  const args = ['milestone', 'done', 'one', '--hash', hash, '--by', OWNER];
+  const lock = acquireLock(`${journal}.lock`, { staleMs: 60000, strict: true }); assert.ok(lock.ok);
+  assert.notEqual(r.run(args).status, 0, 'a second milestone action cannot overlap'); lock.release();
+  assert.notEqual(r.run(args).status, 0); assert.match(fs.readFileSync(bf, 'utf8'), /foreign change/); assert.ok(fs.existsSync(journal));
+  fs.writeFileSync(bf, beforeB);
+  assert.notEqual(r.run(['milestone', 'done', 'one', '--hash', 'b'.repeat(64), '--by', OWNER]).status, 0);
+  const done = r.run(args); assert.equal(done.status, 0, done.stderr); assert.match(done.stdout, /recovered/);
+  assert.equal(fs.readFileSync(af, 'utf8'), afterA); assert.equal(fs.readFileSync(bf, 'utf8'), afterB); assert.equal(fs.readFileSync(mf, 'utf8'), afterM); assert.ok(!fs.existsSync(journal));
+  assert.ok(r.starts().some((x) => x.id === 'Q'));
+  const saved = r.run(['save', 'recovered'], { GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid' });
+  assert.equal(saved.status, 0, saved.stdout + saved.stderr);
+  const status = spawnSync('git', ['-C', r.ws, 'status', '--porcelain'], { encoding: 'utf8' });
+  assert.doesNotMatch(status.stdout, /transaction|roadctl\.lock/);
+  const committed = spawnSync('git', ['-C', r.ws, 'ls-tree', '-r', '--name-only', 'HEAD'], { encoding: 'utf8' });
+  assert.equal(committed.status, 0, committed.stderr); assert.doesNotMatch(committed.stdout, /transaction|roadctl\.lock/);
+});

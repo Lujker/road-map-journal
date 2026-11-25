@@ -1,16 +1,59 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
-import { changeHeader, log } from './owner-questions.mjs';
-import { RULE_REQUIRES } from './rule-acceptance.mjs';
+import { changeHeader, log, ownerItems } from './owner-questions.mjs';
+import { RULE_REQUIRES, ruleDependencySatisfied } from './rule-acceptance.mjs';
+import { acquireLock, milestoneTransactionFile } from './state.mjs';
 
-function command({ args, flags, api, env, out }) {
-  const [sub, id] = args.slice(1);
-  if (args.length !== 3 || !['add', 'continue', 'move'].includes(sub) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id ?? '') || (sub !== 'add' && (typeof flags.by !== 'string' || !/^[A-Za-z0-9@._:-]{1,100}$/.test(flags.by)))) throw new Error('usage: roadctl milestone continue ID --by OWNER | milestone move ID --to YYYY-MM-DD | --cards A,B --by OWNER');
-  const dir = api.findBoard(process.cwd(), typeof flags.board === 'string' ? flags.board : undefined, env);
+function applyTransaction(board, journalFile, transaction, id, hash) {
+  if (transaction?.action !== 'done' || transaction.id !== id || transaction.hash !== hash || !Array.isArray(transaction.entries) || !transaction.entries.length) throw new Error('pending milestone operation requires its original id and hash');
+  const files = new Map(board.cards.map((c) => [c.header.id, c.file]));
+  files.set('@milestone', path.join(board.dir, 'milestones', `${id}.md`));
+  const seen = new Set();
+  const entries = transaction.entries.map((entry) => {
+    if (!entry || !files.has(entry.id) || seen.has(entry.id) || typeof entry.before !== 'string' || typeof entry.after !== 'string') throw new Error('invalid milestone transaction');
+    seen.add(entry.id);
+    const file = files.get(entry.id), current = fs.readFileSync(file, 'utf8');
+    if (current !== entry.before && current !== entry.after) throw new Error(`milestone recovery refused: ${entry.id} changed outside the operation`);
+    return { ...entry, file, current };
+  });
+  if (!seen.has('@milestone')) throw new Error('invalid milestone transaction');
+  for (const entry of entries) {
+    if (entry.current === entry.after) continue;
+    if (fs.readFileSync(entry.file, 'utf8') !== entry.before) throw new Error(`milestone recovery refused: ${entry.id} changed outside the operation`);
+    const tmp = `${entry.file}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+    try {
+      fs.writeFileSync(tmp, entry.after, { flag: 'wx', mode: fs.statSync(entry.file).mode });
+      fs.renameSync(tmp, entry.file);
+    } finally { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); }
+  }
+  fs.unlinkSync(journalFile);
+}
+
+function command(ctx) {
+  const dir = ctx.api.findBoard(process.cwd(), typeof ctx.flags.board === 'string' ? ctx.flags.board : undefined, ctx.env);
   if (!dir) throw new Error('no board found');
-  const board = api.loadBoard(dir);
-  if ((api.compareVersions(board.config.requires, RULE_REQUIRES) ?? -1) < 0 || api.boardRequires(board.config)) throw new Error(`board must require supported roadctl ${RULE_REQUIRES} or newer`);
+  const board = ctx.api.loadBoard(dir);
+  if ((ctx.api.compareVersions(board.config.requires, RULE_REQUIRES) ?? -1) < 0 || ctx.api.boardRequires(board.config)) throw new Error(`board must require supported roadctl ${RULE_REQUIRES} or newer`);
+  const journal = milestoneTransactionFile(board, ctx.env);
+  const result = ctx.api.withRepoLock(board, () => {
+    const lock = acquireLock(`${journal}.lock`, { staleMs: 600000, strict: true });
+    if (!lock.ok) throw new Error(`milestone operation is locked (${lock.reason})`);
+    try { return runCommand({ ...ctx, board: ctx.api.loadBoard(dir), journal }); } finally { lock.release(); }
+  });
+  if (result && typeof result === 'object' && result.status === 'busy') throw new Error(result.message);
+  return result;
+}
+
+function runCommand({ args, flags, api, env, out, board, journal }) {
+  const [sub, id] = args.slice(1);
+  if (args.length !== 3 || !['add', 'continue', 'move', 'done'].includes(sub) || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id ?? '') || (sub !== 'add' && (typeof flags.by !== 'string' || !/^[A-Za-z0-9@._:-]{1,100}$/.test(flags.by)))) throw new Error('usage: roadctl milestone continue ID --by OWNER | milestone move ID --to YYYY-MM-DD | --cards A,B --by OWNER');
+  if (fs.existsSync(journal)) {
+    if (sub !== 'done') throw new Error('finish the pending milestone operation first');
+    applyTransaction(board, journal, JSON.parse(fs.readFileSync(journal, 'utf8')), id, flags.hash);
+    out(`milestone ${id}: accepted (recovered)`);
+    return 0;
+  }
   const file = path.join(board.dir, 'milestones', `${id}.md`);
   if (sub === 'add') {
     if (typeof flags.cards !== 'string' || typeof flags.why !== 'string' || !flags.why.trim() || /[\r\n\x00-\x1f]/.test(flags.why) || flags.why.length > 500) throw new Error('add needs --cards A,B and --why TEXT');
@@ -24,6 +67,7 @@ function command({ args, flags, api, env, out }) {
   if (!fs.existsSync(file)) throw new Error('unknown milestone');
   const m = api.parseCard(file);
   if (m.errors.length) throw new Error('invalid milestone');
+  if (m.header.milestone_done === 'true') throw new Error('milestone is already accepted');
   const ready = api.readyMilestones(board).some((x) => x.id === id);
   const waiting = api.readyMilestones(board, { waiting: true }).some((x) => x.id === id);
   let raw = fs.readFileSync(file, 'utf8');
@@ -31,6 +75,38 @@ function command({ args, flags, api, env, out }) {
   raw = raw.replace(/\r\n/g, '\n');
   const set = (key, value) => { raw = changeHeader(raw, key, value); };
   let message;
+  if (sub === 'done') {
+    const item = ownerItems(board, Number.MAX_SAFE_INTEGER, api).find((x) => x.type === 'milestone' && x.target === id && Array.isArray(x.cards));
+    if (!item || !ready) throw new Error('milestone is not ready');
+    if (typeof flags.hash !== 'string' || flags.hash !== item.hash) throw new Error('milestone hash does not match the current inbox item');
+    const cards = item.cards.map((cardId) => board.cards.find((c) => c.header.id === cardId));
+    if (new Set(item.cards).size !== cards.length || cards.some((c) => !c || c.errors.length)) throw new Error('invalid milestone cards');
+    const now = new Date(api.nowMs(env)).toISOString().slice(0, 10);
+    const changes = [];
+    for (const c of cards) {
+      const st = board.config.status_map?.[c.header.status] ?? c.header.status;
+      if (st === 'done') continue;
+      if (st !== 'review' || !ruleDependencySatisfied(board, c, api) || api.criteriaProblems(c).length) throw new Error(`card ${c.header.id} is not currently accepted by rule`);
+      const old = fs.readFileSync(c.file, 'utf8');
+      const crlf = old.includes('\r\n');
+      let updated = old.replace(/\r\n/g, '\n');
+      updated = changeHeader(updated, 'status', 'done');
+      updated = changeHeader(updated, 'accepted', `${flags.by}, ${now}`);
+      updated = changeHeader(updated, 'as_of', now);
+      changes.push({ id: c.header.id, before: old, after: crlf ? updated.replace(/\n/g, '\r\n') : updated });
+    }
+    set('milestone_done', 'true'); set('milestone_waiting', null); set('milestone_continued', null);
+    raw = log(raw, now, flags.by, `MILESTONE DONE hash ${item.hash}`);
+    changes.push({ id: '@milestone', before: fs.readFileSync(file, 'utf8'), after: eol === '\r\n' ? raw.replace(/\n/g, eol) : raw });
+    const tmp = `${journal}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+    try {
+      fs.writeFileSync(tmp, JSON.stringify({ action: 'done', id, hash: item.hash, entries: changes }), { flag: 'wx', mode: 0o600 });
+      fs.linkSync(tmp, journal);
+    } finally { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); }
+    applyTransaction(board, journal, { action: 'done', id, hash: item.hash, entries: changes }, id, item.hash);
+    out(`milestone ${id}: accepted`);
+    return 0;
+  }
   if (sub === 'continue') {
     if (flags.to !== undefined || flags.cards !== undefined) throw new Error('continue does not take --to or --cards');
     if (m.header.milestone_continued === 'true') { out(`milestone ${id}: already continued`); return 0; }
@@ -67,11 +143,11 @@ export default {
   name: 'milestone',
   commands: {
     milestone: {
-      group: 'Owner only', effect: 'write', owner: { sub: ['continue', 'move'] }, hidden: true,
-      summary: 'add, continue or move a milestone',
+      group: 'Owner only', effect: 'write', owner: { sub: ['continue', 'move', 'done'] }, hidden: true,
+      summary: 'add, continue, move or accept a milestone',
       purpose: 'Owner decisions on an existing milestone. Continue records consideration without accepting cards. Moving a date or cards does not waive a pending decision.',
-      usage: ['roadctl milestone add ID --cards A,B --why TEXT', 'roadctl milestone continue ID --by OWNER', 'roadctl milestone move ID (--to YYYY-MM-DD | --cards A,B) --by OWNER'],
-      flags: [['--why TEXT', 'milestone purpose'], ['--by OWNER', 'owner name'], ['--to DATE', 'new date'], ['--cards IDS', 'new card list']],
+      usage: ['roadctl milestone add ID --cards A,B --why TEXT', 'roadctl milestone continue ID --by OWNER', 'roadctl milestone done ID --hash HASH --by OWNER', 'roadctl milestone move ID (--to YYYY-MM-DD | --cards A,B) --by OWNER'],
+      flags: [['--hash HASH', 'current inbox hash for done'], ['--why TEXT', 'milestone purpose'], ['--by OWNER', 'owner name'], ['--to DATE', 'new date'], ['--cards IDS', 'new card list']],
       examples: ['roadctl milestone continue M-1 --by Owner'],
       changes: 'Writes the milestone and its Log and the owner audit.', exits: '0 ok; 1 refused; 2 invalid arguments.', run: command,
     },
