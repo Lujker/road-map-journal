@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { dependencyBasis, ruleContent } from './roadctl/rule-acceptance.mjs';
 // roadctl: optional helper for a board-format project (see docs/board-spec.md).
 // Core in this file; new parts live in scripts/roadctl/ (modules, see docs/developing-roadctl.md). Node standard library only. Files stay the source of truth: roadctl checks,
 // regenerates BOARD.md and makes small, mechanical edits. It never sets `approved` by itself
@@ -669,7 +670,8 @@ function depMet(board, card, id, byId) {
   const dc = byId.get(id);
   if (!dc) return false;
   const status = statusOf(board, dc);
-  if (status === 'done') return true;
+  if (status === 'done' && !dc.header.rule_id) return true;
+  if (status === 'done' && dc.header.rule_id) { try { return dc.header.rule_content === ruleContent(dc) && dc.header.rule_deps === dependencyBasis(board, dc); } catch { return false; } }
   return MODULE_REG.callHook('dep-satisfied', { board, card, by: dc, status, env: process.env, api: moduleApi() }).some((h) => h.value?.satisfied === true);
 }
 
@@ -4489,7 +4491,7 @@ ROUTINE_SECTIONS.push(...MODULE_REG.routineSections);
 TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
-const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, readyMilestones, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
+const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, readyMilestones, depMet, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
   boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits, resolveAs: (name, reg) => WHO.resolveAs(name, reg) }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {

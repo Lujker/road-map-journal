@@ -574,3 +574,35 @@ test('P5.35: milestone add validates cards and purpose, never overwrites, and re
   assert.notEqual(r.run(args).status, 0); assert.equal(fs.readFileSync(file, 'utf8'), before);
   assert.equal(rc.readyMilestones(rc.loadBoard(r.board))[0].id, 'new');
 });
+
+test('P5.35 a2/a12: rule dependencies need a current chain and a live L3 mandate', FAKES_SKIP, async () => {
+  const { dependencyBasis, ruleContent } = await import('./rule-acceptance.mjs');
+  const r = rig({ requires: '0.15.0', cards: false });
+  r.write(); r.approve();
+  const putAccepted = (id, dependency, token) => {
+    r.put(id, { status: 'review', kind: 'fix', size: 'S', extra: `accepted: rule\nrule_id: ${token.repeat(64)}\n${dependency ? `depends_on: ${dependency}\n` : ''}` });
+    const b = rc.loadBoard(r.board), card = b.cards.find((x) => x.header.id === id);
+    const basis = dependencyBasis(b, card), content = ruleContent(card);
+    r.editCard(id, (raw) => raw.replace('accepted: rule\n', `accepted: rule\nrule_deps: ${basis}\nrule_content: ${content}\n`));
+  };
+  putAccepted('A', null, 'a'); putAccepted('B', 'A', 'b');
+  r.put('C', { kind: 'fix', size: 'S', extra: 'depends_on: B\n' });
+  assert.ok(r.starts().some((x) => x.id === 'C'));
+  r.editCard('C', (raw) => raw.replace('status: ready', 'status: ready\napproved: Owner, 2026-11-20, scope=implementation+auto'));
+  r.setConfig({ autonomy: { enabled: true, agents: [], queue: ['C'] } });
+  assert.ok(r.starts().some((x) => x.id === 'C'));
+  r.editCard('A', (raw) => raw.replace('accepted: rule', 'accepted: removed'));
+  assert.ok(!r.starts().some((x) => x.id === 'C'));
+  putAccepted('A', null, 'c');
+  assert.ok(!r.starts().some((x) => x.id === 'C'), 'a new acceptance of A does not revive B');
+  putAccepted('B', 'A', 'd');
+  assert.ok(r.starts().some((x) => x.id === 'C'));
+  r.editCard('B', (raw) => raw.replace('status: review', 'status: done').replace('accepted: rule', 'accepted: Owner, 2026-11-20'));
+  putAccepted('A', null, 'e');
+  assert.ok(!r.starts().some((x) => x.id === 'C'), 'owner done stays done but its stale dependency does not open C');
+  assert.match(r.cardText('B'), /status: done/);
+  putAccepted('B', 'A', 'f');
+  assert.ok(r.starts().some((x) => x.id === 'C'));
+  r.write({ level: 'L2' }); r.approve();
+  assert.ok(!r.starts().some((x) => x.id === 'C'));
+});

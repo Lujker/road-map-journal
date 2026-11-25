@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readMandate } from './mandate.mjs';
+import { changeHeader } from './owner-questions.mjs';
 
 export const RULE_REQUIRES = '0.15.0';
 
@@ -23,6 +24,37 @@ export function canonicalModel(value, registry) {
 }
 
 
+const deps = (card) => (card.header.depends_on ?? '').split(',').map((id) => id.trim()).filter(Boolean);
+const status = (board, card) => board.config.status_map?.[card.header.status] ?? card.header.status;
+export const ruleContent = (card) => crypto.createHash('sha256').update(JSON.stringify({ criteria: card.criteria, evidence: card.sections.Evidence ?? '', proof: card.sections['Rule Evidence'] ?? '', approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', depends_on: card.header.depends_on ?? '' })).digest('hex');
+
+/** A unique acceptance id changes on each rule acceptance; dependencies are checked recursively without rewriting cards. */
+export function dependencyBasis(board, card, seen = new Set()) {
+  if (seen.has(card.header.id)) throw new Error('dependency cycle');
+  const next = new Set(seen).add(card.header.id);
+  const entries = deps(card).map((id) => {
+    const dep = board.cards.find((c) => c.header.id === id);
+    if (!dep || dep.errors.length) throw new Error(`dependency ${id} is missing or invalid`);
+    const st = status(board, dep);
+    if (st !== 'done' && !(st === 'review' && dep.header.accepted === 'rule')) throw new Error(`dependency ${id} is not accepted`);
+    if (dep.header.rule_id) {
+      if (dep.header.rule_content !== ruleContent(dep)) throw new Error(`dependency ${id} has stale evidence`);
+      const current = dependencyBasis(board, dep, next);
+      if (dep.header.rule_deps !== current) throw new Error(`dependency ${id} has stale basis`);
+    } else if (st !== 'done') throw new Error(`dependency ${id} has no acceptance identity`);
+    return [id, dep.header.rule_id ?? dep.header.accepted ?? 'done'];
+  });
+  return crypto.createHash('sha256').update(JSON.stringify(entries)).digest('hex');
+}
+
+export function ruleDependencySatisfied(board, card, api) {
+  const mandate = readMandate(board, api);
+  if (!mandate || mandate.state !== 'approved' || mandate.problems.length || !['L3', 'L4'].includes(mandate.level)) return false;
+  if ((api.compareVersions(board.config.requires, RULE_REQUIRES) ?? -1) < 0 || api.boardRequires(board.config)) return false;
+  if (card.header.accepted !== 'rule' || !/^[a-f0-9]{64}$/.test(card.header.rule_id ?? '')) return false;
+  try { return card.header.rule_content === ruleContent(card) && card.header.rule_deps === dependencyBasis(board, card); } catch { return false; }
+}
+
 export function ruleSnapshot(board, id, repo) {
   const card = board.cards.find((c) => c.header.id === id);
   if (!card || card.errors.length || typeof repo !== 'string' || !repo.trim()) throw new Error('a valid card and --repo are required');
@@ -36,7 +68,7 @@ export function ruleSnapshot(board, id, repo) {
   const dependencies = ids.map((id) => {
     const dep = board.cards.find((c) => c.header.id === id);
     if (!dep || dep.errors.length) throw new Error(`dependency ${id} is missing or invalid`);
-    return [id, dep.header.status ?? '', dep.header.accepted ?? '', dep.header.by_mandate ?? ''];
+    return [id, dep.header.status ?? '', dep.header.accepted ?? '', dep.header.by_mandate ?? '', dep.header.rule_id ?? '', dep.header.rule_deps ?? ''];
   });
   const data = { revision, criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', depends_on: dependencies };
   return { revision, basis: `sha256:${crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex')}` };
@@ -68,12 +100,18 @@ export function acceptRule(board, id, as, api, repo) {
   let snapshot;
   try { snapshot = ruleSnapshot(board, id, repo); } catch (e) { return refuse(e.message); }
   if ([proof.tests, proof.review].some((p) => p.revision !== snapshot.revision || p.basis !== snapshot.basis)) return refuse('test or review record is stale for this revision or basis');
+  let dependencyHash;
+  try { dependencyHash = dependencyBasis(board, c); } catch (e) { return refuse(e.message); }
   const raw = fs.readFileSync(c.file, 'utf8');
   const eol = raw.includes('\r\n') ? '\r\n' : '\n';
-  const next = raw.replace(/^(---\r?\n[\s\S]*?)(\r?\n---)/, (_, header, end) => `${header}${eol}accepted: rule${end}`);
-  fs.writeFileSync(c.file, next);
+  let next = raw.replace(/\r\n/g, '\n');
+  next = changeHeader(next, 'accepted', 'rule');
+  next = changeHeader(next, 'rule_id', crypto.randomBytes(32).toString('hex'));
+  next = changeHeader(next, 'rule_deps', dependencyHash);
+  next = changeHeader(next, 'rule_content', ruleContent(c));
+  fs.writeFileSync(c.file, eol === '\r\n' ? next.replace(/\n/g, eol) : next);
   api.appendLog(board, id, 'ACCEPTED by rule; awaiting owner', { author: as });
   return { ok: true };
 }
 
-export default { name: 'rule-acceptance', cardSections: ['Rule Evidence'] };
+export default { name: 'rule-acceptance', cardSections: ['Rule Evidence'], headerKeys: ['rule_id', 'rule_deps', 'rule_content'], hooks: { 'dep-satisfied'({ board, by, api }) { return { satisfied: ruleDependencySatisfied(board, by, api) }; } } };
