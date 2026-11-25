@@ -325,6 +325,10 @@ export function ownerItems(board, time, api) {
       items.push({ type: 'refused', target: item.header.id, hash: sha(raw), reason, confirmation: `${item.header.id} "${asLine(item.header.title ?? '')}": the Questions section cannot be read, so nothing is shown for this item: ${reason}` });
       continue;
     }
+    if (board.cards.includes(item) && api.workBasisStale(board, item)) {
+      const reason = 'active work has a changed dependency: checkpoint and reassess its impact';
+      items.push({ type: 'refused', target: item.header.id, hash: sha(raw), reason, confirmation: `${item.header.id}: ${reason}` });
+    }
     if (board.cards.includes(item) && api.ruleStale(board, item)) {
       const reason = 'rule acceptance is stale: dependency or evidence changed; impact check required';
       items.push({ type: 'refused', target: item.header.id, hash: sha(raw), reason, confirmation: `${item.header.id}: ${reason}` });

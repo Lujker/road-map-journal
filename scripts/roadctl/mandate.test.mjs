@@ -740,3 +740,23 @@ test('P5.35 a13: tick, status, autonomy, inbox and daily digest agree on deferre
   assert.match(r.run(['inbox']).stdout, /1 milestone\(s\) awaiting owner decision/);
   assert.ok(r.starts().some((x) => x.id === 'Q'));
 });
+
+test('P5.35 a12: active claim checkpoints after its dependency changes before reporting', () => {
+  const r = rig({ requires: '0.15.0', cards: false });
+  r.put('A', { status: 'done', extra: 'accepted: Owner, 2026-11-01\n' });
+  r.put('B', { extra: 'depends_on: A\napproved: Owner, 2026-11-01, scope=implementation\n' });
+  r.ok(['delegate', 'B', '--to', 'worker', '--by', ME]); r.ok(['claim', 'B', '--as', 'worker']);
+  assert.match(r.cardText('B'), /^work_deps: [a-f0-9]{64}$/m);
+  r.editCard('A', (s) => s.replace('status: done', 'status: doing').replace('accepted: Owner, 2026-11-01\n', ''));
+  assert.match(r.ok(['brief']).stdout, /STALE WORK \[B\].*checkpoint/);
+  assert.match(r.ok(['digest', '--daily']).stdout, /active work has a changed dependency/);
+  let report = r.run(['report', 'B', '--as', 'worker', 'finished']);
+  assert.notEqual(report.status, 0); assert.match(report.stderr, /checkpoint/);
+  const checkpoint = (as = 'worker') => spawnSync(process.execPath, [SELF, 'checkpoint', 'B', '--board', r.board, '--as', as], { cwd: r.ws, encoding: 'utf8', env: r.env, input: JSON.stringify({ did: 'saved work', next: 'check impact', in_flight: 'none' }) });
+  assert.match(checkpoint().stdout, /dependencies still unresolved/);
+  r.editCard('A', (s) => s.replace('status: doing', 'status: done\naccepted: Owner, 2026-11-10'));
+  assert.match(checkpoint('other').stdout, /dependencies still unresolved/);
+  assert.match(checkpoint().stdout, /reassess and check the impact/);
+  r.editCard('B', (s) => s.replace('- [ ] a1:', '- [x] a1:') + '\n## Evidence\n- a1: checked after impact\n');
+  report = r.run(['report', 'B', '--as', 'worker', 'finished']); assert.equal(report.status, 0, report.stderr);
+});

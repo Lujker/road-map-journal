@@ -120,4 +120,4 @@ export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
   return { ok: true };
 }
 
-export default { name: 'rule-acceptance', cardSections: ['Rule Evidence'], headerKeys: ['rule_id', 'rule_deps', 'rule_content'], hooks: { 'dep-satisfied'({ board, by, api }) { return { satisfied: ruleDependencySatisfied(board, by, api) }; } } };
+export default { name: 'rule-acceptance', cardSections: ['Rule Evidence'], headerKeys: ['rule_id', 'rule_deps', 'rule_content', 'work_deps'], hooks: { 'dep-satisfied'({ board, by, api }) { return { satisfied: ruleDependencySatisfied(board, by, api) }; } } };

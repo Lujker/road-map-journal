@@ -671,6 +671,22 @@ export function ruleStale(board, card) {
   try { return card.header.rule_content !== ruleContent(card) || card.header.rule_deps !== dependencyBasis(board, card); } catch { return true; }
 }
 
+export function workBasisStale(board, card) {
+  if (!card.header.work_deps || statusOf(board, card) !== 'doing') return false;
+  try { return card.header.work_deps !== dependencyBasis(board, card); } catch { return true; }
+}
+
+export function checkpointWorkBasis(board, card) {
+  if (!card.header.work_deps) return false;
+  const byId = new Map(board.cards.map((c) => [c.header.id, c]));
+  if (depsOf(card).some((id) => !depMet(board, card, id, byId))) return false;
+  try {
+    const next = dependencyBasis(board, card);
+    writeCard(card, setHeader(readNorm(card), 'work_deps', next));
+    return true;
+  } catch { return false; }
+}
+
 export function milestoneSummary(board) {
   if ((compareVersions(board.config.requires, '0.15.0') ?? -1) < 0) return null;
   const waiting = readyMilestones(board, { waiting: true }).length;
@@ -1174,6 +1190,7 @@ export function brief(board) {
   const milestones = milestoneSummary(board);
   if (milestones) l.push(`MILESTONES ${milestoneLine(milestones)}`);
   for (const c of board.cards.filter((card) => ruleStale(board, card))) l.push(`STALE RULE [${c.header.id}]: dependency or evidence changed; impact check required`);
+  for (const c of board.cards.filter((card) => workBasisStale(board, card))) l.push(`STALE WORK [${c.header.id}]: checkpoint and reassess dependency impact`);
   for (const c of by('doing')) l.push(`DOING [${c.header.id}] ${sanitize(c.header.title, 80)} | approved: ${approvedText(c)} | as_of ${sanitize(c.header.as_of, 10)}${nextOpen(c) ? ` | next ${nextOpen(c)}` : ''}`);
   for (const c of by('review')) l.push(`REVIEW [${c.header.id}] ${sanitize(c.header.title, 80)} | ${c.header.accepted === 'rule' ? 'accepted by rule; ' : ''}awaiting owner acceptance, do not mark done`);
   for (const c of by('blocked')) l.push(`BLOCKED [${c.header.id}] ${sanitize(c.header.title, 60)} | ${sanitize(c.header.blocked, 80)}`);
@@ -1227,6 +1244,7 @@ export function cardRow(board, c) {
     status: statusOf(board, c),
     ...(c.header.accepted === 'rule' ? { accepted: 'rule' } : {}),
     ...(ruleStale(board, c) ? { rule_stale: true } : {}),
+    ...(workBasisStale(board, c) ? { work_stale: true } : {}),
     approved: scopesOf(c.header.approved),
     auto: scopesOf(c.header.approved).includes('auto'),
     queue: position || null,
@@ -1261,6 +1279,7 @@ export function statusSummary(project, board, { sync = null } = {}) {
     doing: rows('doing'),
     review: rows('review'),
     ...(board.cards.some((c) => ruleStale(board, c)) ? { stale_rule: board.cards.filter((c) => ruleStale(board, c)).map((c) => c.header.id) } : {}),
+    ...(board.cards.some((c) => workBasisStale(board, c)) ? { stale_work: board.cards.filter((c) => workBasisStale(board, c)).map((c) => c.header.id) } : {}),
     blocked: rows('blocked'),
     oldest_as_of: active.map((c) => c.header.as_of).sort()[0] ?? null,
     lint: { errors: f.filter((x) => x.level === 'error').length, warnings: f.filter((x) => x.level === 'warning').length },
@@ -1278,6 +1297,7 @@ export function formatStatus(summaries) {
   for (const s of summaries) {
     if (s.milestones) out.push(`${s.project}: milestones: ${milestoneLine(s.milestones)}`);
     for (const id of s.stale_rule ?? []) out.push(`${s.project}: STALE RULE [${id}]: dependency or evidence changed; impact check required`);
+    for (const id of s.stale_work ?? []) out.push(`${s.project}: STALE WORK [${id}]: checkpoint and reassess dependency impact`);
     for (const c of s.doing) out.push(`${s.project}: DOING [${c.id}] ${sanitize(c.title, 80)} | approved: ${c.approved.join('+') || 'no'}`);
     for (const c of s.review.filter((c) => c.accepted === 'rule')) out.push(`${s.project}: REVIEW [${c.id}] ${sanitize(c.title, 80)} | accepted by rule; awaiting owner acceptance`);
     if (s.routines?.total) out.push(`${s.project}: ROUTINES switch ${s.routines.switch ? 'on' : 'off'}, ${s.routines.total} routine(s), ${s.routines.enabled} on, due now ${s.routines.due}`);
@@ -1799,8 +1819,15 @@ function claimCardUnlocked(board, id, { as, lease = '2h', workdir, registry = lo
   // taking over an expired claim: the previous holder may have left unfinished changes in its working directory (when that is on this machine)
   const prev = chk.d.state === 'claimed' ? chk.info.claim : null;
   const warnings = prev?.workdir && workdirDirty(prev.workdir) ? [`the previous claim of ${prev.agent} on ${id} named the working directory ${sanitize(prev.workdir, 200)}, which has uncommitted changes on this machine; reconcile it (look at git status and git diff there, ask the previous holder or the owner) before continuing, and do not overwrite someone else's changes`] : [];
+  let workDeps;
+  if ((compareVersions(board.config.requires, '0.15.0') ?? -1) >= 0 && statusOf(board, c) === 'ready' && depsOf(c).length) {
+    const byId = new Map(board.cards.map((x) => [x.header.id, x]));
+    if (depsOf(c).some((dep) => !depMet(board, c, dep, byId))) return { status: 'refused', message: 'dependency is not currently accepted' };
+    try { workDeps = dependencyBasis(board, c); } catch { return { status: 'refused', message: 'dependency basis is not current' }; }
+  }
   const original = fs.readFileSync(c.file);
   let t = setHeader(readNorm(c), 'delegate', formatDelegate({ ...chk.d, state: 'claimed' }));
+  if (workDeps) t = setHeader(t, 'work_deps', workDeps);
   if (statusOf(board, c) === 'ready') t = setHeader(t, 'status', 'doing'); // P5.41 a3: claiming starts the work
   else if (statusOf(board, c) === 'blocked' && /^owner answer /.test(c.header.blocked ?? '')) { t = setHeader(t, 'status', 'doing'); t = removeHeader(t, 'blocked'); }
   for (const [k, v] of chk.basis?.header ?? []) t = setHeader(t, k, v);
@@ -1929,6 +1956,7 @@ function reportCardUnlocked(board, id, { as, text, commit = null, timeout = netT
   const bad = need(info, 'claimed');
   if (bad) return { status: 'refused', message: bad };
   if (!info.claim || info.claim.agent !== who.executor) return { status: 'refused', message: `only the claimant may report (claimed by ${info.claim?.agent ?? 'nobody'})` };
+  if (workBasisStale(board, c)) return { status: 'refused', message: 'dependency changed: checkpoint the current work and reassess its impact before reporting' };
   // P5.41 a4: every criterion the delegation handed over must have an Evidence line
   const crits = info.delegate.criteria === 'all' ? c.criteria.map((x) => x.id) : (info.delegate.criteria ?? []);
   const missing = crits.filter((x) => !c.evidence.has(x));
@@ -4530,7 +4558,7 @@ ROUTINE_SECTIONS.push(...MODULE_REG.routineSections);
 TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
-const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, criteriaProblems, readyMilestones, milestoneSummary, milestoneLine, ruleStale, depMet, withRepoLock, repoLockDead, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
+const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, criteriaProblems, readyMilestones, milestoneSummary, milestoneLine, ruleStale, workBasisStale, checkpointWorkBasis, depMet, withRepoLock, repoLockDead, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
   boardRequires, compareVersions, nowMs, delegationInfo, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits, resolveAs: (name, reg) => WHO.resolveAs(name, reg) }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {

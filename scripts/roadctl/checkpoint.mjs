@@ -40,7 +40,10 @@ export default {
           || keys.some((k) => typeof handoff[k] !== 'string' || !handoff[k].trim() || handoff[k].length > 350 || /[\x00-\x1f\x7f]/.test(handoff[k]))) throw new Error('checkpoint requires only nonempty did, next, in_flight strings (350 characters each, no control characters)');
         const plain = (s) => s.replace(/[\\_]/g, '\\$&').replace(/\|/g, '¦').replace(/[`<>*#\[\]]/g, '');
         api.appendLog(board, id, `checkpoint: did: ${plain(handoff.did)} | next: ${plain(handoff.next)} | in-flight: ${plain(handoff.in_flight)}`, { author: flags.as, loose: true, maxLength: 2200 });
-        out(`checkpoint recorded on ${id}; not committed`);
+        const wasStale = api.workBasisStale(board, cards[0]);
+        const holder = api.delegationInfo(cards[0]).claim?.agent;
+        const reconciled = wasStale && (!holder || holder === flags.as) && api.checkpointWorkBasis(board, cards[0]);
+        out(`checkpoint recorded on ${id}; not committed${wasStale ? reconciled ? '; reassess and check the impact before reporting' : '; dependencies still unresolved, checkpoint again after they are current' : ''}`);
         return 0;
       },
     },
