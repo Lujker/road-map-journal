@@ -203,3 +203,24 @@ test('P5.27 a7: the mandate rows count the cards started by the mandate from the
   empty.card('P5.9', 'status: ready\n', [`2026-11-01 [${ME}] note`]);
   assert.deepEqual(empty.json().mandate, { boards: [{ project: 'my-app', level: null, state: 'none' }], started_by_mandate: { n: 0, cards: [] }, proposed: null, undone_share: null, blocking_questions_per_week: null, milestone_returns: null });
 });
+
+test('P5.35: question metrics and current proposed snapshot use recorded facts', () => {
+  const r = rig();
+  const cfg = path.join(r.board, 'config.json');
+  fs.writeFileSync(cfg, JSON.stringify({ board_version: 1, requires: '0.15.0' }));
+  r.card('P1', `status: idea\nproposed: ${HASH}\n`, []);
+  r.card('P2', 'status: proposed\n', []);
+  const file = path.join(r.board, 'cards', 'P1.md');
+  const questions = [
+    { id: 'a', kind: 'confirm', prompt: 'Proceed?', reason: 'reversible', blocking: false, created: '2026-11-18T10:00:00.000Z', state: 'undone', recommended: true, undo_until: '2026-11-21T10:00:00.000Z', undone: '2026-11-19T10:00:00.000Z', undo_comment: 'no' },
+    { id: 'b', kind: 'confirm', prompt: 'Proceed?', reason: 'reversible', blocking: false, created: '2026-11-18T10:00:00.000Z', state: 'decided', recommended: true, undo_until: '2026-11-21T10:00:00.000Z' },
+    { id: 'c', kind: 'confirm', prompt: 'Proceed?', reason: 'irreversible', blocking: true, created: '2026-11-19T10:00:00.000Z', state: 'waiting' },
+  ];
+  fs.appendFileSync(file, `\n## Questions\n${JSON.stringify(questions)}\n`);
+  let j = r.json();
+  assert.deepEqual([j.mandate.proposed, j.mandate.undone_share, j.mandate.blocking_questions_per_week], [1, 0.5, 1]);
+  j = r.json(['--since', '2026-11-19']);
+  assert.deepEqual([j.mandate.proposed, j.mandate.undone_share, j.mandate.blocking_questions_per_week], [null, null, 1]);
+  fs.appendFileSync(path.join(r.board, 'cards', 'P2.md'), '\n## Questions\ninvalid\n');
+  j = r.json(); assert.equal(j.mandate.undone_share, null); assert.equal(j.mandate.blocking_questions_per_week, null);
+});

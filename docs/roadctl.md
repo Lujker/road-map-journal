@@ -822,7 +822,7 @@ Numbers for the owner who decides which kinds of work may go without confirmatio
 | `owner_wait.question_to_answer` | question to answer, `n`, `median_days`, `p90_days`: empty (0, null) until the questions of P5.24 exist |
 | `escalations` | `escalated_runs`, `asks` (runs that asked the owner something), `top_problems` (the ten most frequent `--problem` keys with their kind and count) |
 | `returns` | `returned` (`RETURNED` Log lines), `cards` returned, `task_reports` and `share_of_reports` |
-| `mandate` | `boards` (project, level, state of its mandate; `none` without a file), `started_by_mandate` (`n` and the `cards` taken by `approved by mandate` Log lines); `proposed` (P5.34), `undone_share` and `blocking_questions_per_week` (P5.24), `milestone_returns` (P5.35) are `null` until those parts exist |
+| `mandate` | `boards` (project, level, state of its mandate; `none` without a file), `started_by_mandate` (`n` and the `cards` taken by `approved by mandate` Log lines); `proposed`: current `idea` cards with a mandate hash (not historical; null with `--since`); `undone_share`: undone reversible decisions divided by reversible decisions created since the selected date; `blocking_questions_per_week`: blocking questions created in the last seven days, bounded by `--since`; unreadable questions make both question metrics null. `milestone_returns` remains null until return records exist |
 
 `--since DATE` counts only runs, returns, acceptances and owner commands from that day (the mandate's started cards too). With no board data, no ledger and no audit, every count is 0 and every share `null`; the command still exits 0.
 
