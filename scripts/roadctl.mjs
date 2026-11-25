@@ -3398,7 +3398,7 @@ export async function tickCommand(flags, args, io, env = process.env) {
       limits = { provider, state: 'not-checked' };
     }
     const decision = !items.length ? 'idle' : limits.state === 'reserve' ? 'blocked-reserve' : limits.state === 'unknown' ? 'blocked-unknown' : 'work';
-    const milestones = loaded.filter((b) => !boardRequires(b.board.config)).flatMap((b) => { const m = milestoneSummary(b.board); return m && (m.waiting || m.blocked) ? [`milestones: ${sanitize(b.name, 40)}: ${milestoneLine(m)}`] : []; });
+    const milestones = loaded.filter((b) => !boardRequires(b.board.config)).flatMap((b) => { const m = milestoneSummary(b.board); return m ? [`milestones: ${sanitize(b.name, 40)}: ${milestoneLine(m)}`] : []; });
     const t = { agent: shown, as: asGiven, agentExecutor: agent, decision, limits, items, sync: [...pulled, ...unreadable, ...refused, ...milestones].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
     appendTickLedger(env, { time: isoAt(), agent, decision, counts: countKinds(items), limits: { provider: limits.provider, state: limits.state }, ...(filter ? { filter } : {}) });
     await MODULE_REG.runTickHooks({ agent, decision, limits, items, sync: t.sync, boardDirs: t.boardDirs, filter, routines: loaded.flatMap((b) => { try { return routineRows(b.board).map((r) => ({ project: b.name, ...r })); } catch { return []; } }), env, api: moduleApi() }, io); // module tick hooks (seam): no-op without hooks

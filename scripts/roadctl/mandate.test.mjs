@@ -739,6 +739,8 @@ test('P5.35 a13: tick, status, autonomy, inbox and daily digest agree on deferre
   assert.equal(r.run(['milestone', 'continue', 'one', '--by', OWNER]).status, 0);
   assert.match(r.run(['inbox']).stdout, /1 milestone\(s\) awaiting owner decision/);
   assert.ok(r.starts().some((x) => x.id === 'Q'));
+  assert.equal(r.run(['milestone', 'continue', 'two', '--by', OWNER]).status, 0);
+  for (const args of [['tick', '--as', ME, '--no-pull'], ['status'], ['brief'], ['autonomy'], ['inbox'], ['digest', '--daily']]) assert.match(r.run(args).stdout, /0 milestone\(s\) awaiting owner decision/);
 });
 
 test('P5.35 a12: active claim checkpoints after its dependency changes before reporting', () => {
