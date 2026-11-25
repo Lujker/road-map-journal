@@ -214,7 +214,15 @@ export function syncLauncher(home, dest, { apply = true, force = false, platform
   const hint = onPath ? null : `${bin} is not in PATH here: add it (for example export PATH="$HOME/.local/bin:$PATH" in your shell profile, and for cron, ssh and wsl.exe -e too) so the command roadctl is found`;
   const want = launcherContent(dest);
   let cur = null;
-  try { cur = fs.readFileSync(file, 'utf8'); } catch { /* missing */ }
+  try { cur = fs.readFileSync(file, 'utf8'); } catch (e) {
+    if (e.code !== 'ENOENT') throw e;
+    let missing = false;
+    try { fs.lstatSync(file); } catch (statError) {
+      if (statError.code !== 'ENOENT') throw statError;
+      missing = true;
+    }
+    if (!missing) throw e;
+  }
   if (cur === want) {
     if (apply && (fs.statSync(file).mode & 0o111) === 0) fs.chmodSync(file, 0o755);
     return { file, action: 'unchanged', hint };

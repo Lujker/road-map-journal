@@ -44,7 +44,7 @@ Work from a folder that `roadctl where` resolves, or pass `--board DIR` / `--pro
 The registry (`agents/registry.json` of the workspace) names the executors and the profiles. The agent name is who you are on the board; set it once per session:
 
 ```sh
-export ROADCTL_AS=<name>
+export ROADCTL_AS='codex@my-machine' # example; substitute your name from the registry
 ```
 
 - **Direct harness (Claude Code, Codex, pi):** the executor name, for example `<harness>@<machine>` as it is written in the registry.
@@ -65,7 +65,7 @@ A file on disk is not a connection: the agent must have loaded the skill, find t
    `doctor` repeats this as `launcher`: the actual `roadctl` in `PATH`, the target of its launcher, and that copy's version and sha. A stale copy in `PATH` is the usual reason a claim reaches an old helper.
 3. **The profile and the state directory.**
    ```sh
-   export ROADCTL_AS=<name>     # once per session
+   export ROADCTL_AS='codex@my-machine' # example; substitute your name from the registry
    roadctl doctor
    ```
    Read `agent-name` (`ROADCTL_AS` resolves to an executor or a profile, not a guess), `state-dir` (the writable directory ticks, locks and the hook record use), `board-current`/`boards` (the actual board) and `hooks` (configured, and whether a run was confirmed).

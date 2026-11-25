@@ -17,7 +17,7 @@ git clone https://github.com/Lujker/road-map-journal && cd road-map-journal   # 
 npx skills add Lujker/road-map-journal --skill road-map-journal   # навык
 node scripts/update-installed.mjs --roadctl --apply               # roadctl и команда ~/.local/bin/roadctl (добавьте ~/.local/bin в PATH)
 roadctl hook-install --claude --user --apply                      # также --codex, --hermes (уровень пользователя), --git (на репозиторий)
-export ROADCTL_AS=<ваше имя>                                     # исполнитель, профиль или оркестратор/профиль
+export ROADCTL_AS='codex@my-machine'                              # пример; подставьте своё имя из реестра
 roadctl doctor                                                   # одна проверка только на чтение; для каждой проблемы печатает команду исправления
 ```
 

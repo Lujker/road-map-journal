@@ -182,6 +182,25 @@ test('launcher runs a helper whose path contains shell metacharacters', () => {
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('P5.51: an unreadable launcher is preserved even with force', { skip: process.platform === 'win32' || process.getuid?.() === 0 }, () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rmj-launcher-'));
+  try {
+    const file = path.join(root, '.local', 'bin', 'roadctl');
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, 'original launcher', { mode: 0o200 });
+    for (const force of [false, true]) {
+      assert.throws(() => syncLauncher(root, '/helper', { force }), { code: 'EACCES' });
+    }
+    fs.chmodSync(file, 0o600);
+    assert.equal(fs.readFileSync(file, 'utf8'), 'original launcher');
+    assert.deepEqual(fs.readdirSync(path.dirname(file)), ['roadctl']);
+    fs.unlinkSync(file);
+    fs.symlinkSync(path.join(root, 'missing-target'), file);
+    assert.throws(() => syncLauncher(root, '/helper'), { code: 'ENOENT' });
+    assert.equal(fs.lstatSync(file).isSymbolicLink(), true);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('P5.47: syncLauncher never overwrites a launcher that someone else wrote without --force (the old one is kept as .bak with it); the PATH note is one line', () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'rmj-launcher-'));
   try {

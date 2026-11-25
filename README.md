@@ -17,7 +17,7 @@ git clone https://github.com/Lujker/road-map-journal && cd road-map-journal   # 
 npx skills add Lujker/road-map-journal --skill road-map-journal   # the skill
 node scripts/update-installed.mjs --roadctl --apply               # roadctl and the command ~/.local/bin/roadctl (put ~/.local/bin in PATH)
 roadctl hook-install --claude --user --apply                      # also --codex, --hermes (user-level), --git (per repository)
-export ROADCTL_AS=<your name>                                     # executor, profile, or orchestrator/profile
+export ROADCTL_AS='codex@my-machine'                              # example; substitute your name from the registry
 roadctl doctor                                                   # one read-only check; it prints the fix for each problem
 ```
 
