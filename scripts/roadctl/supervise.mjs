@@ -17,6 +17,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { routineAnswerIds } from './owner-questions.mjs';
+import { cardDescription, readConductor } from './launch.mjs';
+import { escalationFile, readEscalation, writeEscalation, escalationAdmission, conductorDigest, ledgerIsReadable } from './escalation.mjs';
 import { timeoutMs } from './run-ledger.mjs';
 import { environmentGate } from './environment.mjs';
 import { pauseLine, readPause } from './pause.mjs';
@@ -280,7 +282,7 @@ function parseArgs({ flags, rest }) {
     if (!m || !Number(m[1])) throw new Error(`${USAGE}; --timeout is a span like 90s, 30m, 2h or 1d`);
     timeout = Number(m[1]) * UNIT[m[2]];
   }
-  if (!flags.reset && !rest.length) throw new Error(`${USAGE}; the command to supervise goes after --`);
+  if (!flags.reset && !rest.length && !flags['auto-profile']) throw new Error(`${USAGE}; the command to supervise goes after --`);
   if (flags.model !== undefined && (typeof flags.model !== 'string' || !AGENT_RE.test(flags.model))) throw new Error(`${USAGE}; --model is the model name of this run`);
   if (kind !== 'routine' && flags['owner-answers'] !== undefined) throw new Error('--owner-answers is only for routine runs');
   return { sel: { kind, id: kind === 'orchestrator' ? flags.as : value }, as: flags.as, timeout, argv: rest, stdin: Boolean(flags.stdin), model: flags.model ?? null };
@@ -398,6 +400,58 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
   const board = bdir ? api.loadBoard(bdir) : null; // the board is read again: it may have changed since `tick`
   const refuse = recheck(ctx, t, board, dir, now);
   if (refuse) return refuse;
+  let auto = null;
+  if (ctx.flags['auto-profile'] !== undefined) {
+    if (t.kind !== 'task' || typeof ctx.flags['auto-profile'] !== 'string' || ctx.flags.detach || ctx.rest.length || ctx.flags.timeout || ctx.flags.model || ctx.flags.stdin) return { code: EXIT.notStarted, text: 'auto escalation requires a card and profile without command, timeout, model or stdin overrides' };
+    const cond = readConductor(env);
+    if (cond.state !== 'ok') return { code: EXIT.notStarted, text: cond.reason };
+    let digest;
+    try { digest = conductorDigest(cond.conductor); } catch { return { code: EXIT.notStarted, text: 'the conductor settings or MCP file cannot be read' }; }
+    const card = board.cards.find((c) => c.header.id === t.id);
+    const scope = /\bscope=([^\s,]+)/.exec(card?.header.approved ?? '')?.[1]?.split('+') ?? [];
+    const status = board.config?.status_map?.[card?.header.status] ?? card?.header.status;
+    if (!card || !['ready', 'doing'].includes(status) || !scope.includes('implementation') || !scope.includes('auto') || card.header.blocked) return { code: EXIT.notStarted, text: 'the card is blocked, closed or no longer approved for automatic implementation' };
+    const byId = new Map(board.cards.map((c) => [c.header.id, c]));
+    const deps = String(card.header.depends_on ?? '').split(/[\s,]+/).filter(Boolean);
+    if (deps.some((id) => !api.depMet(board, card, id, byId))) return { code: EXIT.notStarted, text: 'a card dependency is no longer satisfied' };
+    const file = escalationFile(dir, bdir, t.id);
+    let prior;
+    try { prior = readEscalation(file); } catch (e) { return { code: EXIT.notStarted, text: e.message }; }
+    const ledger = ledgerPaths(env);
+    if (!ledgerIsReadable([ledger.runs, ledger.runsPrev])) return { code: EXIT.notStarted, text: 'the run ledger contains unreadable records' };
+    const profile = ctx.flags['auto-profile'];
+    let d;
+    let reg = null;
+    try {
+      reg = api.loadRegistry(env);
+      const previous = prior ? [{ run_id: prior.run_id, model: prior.model, outcome: prior.outcome, duration_s: prior.used_s }] : null;
+      d = cardDescription({ ...ctx, flags: { ...ctx.flags, card: t.id, profile } }, cond, board, bdir, reg, previous);
+    } catch (e) { return { code: EXIT.notStarted, text: e.message }; }
+    const info = api.delegationInfo(card);
+    if (info.errors.length || !info.delegate || !api.eligibility(info.delegate, d.agent, reg).ok) return { code: EXIT.notStarted, text: 'the card has no valid delegation to this agent' };
+    const { state: delegateState, ...delegation } = info.delegate;
+    const delegationHash = crypto.createHash('sha256').update(JSON.stringify(delegation)).digest('hex');
+    if (!prior && (delegateState !== 'open' || info.claim)) return { code: EXIT.notStarted, text: 'the initial delegation is not open' };
+    if (prior && (delegateState !== 'claimed' || !info.claim || info.claim.agent !== d.agent || api.leaseExpired(info.claim, now) || prior.delegation_hash !== delegationHash)) return { code: EXIT.notStarted, text: 'the original delegation or claim is no longer valid' };
+    if (a.as !== d.agent) return { code: EXIT.notStarted, text: 'the agent differs from the launch description' };
+    a.argv = d.argv; a.model = d.model; a.timeout = d.timeout_s * 1000;
+    t.model = d.model; t.timeout = a.timeout;
+    if (!prior) {
+      const strongName = d.escalation?.to;
+      const strong = cond.conductor.profiles[strongName];
+      if (d.attempt !== 1 || !d.escalation?.offered || !strong || strong.model === d.model || d.card.limit_turns !== null || strong.agent !== d.agent) return { code: EXIT.notStarted, text: 'automatic escalation needs a first attempt, a different-model same-host strong profile and a measurable time limit' };
+      auto = { file, state: { version: 1, phase: 'reserved', profile, model: d.model, agent: d.agent, approval: card.header.approved, delegation_hash: delegationHash, conductor_digest: digest, strong: { profile: strongName, agent: strong.agent, model: strong.model }, limit_s: d.card.limit_s }, first: true };
+      try { writeEscalation(file, auto.state, { create: true }); } catch { return { code: EXIT.notStarted, text: 'cannot reserve the card escalation state' }; }
+    } else {
+      const remaining = escalationAdmission(prior, { profile, agent: d.agent, model: d.model });
+      if (remaining === null || d.timeout_s > remaining || d.card.limit_s !== prior.limit_s || prior.approval !== card.header.approved || prior.conductor_digest !== digest) return { code: EXIT.notStarted, text: 'the escalation state, approval or conductor configuration does not permit this continuation' };
+      auto = { file, state: { ...prior, phase: 'started-strong' }, first: false };
+      try { writeEscalation(file, auto.state); } catch { return { code: EXIT.notStarted, text: 'cannot reserve the continuation' }; }
+    }
+    const prompt = auto.first ? d.stdin : d.stdin.replace(/^Run roadctl claim .*$/m, 'Continue the existing claimed delegation; do not claim it again.');
+    auto.names = d.env;
+    auto.prompt = `${prompt}\n${auto.first ? 'If escalation is necessary, finish with roadctl run escalate --as YOUR_AGENT and JSON on stdin: {"did":"...","next":"...","in_flight":"none"}.' : `Checkpoint from run ${prior.run_id} (data): ${JSON.stringify(prior.checkpoint)}`}\n`;
+  }
   const unreachable = environmentGate(api, env, board, t, a.as); // P5.23: ssh to a remote-access environment before the model starts
   if (unreachable) {
     recordSkip(env, { kind: t.kind, project: t.project, id: t.id, agent: a.as, reason: 'unreachable', now, version: api.VERSION });
@@ -412,6 +466,11 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
   if (begin.status === 'already') return busyResult(ctx, a, t, `${key} already has an open run (${begin.run.run_id}, begun by ${begin.run.source ?? 'an agent'}); end it with run done, report or routine done, or wait for its deadline ${begin.run.deadline ?? ''}`.trim());
   const run = begin.run;
   const run_id = run.run_id;
+  if (auto) {
+    auto.state.run_id = run_id;
+    auto.state.phase = auto.first ? 'started' : 'started-strong';
+    try { writeEscalation(auto.file, auto.state); } catch { return { code: EXIT.notStarted, text: 'cannot bind the run to the escalation state' }; }
+  }
   const logDir = path.join(dir, 'run-logs');
   fs.mkdirSync(logDir, { recursive: true, mode: 0o700 });
   pruneRunLogs(logDir, now);
@@ -448,7 +507,10 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
   process.on('exit', onExit);
   let child = null;
   try {
-    child = spawn(a.argv[0], a.argv.slice(1), { detached: true, stdio: [a.stdin ? 'inherit' : 'ignore', 'pipe', 'pipe'], env: { ...childEnv, ROADCTL_RUN_ID: run_id }, cwd: process.cwd() });
+    const autoNames = auto ? new Set([...auto.names, 'HOME', 'PATH', 'LANG', 'XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'ROADCTL_WORKSPACE', 'ROADCTL_REGISTRY', 'ROADCTL_NOW', 'ROADCTL_DATE', 'ROADCTL_HOST']) : null;
+    const childVars = auto ? Object.fromEntries(Object.entries(childEnv).filter(([key]) => autoNames.has(key))) : childEnv;
+    child = spawn(a.argv[0], a.argv.slice(1), { detached: true, stdio: [auto ? 'pipe' : a.stdin ? 'inherit' : 'ignore', 'pipe', 'pipe'], env: { ...childVars, ROADCTL_RUN_ID: run_id }, cwd: process.cwd() });
+    if (auto) { child.stdin.on('error', () => {}); child.stdin.end(auto.prompt); }
     child.on('error', (e) => { spawnError = e; });
     pgid = child.pid ?? null;
     if (pgid) {
@@ -514,6 +576,15 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
     }
     text = `${outcome}: ${reason} (${exitText}; ${dur}s)${t.kind === 'routine' ? `; routine file: ${w.status}` : ''}`;
   }
+  if (auto && auto.first && outcome === 'escalated' && result.code === 0 && !stopping && !fatal && !spawnError) {
+    for (let i = 0; i < 20 && groupAlive(pgid); i++) await sleep(50);
+    let checkpoint;
+    try { checkpoint = JSON.parse(after.note); } catch { checkpoint = null; }
+    if (checkpoint && checkpoint.in_flight === 'none' && typeof checkpoint.did === 'string' && typeof checkpoint.next === 'string' && !groupAlive(pgid)) {
+      const state = { ...auto.state, phase: 'ready', outcome, group_gone: true, used_s: Math.ceil((Date.now() - t0) / 1000), checkpoint: { run_id, ...checkpoint } };
+      try { writeEscalation(auto.file, state); } catch { lost.push('the escalation state could not be saved'); }
+    }
+  }
   if (!penalized) updateState(env, dir, (s) => { if (!s[key]?.stopped) delete s[key]; }); // a run that got to its end clears the count of orphans (a failed clear only leaves the old, stricter state)
   const code = ['ok', 'escalated'].includes(outcome) ? EXIT.ok : outcome === 'timeout' ? EXIT.timeout : outcome === 'aborted' ? EXIT.aborted : EXIT.failed;
   if (lost.length) return { code: code === EXIT.ok ? EXIT.failed : code, text: `${text}; WARNING: ${lost.join('; ')}`, run_id, outcome, ...(unsaved ? { unsavedStop: lost.join('; ') } : {}) };
@@ -521,9 +592,28 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
 }
 
 /** The whole run: arguments, board, lock, the run. Returns { code, text, run_id?, outcome? }. */
-export async function superviseRun(ctx, { platform = process.platform, started } = {}) {
+export async function superviseRun(ctx, opts = {}) {
+  if (!ctx.flags['auto-profile']) return superviseRunInner(ctx, opts);
+  if ((opts.platform ?? process.platform) === 'win32') throw new Error(WINDOWS);
+  const dir = path.dirname(ctx.api.tickLedgerPath(ctx.env));
+  const bdir = ctx.api.findBoard(process.cwd(), typeof ctx.flags.board === 'string' ? ctx.flags.board : undefined, ctx.env);
+  if (!bdir || typeof ctx.flags.card !== 'string') return { code: EXIT.notStarted, text: 'automatic escalation needs a board and a card' };
+  const file = `${escalationFile(dir, bdir, ctx.flags.card)}.lock`;
+  const held = acquireLock(file, { staleMs: LOCK_STALE_MS, waitMs: 0, strict: true });
+  if (!held.ok) return { code: EXIT.busy, text: 'the automatic escalation is already running or its lock cannot be acquired' };
+  const pulse = setInterval(() => held.heartbeat(), knob(ctx.env, 'ROADCTL_SUPERVISE_HEARTBEAT_MS', 30000));
+  try { return await superviseRunInner(ctx, opts); } finally { clearInterval(pulse); held.release(); }
+}
+
+async function superviseRunInner(ctx, { platform = process.platform, started } = {}) {
   const { env, api } = ctx;
   if (platform === 'win32') throw new Error(WINDOWS);
+  if (typeof ctx.flags['auto-profile'] === 'string' && ctx.flags.as === undefined) {
+    const c = readConductor(env);
+    const p = c.state === 'ok' && c.conductor.profiles?.[ctx.flags['auto-profile']];
+    if (!p) return { code: EXIT.notStarted, text: c.reason ?? 'no such automatic profile' };
+    ctx.flags.as = p.agent;
+  }
   const a = parseArgs(ctx);
   const dir = path.dirname(api.tickLedgerPath(env)); // the machine state directory
   let bdir = null;
@@ -645,9 +735,9 @@ export default {
   commands: {
     supervise: {
       group: 'Record', effect: 'write', hidden: true, summary: 'run a command under a lock, a timeout and a result check',
-      purpose: 'Runs COMMAND (after --) as one supervised run of a routine, a card or the orchestrator of an agent. One run per key at a time on this machine, for the whole run: a second supervise of the same key exits 5 (busy, recorded as skipped: busy), and `tick` offers no RUN for a routine whose run is live. Under the lock it checks again that the run is still allowed (pause, requires, "allowed and due" for a routine), begins the run in the run ledger (ROADCTL_RUN_ID is passed to the command), starts the command in its own process group, keeps a pulse in the lock every 30 seconds and a private log (mode 0600, bounded, kept 30 days; its last 600 characters go to the ledger). A command that outlives --timeout (default: the routine\'s timeout, else 2 hours) gets TERM, then KILL, for its whole group (outcome timeout). A command that ends without a result in the ledger (routine done, report, run done) is "failed: no result"; for a routine the supervisor then writes the result to the routine file itself (the Log line ends with src=supervisor). TERM, INT or HUP to the supervisor, or pause --now, stops the group (outcome aborted). If the supervisor itself is killed with -9, the next supervise finds the orphan: its command alive -> busy, gone -> the lock is taken at once and the old run is crashed, and a local back-off (10, 20, 40 minutes, then a stop until --reset) keeps a routine whose result cannot be written from being offered on every tick. The result is written through the same hooks as `routine done` (a refusing hook means nothing is written). A routine\'s board must say "requires": "0.6.0" in config.json; a card whose run ended without a result is not run again until --reset; an open run begun by `run begin` or a claim is not taken over (busy); `tick` only marks the RUN of a dead supervisor (recover), the recovery is done by supervise. --detach prints run_id and returns while the supervisor goes on in its own session (it survives a dropped ssh). POSIX only (WSL included); native Windows is refused. Starts no model by itself: COMMAND is yours.',
-      usage: ['roadctl supervise --routine ID --as AGENT [--timeout 30m] [--stdin] [--detach] [--board DIR] -- COMMAND [ARGS...]', 'roadctl supervise --card ID --as AGENT [--timeout 30m] [--stdin] [--model NAME] [--detach] -- COMMAND [ARGS...]', 'roadctl supervise --orchestrator --as AGENT [--timeout 30m] [--detach] -- COMMAND [ARGS...]', 'roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT --reset'],
-      flags: [['--routine ID', 'supervise a run of this routine (the routine\'s own agent in --as)'], ['--card ID', 'supervise a run of this card'], ['--orchestrator', 'supervise the orchestrator run of the agent in --as'], ['--as AGENT', 'the agent that runs it'], ['--timeout SPAN', 'kill the command after this long: 90s, 30m, 2h, 1d (default: the routine\'s timeout, else 2h)'], ['--owner-answers IDS', 'comma-separated IDs included in the routine launch prompt'], ['--stdin', 'the command reads this process\'s stdin (the prompt of `roadctl launch`); without it the command gets none'], ['--model NAME', 'record the model of this run (for a card or the orchestrator; a routine\'s model is its own header): an escalated second attempt keeps the actual models'], ['--detach', 'print run_id and return at once; the supervisor goes on in its own session'], ['--reset', 'clear the local back-off or stop of this key; starts nothing'], ['--json', 'machine-readable output']],
+      purpose: 'Runs COMMAND (after --) as one supervised run of a routine, a card or the orchestrator of an agent. One run per key at a time on this machine, for the whole run: a second supervise of the same key exits 5 (busy, recorded as skipped: busy), and `tick` offers no RUN for a routine whose run is live. Under the lock it checks again that the run is still allowed (pause, requires, "allowed and due" for a routine), begins the run in the run ledger (ROADCTL_RUN_ID is passed to the command), starts the command in its own process group, keeps a pulse in the lock every 30 seconds and a private log (mode 0600, bounded, kept 30 days; its last 600 characters go to the ledger). A command that outlives --timeout (default: the routine\'s timeout, else 2 hours) gets TERM, then KILL, for its whole group (outcome timeout). A command that ends without a result in the ledger (routine done, report, run done) is "failed: no result"; for a routine the supervisor then writes the result to the routine file itself (the Log line ends with src=supervisor). TERM, INT or HUP to the supervisor, or pause --now, stops the group (outcome aborted). If the supervisor itself is killed with -9, the next supervise finds the orphan: its command alive -> busy, gone -> the lock is taken at once and the old run is crashed, and a local back-off (10, 20, 40 minutes, then a stop until --reset) keeps a routine whose result cannot be written from being offered on every tick. The result is written through the same hooks as `routine done` (a refusing hook means nothing is written). A routine\'s board must say "requires": "0.6.0" in config.json; a card whose run ended without a result is not run again until --reset; an open run begun by `run begin` or a claim is not taken over (busy); `tick` only marks the RUN of a dead supervisor (recover), the recovery is done by supervise. --detach prints run_id and returns while the supervisor goes on in its own session (it survives a dropped ssh). POSIX only (WSL included); native Windows is refused. In manual mode COMMAND is yours. With --auto-profile it builds and starts the local conductor template under the lock, spending one card time budget across an original run and at most one permitted strong-profile continuation; the worker uses run escalate with a run-bound checkpoint. The automatic path needs an approved, delegated card and uses a persistent local state; changed settings, a live or unknown outcome, or revoked approval refuse continuation.',
+      usage: ['roadctl supervise --routine ID --as AGENT [--timeout 30m] [--stdin] [--detach] [--board DIR] -- COMMAND [ARGS...]', 'roadctl supervise --card ID --as AGENT [--timeout 30m] [--stdin] [--model NAME] [--detach] -- COMMAND [ARGS...]', 'roadctl supervise --card ID --auto-profile NAME [--board DIR]', 'roadctl supervise --orchestrator --as AGENT [--timeout 30m] [--detach] -- COMMAND [ARGS...]', 'roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT --reset'],
+      flags: [['--routine ID', 'supervise a run of this routine (the routine\'s own agent in --as)'], ['--card ID', 'supervise a run of this card'], ['--auto-profile NAME', 'opt in to one measured escalation using this local conductor profile'], ['--orchestrator', 'supervise the orchestrator run of the agent in --as'], ['--as AGENT', 'the agent that runs it'], ['--timeout SPAN', 'kill the command after this long: 90s, 30m, 2h, 1d (default: the routine\'s timeout, else 2h)'], ['--owner-answers IDS', 'comma-separated IDs included in the routine launch prompt'], ['--stdin', 'the command reads this process\'s stdin (the prompt of `roadctl launch`); without it the command gets none'], ['--model NAME', 'record the model of this run (for a card or the orchestrator; a routine\'s model is its own header): an escalated second attempt keeps the actual models'], ['--detach', 'print run_id and return at once; the supervisor goes on in its own session'], ['--reset', 'clear the local back-off or stop of this key; starts nothing'], ['--json', 'machine-readable output']],
       examples: ['roadctl supervise --routine server-watch --as claude-code@home-wsl --timeout 30m -- claude -p --max-turns 30 "$(cat prompt.txt)"', 'roadctl supervise --routine server-watch --as claude-code@home-wsl --detach -- ./run-watch.sh', 'roadctl supervise --orchestrator --as claude-code@home-wsl -- claude -p "$(roadctl tick --as claude-code@home-wsl --prompt)"'],
       changes: 'Writes in the machine state directory (the lock supervise-<key>.lock and its .run file, run-logs/, supervise.state.json, runs.jsonl). For a routine whose run left no result it writes the routine file (last_run, last_result failed, a Log line) and commits and pushes it like routine done. No other board file.',
       exits: '0 the run ended ok or escalated (or --detach started it, or --reset); 1 failed (no result, or the command reported failed); 2 usage error or unsupported platform; 4 not started (not allowed or not due any more, back-off or stop); 5 busy; 6 paused; 7 timeout; 8 aborted',

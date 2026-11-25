@@ -149,7 +149,7 @@ function routineDescription(ctx, cond, board, dir, reg) {
 const usedSeconds = (prev) => (prev.every((r) => Number.isFinite(r.duration_s)) ? prev.reduce((a, r) => a + r.duration_s, 0) : null);
 const unknownOutcome = (r) => !['ok', 'escalated', 'failed'].includes(r.outcome) || (r.outcome === 'failed' && r.usage != null); // started, crashed, timeout, aborted, or a failure the supervisor wrote because the command reported nothing
 
-function cardDescription(ctx, cond, board, dir, reg) {
+export function cardDescription(ctx, cond, board, dir, reg, previous = null) {
   const { api, env } = ctx;
   const { card: id, profile: name } = ctx.flags;
   if (typeof name !== 'string') throw new Error('usage: roadctl launch --card ID --profile NAME [--json]');
@@ -158,7 +158,7 @@ function cardDescription(ctx, cond, board, dir, reg) {
   const p = profiles[name];
   if (!p) refuse(`no profile ${name} in ${cond.file}`);
   const project = projectOf(board);
-  const prev = [...readRuns(env).values()].filter((r) => runKey(r) === `task:${project}/${id}`).sort((a, b) => String(a.started).localeCompare(String(b.started)));
+  const prev = previous ?? [...readRuns(env).values()].filter((r) => runKey(r) === `task:${project}/${id}`).sort((a, b) => String(a.started).localeCompare(String(b.started)));
   let origin = [name, p]; // the profile whose card limit counts: the one of the first attempt
   if (prev.length) {
     const bad = prev.find(unknownOutcome);

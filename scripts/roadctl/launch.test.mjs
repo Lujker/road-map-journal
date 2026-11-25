@@ -2,7 +2,7 @@
 // No model, no network: the executor is the fake `claude` of scripts/testkit, runs are fixtures in the run ledger or `sh` stubs under `supervise`.
 // Run: node --test scripts/roadctl/launch.test.mjs
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -86,6 +86,55 @@ const withRig = (opts, fn) => async () => {
 };
 const json = (r) => { assert.equal(r.status, 0, r.stderr + r.stdout); return JSON.parse(r.stdout); };
 const refused = (r, re) => { assert.equal(r.status, 1, `exit ${r.status}: ${r.stderr}${r.stdout}`); assert.match(r.stderr, re); assert.equal(r.stdout, ''); };
+
+test('opt-in supervised escalation binds a checkpoint, spends one measured budget and survives ledger rotation', FAKES_SKIP, withRig((r) => {
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: r.ws }).status, 0);
+  const cardFile = path.join(r.board, 'cards', fs.readdirSync(path.join(r.board, 'cards')).find((x) => x.startsWith('W-1')));
+  fs.writeFileSync(cardFile, fs.readFileSync(cardFile, 'utf8').replace('status: done', 'status: doing').replace('scope=implementation,', 'scope=implementation+auto,'));
+  r.ok(['delegate', CARD, '--to', ME, '--by', 'owner@local', '--board', r.board]);
+  for (const args of [['config', 'user.name', 'Test'], ['config', 'user.email', 'test@invalid'], ['add', '.'], ['commit', '-qm', 'fixture']]) assert.equal(spawnSync('git', args, { cwd: r.ws }).status, 0);
+  const stub = path.join(r.dir, 'worker.cjs');
+  fs.writeFileSync(stub, `const fs=require('fs'), cp=require('child_process'); const prompt=fs.readFileSync(0,'utf8'); if(process.env.LAUNCH_TEST_TOKEN) process.exit(9); fs.appendFileSync(${JSON.stringify(path.join(r.dir, 'prompts'))}, prompt+'\\n---\\n'); if(process.argv[2]==='model-a'){const c=cp.spawnSync(process.execPath,[${JSON.stringify(SELF)},'claim',${JSON.stringify(CARD)},'--as',${JSON.stringify(ME)},'--board',${JSON.stringify(r.board)}],{env:process.env}); if(c.status) process.exit(c.status); const x=cp.spawnSync(process.execPath,[${JSON.stringify(SELF)},'run','escalate','--as',${JSON.stringify(ME)}],{input:JSON.stringify({did:'done',next:'continue',in_flight:'none'}),env:process.env}); process.exit(x.status)}\n`);
+  const profiles = { worker: { ...PROFILES.worker, attempt: { timeout: '3s' }, card: { timeout: '4s' } }, strong: { ...PROFILES.strong, attempt: { timeout: '10s' } } };
+  r.writeConductor({ version: 1, templates: { 'claude-code': { argv: [process.execPath, stub, '{model}'] } }, profiles });
+  json(r.card('worker'));
+  const launch = (profile) => r.roadctl(['supervise', '--card', CARD, '--auto-profile', profile, '--board', r.board]);
+  assert.equal(r.roadctl(['supervise', '--card', CARD, '--auto-profile', 'worker', '--timeout', '1s', '--board', r.board]).status, 4);
+  const first = launch('worker'); assert.equal(first.status, 0, first.stderr);
+  const journal = fs.readdirSync(r.state).find((x) => /^escalation-.*\.json$/.test(x));
+  const state = JSON.parse(fs.readFileSync(path.join(r.state, journal)));
+  assert.equal(state.phase, 'ready'); assert.equal(state.checkpoint.run_id, state.run_id); assert.ok(state.used_s >= 1);
+  fs.unlinkSync(path.join(r.state, 'runs.jsonl'));
+  const conductor = fs.readFileSync(r.file, 'utf8');
+  const modified = JSON.parse(conductor); modified.templates['claude-code'].argv.push('--extra'); r.writeConductor(modified);
+  assert.equal(launch('strong').status, 4); fs.writeFileSync(r.file, conductor);
+  const card = fs.readFileSync(cardFile, 'utf8'); fs.writeFileSync(cardFile, card.replace('status: doing', 'status: blocked'));
+  assert.equal(launch('strong').status, 4); fs.writeFileSync(cardFile, card);
+  fs.writeFileSync(cardFile, card.replace(/^delegate: .*\n/m, ''));
+  assert.equal(launch('strong').status, 4); fs.writeFileSync(cardFile, card);
+  const second = launch('strong'); assert.equal(second.status, 1, second.stderr);
+  const logs = fs.readdirSync(path.join(r.state, 'run-logs')).map((f) => fs.readFileSync(path.join(r.state, 'run-logs', f), 'utf8'));
+  assert.ok(logs.some((s) => s.includes(`timeout=${state.limit_s - state.used_s}s`) && s.includes('model-b')));
+  assert.match(fs.readFileSync(path.join(r.dir, 'prompts'), 'utf8'), /Checkpoint from run .*continue/);
+  assert.equal(launch('strong').status, 4);
+}));
+
+test('opt-in refuses parallel starts and an unknown stopped run', FAKES_SKIP, withRig(async (r) => {
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: r.ws }).status, 0);
+  const card = path.join(r.board, 'cards', fs.readdirSync(path.join(r.board, 'cards')).find((x) => x.startsWith('W-1')));
+  fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace('status: done', 'status: doing').replace('scope=implementation,', 'scope=implementation+auto,'));
+  r.ok(['delegate', CARD, '--to', ME, '--by', 'owner@local', '--board', r.board]);
+  const stub = path.join(r.dir, 'hang.cjs'); fs.writeFileSync(stub, 'setTimeout(()=>{}, 60000);\n');
+  r.writeConductor({ version: 1, templates: { 'claude-code': { argv: [process.execPath, stub] } }, profiles: PROFILES });
+  const args = ['supervise', '--card', CARD, '--auto-profile', 'worker', '--board', r.board];
+  const child = spawn(process.execPath, [SELF, ...args], { cwd: r.ws, env: r.env, stdio: 'ignore' });
+  const exit = new Promise((resolve) => child.on('close', resolve));
+  try {
+    for (let i = 0; i < 100 && (!fs.existsSync(r.state) || !fs.readdirSync(r.state).some((x) => /^escalation-.*\.json$/.test(x))); i++) await new Promise((resolve) => setTimeout(resolve, 25));
+    assert.equal(r.roadctl(args).status, 5);
+  } finally { child.kill('SIGTERM'); await exit; }
+  assert.equal(r.roadctl(args).status, 4);
+}));
 
 // ---------------------------------------------------------------- a1: strict MCP, max_turns, the prompt only in stdin
 

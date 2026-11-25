@@ -130,6 +130,22 @@ function runNote({ flags, args, out, env }) {
   return 0;
 }
 
+function runEscalate({ flags, out, env, api }) {
+  const id = env.ROADCTL_RUN_ID;
+  const as = flags.as;
+  const run = id && readRuns(env).get(id);
+  if (!run || run.source !== 'supervisor' || run.kind !== 'task' || run.outcome !== 'started' || run.agent !== as) throw new Error('escalation requires the current supervised task run and its agent');
+  let checkpoint;
+  try { checkpoint = JSON.parse(fs.readFileSync(0, 'utf8')); } catch { throw new Error('checkpoint must be JSON'); }
+  if (!checkpoint || Object.keys(checkpoint).sort().join(',') !== 'did,in_flight,next' || checkpoint.in_flight !== 'none' || ['did', 'next'].some((k) => typeof checkpoint[k] !== 'string' || !checkpoint[k].trim() || checkpoint[k].length > 80 || /[\x00-\x1f\x7f]/.test(checkpoint[k]))) throw new Error('checkpoint requires did, next and in_flight="none"');
+  const now = nowMs(env);
+  if (!noteRun(env, id, JSON.stringify(checkpoint), now)) throw new Error('checkpoint could not be saved');
+  const ended = finishRun(env, { runId: id, plan: { run }, kind: run.kind, project: run.project, id: run.id, agent: as, model: run.model, outcome: 'escalated', fields: { did: [checkpoint.did] }, now, version: api.VERSION });
+  if (ended.status !== 'ended') throw new Error('escalation result could not be saved');
+  out(`run ${id}: escalated with checkpoint`);
+  return 0;
+}
+
 /**
  * `roadctl run done` (P5.13): the end of a run of the duty orchestrator, which has no routine or card to write to. The summary goes to the local run
  * ledger (kind orchestrator, id = the agent) and is printed in the form the owner reads; the digest of this machine delivers it. An open run of the
@@ -209,8 +225,8 @@ export default {
   commands: {
     run: {
       group: 'Record', effect: 'write', hidden: true, summary: 'begin a run or leave a checkpoint in the local run ledger',
-      purpose: 'For paths without a supervisor. `begin` records the start of a run of a routine (or of a card) and prints its run id; a second `begin` of the same thing while the first is open answers "already begun" with exit code 5, so two schedulers on one machine do not both run it. `note` leaves a cheap local checkpoint on an open run; the last one stays in the record if the run is broken off. `done` ends a run of the duty orchestrator (which has no routine or card to write to) with a run summary: it is kept in the local ledger and printed in the plain form the owner reads, up to six lines; `--did` is required. The run id can come from ROADCTL_RUN_ID instead of the command line, and `routine done` finds its run by itself. Nothing goes to git; a state directory that cannot be written is a warning, not a failure.',
-      usage: ['roadctl run begin <routine|card> --as AGENT [--run ID]', 'roadctl run note [RUN_ID] "what was done" [--as AGENT]', 'roadctl run done --as AGENT --result ok|escalated|failed --did "what was done" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]'],
+      purpose: '`escalate` ends the current supervised card run with a run-bound JSON checkpoint: did, next and in_flight=none. `begin` records the start of a run of a routine (or of a card) and prints its run id; a second `begin` of the same thing while the first is open answers "already begun" with exit code 5, so two schedulers on one machine do not both run it. `note` leaves a cheap local checkpoint on an open run; the last one stays in the record if the run is broken off. `done` ends a run of the duty orchestrator (which has no routine or card to write to) with a run summary: it is kept in the local ledger and printed in the plain form the owner reads, up to six lines; `--did` is required. The run id can come from ROADCTL_RUN_ID instead of the command line, and `routine done` finds its run by itself. Nothing goes to git; a state directory that cannot be written is a warning, not a failure.',
+      usage: ['roadctl run begin <routine|card> --as AGENT [--run ID]', 'roadctl run note [RUN_ID] "what was done" [--as AGENT]', 'roadctl run escalate --as AGENT < checkpoint.json', 'roadctl run done --as AGENT --result ok|escalated|failed --did "what was done" [--decision T] [--problem "transient|permanent|unknown: key: text"] [--ask T] [--not-checked T]'],
       flags: [['--as AGENT', 'the agent that runs it (for a routine: the routine\'s own agent)'], ['--result R', 'run done: ok, escalated or failed'], ['--did T', 'run done: what was done (1 to 3 times, 120 characters each; required)'], ['--decision T', 'run done: a decision taken (up to 3 times, 160)'], ['--problem P', 'run done: "transient|permanent|unknown: key: text" (up to 3 times; the key lets the owner see one problem once)'], ['--ask T', 'run done: what is needed from the owner (200)'], ['--not-checked T', 'run done: what was not checked (160)'], ['--owner-answers IDS', 'comma-separated IDs included in a routine launch prompt'], ['--run ID', 'use this run id instead of the derived one (ROADCTL_RUN_ID does the same)'], ['--json', 'machine-readable output of begin']],
       examples: ['roadctl run begin server-watch --as claude-code@home-wsl', 'roadctl run note "checked 7 of 9 servers"', 'roadctl run done --as claude-code@home-wsl --result ok --did "3 cards taken, 1 accepted" --ask "decide P5.4 scope"'],
       changes: 'Appends to runs.jsonl in the machine state directory (not to the board, not to git).',
@@ -219,6 +235,7 @@ export default {
         const sub = ctx.args[1];
         if (sub === 'begin') return runBegin(ctx);
         if (sub === 'note') return runNote(ctx);
+        if (sub === 'escalate') return runEscalate(ctx);
         if (sub === 'done') return runDone(ctx);
         throw new Error(RUN_USAGE);
       },
@@ -312,6 +329,8 @@ export default {
     /** A claim starts a run of the task (a claim still open is marked crashed first: the lease ran out and the card was taken over). */
     'claim-after'({ board, id, as, r, env, api }) {
       if (!['claimed', 'claimed-local'].includes(r?.status)) return;
+      const current = env.ROADCTL_RUN_ID && readRuns(env).get(env.ROADCTL_RUN_ID);
+      if (current?.source === 'supervisor' && current.outcome === 'started' && current.kind === 'task' && current.project === projectOf(board) && current.id === id && current.agent === as) return;
       const now = nowMs(env);
       const until = Date.parse(r.claim?.until ?? '');
       attempt(() => beginRun(env, { kind: 'task', project: projectOf(board), id, agent: as, model: null, anchor: r.claim?.at ?? null, deadlineMs: Number.isFinite(until) && until > now ? until : now + DEFAULT_TIMEOUT_MS, now, version: api.VERSION, supersede: true }));

@@ -736,6 +736,15 @@ The state files are `supervise-<key>.lock`, its `.run` sidecar, `run-logs/` and 
 
 **Format change (roadctl 0.6.0).** New: the supervisor's Log line trailer ` src=supervisor` (`[run=ID dur=Ns host=H src=supervisor]`), the command `supervise`, `pause --now` (a `now` key in `pause.json`), the module hook text `a supervised run is live`, the `routine.recover` field of a RUN item in `tick --json` (and ` (recover: ...)` in its text), and the module api `routineDoneWithHooks` (the whole of `routine done`, hooks included). An older copy reads the new trailer as plain text of the line (the strict trailer expression does not match, so it shows no run id for that line), and does not know `supervise`; so a board whose routines are run by a supervisor sets `"requires": "0.6.0"` in `board/config.json` first (and installs 0.6.0 on every machine that runs them). `last_result` keeps `ok`, `escalated` and `failed` (a supervised `timeout` or `aborted` is `failed` in the routine file and has its own outcome in the local ledger).
 
+### Opt-in supervised card escalation
+
+On one WSL host, `roadctl supervise --card ID --auto-profile NAME --board DIR` runs the local conductor profile under the card supervisor lock. It builds the argv, timeout and stdin itself under the lock; do not pass a command, `--model`, `--timeout`, `--stdin` or `--detach`. The card must have an open delegation and owner approval for `implementation+auto`, and the profile must name a strong profile for the same executor and a measurable card time limit (without a card turn limit).
+
+The worker claims its delegation and may end its supervised attempt with `roadctl run escalate --as AGENT`, reading `{"did":"...","next":"...","in_flight":"none"}` from stdin. After the command and its process group finish, a persistent per-card local state records the run-bound checkpoint and actual elapsed time. Run the same command with the named strong profile to spend the remaining time once; the checkpoint is included in its prompt. A changed conductor configuration or referenced settings/MCP file, revoked approval or delegation, blocked card, unknown outcome, live group, missing checkpoint or unreadable state refuses continuation. The state survives run-ledger rotation and is shared by linked worktrees. It is local to one host and state directory; use one launcher there, not a cross-machine failover. Ordinary `launch` and manual `supervise` retain their existing behavior.
+
+
+
+
 ## Launch description
 
 `roadctl routine launch <id> [--json]` (and `roadctl launch --card ID --profile NAME [--json]`, hidden from the overview) is the one source of the command that starts an agent. It is read only and **starts nothing**: a scheduler, the conductor service (P5.25) or any other launcher reads the description and runs it, normally under [`supervise`](#run-supervisor). It prints:
