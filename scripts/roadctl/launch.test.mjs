@@ -136,6 +136,59 @@ test('opt-in refuses parallel starts and an unknown stopped run', FAKES_SKIP, wi
   assert.equal(r.roadctl(args).status, 4);
 }));
 
+test('automatic continuation rejects a manual supervised run after the first attempt', FAKES_SKIP, withRig((r) => {
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: r.ws }).status, 0);
+  const cardFile = path.join(r.board, 'cards', fs.readdirSync(path.join(r.board, 'cards')).find((x) => x.startsWith('W-1')));
+  fs.writeFileSync(cardFile, fs.readFileSync(cardFile, 'utf8').replace('status: done', 'status: doing').replace('scope=implementation,', 'scope=implementation+auto,'));
+  r.ok(['delegate', CARD, '--to', ME, '--by', 'owner@local', '--board', r.board]);
+  for (const args of [['config', 'user.name', 'Test'], ['config', 'user.email', 'test@invalid'], ['add', '.'], ['commit', '-qm', 'fixture']]) assert.equal(spawnSync('git', args, { cwd: r.ws }).status, 0);
+  const stub = path.join(r.dir, 'worker.cjs');
+  fs.writeFileSync(stub, `const cp=require('child_process'); if(process.argv[2]==='model-a'){const c=cp.spawnSync(process.execPath,[${JSON.stringify(SELF)},'claim',${JSON.stringify(CARD)},'--as',${JSON.stringify(ME)},'--board',${JSON.stringify(r.board)}],{env:process.env}); if(c.status) process.exit(c.status); const x=cp.spawnSync(process.execPath,[${JSON.stringify(SELF)},'run','escalate','--as',${JSON.stringify(ME)}],{input:JSON.stringify({did:'done',next:'continue',in_flight:'none'}),env:process.env}); process.exit(x.status)}\n`);
+  r.writeConductor({ version: 1, templates: { 'claude-code': { argv: [process.execPath, stub, '{model}'] } }, profiles: PROFILES });
+  const auto = (profile) => r.roadctl(['supervise', '--card', CARD, '--auto-profile', profile, '--board', r.board]);
+  assert.equal(auto('worker').status, 0);
+  const manual = r.roadctl(['supervise', '--card', CARD, '--as', ME, '--model', 'manual-model', '--board', r.board, '--', process.execPath, '-e', 'process.exit(0)']);
+  assert.equal(manual.status, 1, manual.stderr);
+  assert.equal(r.roadctl(['supervise', '--card', CARD, '--as', ME, '--reset', '--board', r.board]).status, 0);
+  const continued = auto('strong');
+  assert.equal(continued.status, 4, `unexpected continuation: ${continued.status}: ${continued.stderr}`);
+}));
+
+test('automatic start checks the same milestone gate as claim', FAKES_SKIP, withRig((r) => {
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: r.ws }).status, 0);
+  const cardFile = path.join(r.board, 'cards', fs.readdirSync(path.join(r.board, 'cards')).find((x) => x.startsWith('W-1')));
+  fs.writeFileSync(cardFile, fs.readFileSync(cardFile, 'utf8').replace('status: done', 'status: ready').replace('scope=implementation,', 'scope=implementation+auto,'));
+  r.ok(['delegate', CARD, '--to', ME, '--by', 'owner@local', '--board', r.board]);
+  const milestones = path.join(r.board, 'milestones'); fs.mkdirSync(milestones);
+  for (const id of ['one', 'two']) fs.writeFileSync(path.join(milestones, `${id}.md`), `---\nid: ${id}\ncards: W-2\nmilestone_waiting: true\n---\n`);
+  const marker = path.join(r.dir, 'model-started');
+  const stub = path.join(r.dir, 'worker.cjs'); fs.writeFileSync(stub, `require('fs').writeFileSync(${JSON.stringify(marker)}, 'started');\n`);
+  r.writeConductor({ version: 1, templates: { 'claude-code': { argv: [process.execPath, stub] } }, profiles: PROFILES });
+  assert.equal(r.roadctl(['claim', CARD, '--as', ME, '--board', r.board]).status, 1);
+  const result = r.roadctl(['supervise', '--card', CARD, '--auto-profile', 'worker', '--board', r.board]);
+  assert.equal(result.status, 4, `model should not start: ${result.status}, ${result.stderr}`);
+  assert.equal(fs.existsSync(marker), false);
+}));
+
+test('a pre-existing delegation can be taken when the queue autonomy switch is off', FAKES_SKIP, withRig((r) => {
+  assert.equal(spawnSync('git', ['init', '-q'], { cwd: r.ws }).status, 0);
+  const file = path.join(r.board, 'cards', fs.readdirSync(path.join(r.board, 'cards')).find((x) => x.startsWith('W-1')));
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('status: done', 'status: ready').replace('scope=implementation,', 'scope=implementation+auto,').replace(/^accepted: .*\n/m, ''));
+  const config = path.join(r.board, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), autonomy: { enabled: false, agents: [], queue: [] } }));
+  r.ok(['delegate', CARD, '--to', ME, '--by', 'owner@local', '--board', r.board]);
+  r.ok(['sync', '--board', r.board]);
+  const lint = r.roadctl(['lint', '--board', r.board]); assert.equal(lint.status, 0, lint.stdout + lint.stderr);
+  for (const args of [['config', 'user.name', 'Test'], ['config', 'user.email', 'test@invalid'], ['add', '.'], ['commit', '-qm', 'fixture']]) assert.equal(spawnSync('git', args, { cwd: r.ws }).status, 0);
+  const marker = path.join(r.dir, 'started');
+  const stub = path.join(r.dir, 'worker.cjs');
+  fs.writeFileSync(stub, `const fs=require('fs'),cp=require('child_process');fs.writeFileSync(${JSON.stringify(marker)},'started');const c=cp.spawnSync(process.execPath,[${JSON.stringify(SELF)},'claim',${JSON.stringify(CARD)},'--as',${JSON.stringify(ME)},'--board',${JSON.stringify(r.board)}],{env:process.env});if(c.status)process.exit(c.status);const x=cp.spawnSync(process.execPath,[${JSON.stringify(SELF)},'run','escalate','--as',${JSON.stringify(ME)}],{input:JSON.stringify({did:'done',next:'continue',in_flight:'none'}),env:process.env});process.exit(x.status);`);
+  r.writeConductor({ version: 1, templates: { 'claude-code': { argv: [process.execPath, stub] } }, profiles: PROFILES });
+  const result = r.roadctl(['supervise', '--card', CARD, '--auto-profile', 'worker', '--board', r.board]);
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(fs.existsSync(marker)); assert.match(fs.readFileSync(file, 'utf8'), /state=claimed/);
+}));
+
 // ---------------------------------------------------------------- a1: strict MCP, max_turns, the prompt only in stdin
 
 test('P5.7 a1: routine launch for the fake claude gives a strict-MCP argv with the turn cap; the prompt is stdin only (the stub records argv and stdin)', FAKES_SKIP, withRig((r) => {

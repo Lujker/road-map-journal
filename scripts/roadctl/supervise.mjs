@@ -429,6 +429,10 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
     } catch (e) { return { code: EXIT.notStarted, text: e.message }; }
     const info = api.delegationInfo(card);
     if (info.errors.length || !info.delegate || !api.eligibility(info.delegate, d.agent, reg).ok) return { code: EXIT.notStarted, text: 'the card has no valid delegation to this agent' };
+    if (!prior) {
+      const check = api.claimable(board, card, d.agent, reg);
+      if (check.reasons?.length) return { code: EXIT.notStarted, text: `the delegation cannot be claimed: ${check.reasons.join('; ')}` };
+    }
     const { state: delegateState, ...delegation } = info.delegate;
     const delegationHash = crypto.createHash('sha256').update(JSON.stringify(delegation)).digest('hex');
     if (!prior && (delegateState !== 'open' || info.claim)) return { code: EXIT.notStarted, text: 'the initial delegation is not open' };
@@ -593,16 +597,29 @@ async function runLocked(ctx, a, t, bdir, dir, lock, started) {
 
 /** The whole run: arguments, board, lock, the run. Returns { code, text, run_id?, outcome? }. */
 export async function superviseRun(ctx, opts = {}) {
-  if (!ctx.flags['auto-profile']) return superviseRunInner(ctx, opts);
+  if (typeof ctx.flags.card !== 'string') return superviseRunInner(ctx, opts);
   if ((opts.platform ?? process.platform) === 'win32') throw new Error(WINDOWS);
   const dir = path.dirname(ctx.api.tickLedgerPath(ctx.env));
   const bdir = ctx.api.findBoard(process.cwd(), typeof ctx.flags.board === 'string' ? ctx.flags.board : undefined, ctx.env);
-  if (!bdir || typeof ctx.flags.card !== 'string') return { code: EXIT.notStarted, text: 'automatic escalation needs a board and a card' };
-  const file = `${escalationFile(dir, bdir, ctx.flags.card)}.lock`;
+  if (!bdir) return superviseRunInner(ctx, opts);
+  let stateFile;
+  try { stateFile = escalationFile(dir, bdir, ctx.flags.card); }
+  catch (e) { if (ctx.flags['auto-profile']) throw e; return superviseRunInner(ctx, opts); }
+  const file = `${stateFile}.lock`;
   const held = acquireLock(file, { staleMs: LOCK_STALE_MS, waitMs: 0, strict: true });
   if (!held.ok) return { code: EXIT.busy, text: 'the automatic escalation is already running or its lock cannot be acquired' };
   const pulse = setInterval(() => held.heartbeat(), knob(ctx.env, 'ROADCTL_SUPERVISE_HEARTBEAT_MS', 30000));
-  try { return await superviseRunInner(ctx, opts); } finally { clearInterval(pulse); held.release(); }
+  try {
+    if (!ctx.flags['auto-profile'] && !ctx.flags.reset) {
+      let state;
+      try { state = readEscalation(stateFile); } catch { state = null; }
+      if (state && state.phase !== 'invalidated') {
+        try { writeEscalation(stateFile, { ...state, phase: 'invalidated' }); }
+        catch { return { code: EXIT.notStarted, text: 'cannot invalidate the earlier automatic escalation; manual run did not start' }; }
+      }
+    }
+    return await superviseRunInner(ctx, opts);
+  } finally { clearInterval(pulse); held.release(); }
 }
 
 async function superviseRunInner(ctx, { platform = process.platform, started } = {}) {
