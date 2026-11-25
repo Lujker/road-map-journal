@@ -3067,6 +3067,57 @@ test('routine done: only the routine\'s agent; sets last_run and last_result, ap
   assert.match(logs[0], /run 5$/);
 });
 
+test('routine OFF saved after a concurrent RUN retains both without resolving other edits', () => {
+  const p = pair();
+  const run = (w, args) => p.run(w, args, '', { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 });
+  assert.equal(run(p.a, ['routine', 'new', 'mr-status', RTITLE, '--agent', ME, '--model', RMODEL, '--env', RENV, '--every', '2h']).status, 0);
+  assert.equal(run(p.a, ['routine', 'on', 'mr-status', '--by', 'Lujker', '--source', 'chat']).status, 0);
+  const initialFile = path.join(p.bd(p.a), 'routines', 'mr-status.md');
+  fs.appendFileSync(initialFile, Array.from({ length: 49 }, (_, i) => `- 2026-11-10 [agent] old ${i}\n`).join('') + '\n## Notes\nKeep spaces  \n\n');
+  assert.equal(out(run(p.a, ['save', '--json'])).status, 'pushed');
+  assert.equal(out(run(p.b, ['pull', '--json'])).status, 'pulled');
+  assert.equal(run(p.a, ['routine', 'off', 'mr-status', '--by', 'Lujker']).status, 0);
+  assert.equal(out(run(p.b, ['routine', 'done', 'mr-status', '--as', ME, '--result', 'ok', 'concurrent run', '--json'])).status, 'recorded');
+  assert.equal(out(run(p.a, ['save', '--json'])).status, 'pushed');
+  const rel = 'projects/my-app/board/routines/mr-status.md';
+  const text = g(p.server, 'show', `main:${rel}`);
+  assert.match(text, /^enabled: false$/m);
+  assert.equal((text.match(/\[Lujker\] OFF/g) ?? []).length, 1);
+  assert.equal((text.match(/RUN ok: concurrent run/g) ?? []).length, 1);
+  assert.match(execFileSync('git', ['show', `main:${rel}`], { cwd: p.server, encoding: 'utf8' }), /## Notes\nKeep spaces  \n\n$/);
+  assert.equal(out(run(p.b, ['pull', '--json'])).status, 'pulled');
+  assert.equal(run(p.a, ['routine', 'on', 'mr-status', '--by', 'Lujker']).status, 0);
+  assert.equal(out(run(p.a, ['save', '--json'])).status, 'pushed');
+  assert.equal(out(run(p.b, ['pull', '--json'])).status, 'pulled');
+  assert.equal(run(p.a, ['routine', 'off', 'mr-status', '--by', 'Lujker']).status, 0);
+  const file = path.join(p.bd(p.b), 'routines', 'mr-status.md');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('enabled: true', 'enabled: false\ntitle: changed by owner'));
+  g(p.b, 'add', '-A'); g(p.b, 'commit', '-qm', 'arbitrary edit'); g(p.b, 'push');
+  assert.equal(out(run(p.a, ['save', '--json'])).status, 'conflict');
+});
+
+test('routine OFF preserves an escalated run and a failed run that creates HOLD', () => {
+  for (const result of ['escalated', 'failed']) {
+    const p = pair();
+    const run = (w, args) => p.run(w, args, '', { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 });
+    raiseOutcome(p.bd(p.a));
+    assert.equal(run(p.a, ['routine', 'new', 'mr-status', RTITLE, '--agent', ME, '--model', RMODEL, '--env', RENV, '--every', '2h']).status, 0);
+    assert.equal(run(p.a, ['routine', 'on', 'mr-status', '--by', 'Lujker', '--source', 'chat']).status, 0);
+    assert.equal(out(run(p.a, ['save', '--json'])).status, 'pushed');
+    assert.equal(out(run(p.b, ['pull', '--json'])).status, 'pulled');
+    if (result === 'failed') for (let i = 0; i < 2; i++) assert.equal(run(p.b, ['routine', 'done', 'mr-status', '--as', ME, '--result', 'failed', `failure ${i}`]).status, 0);
+    if (result === 'failed') assert.equal(out(run(p.a, ['pull', '--json'])).status, 'pulled');
+    assert.equal(run(p.a, ['routine', 'off', 'mr-status', '--by', 'Lujker']).status, 0);
+    assert.equal(out(run(p.b, ['routine', 'done', 'mr-status', '--as', ME, '--result', result, 'concurrent', '--json'])).status, 'recorded');
+    assert.equal(out(run(p.a, ['save', '--json'])).status, 'pushed');
+    const text = g(p.server, 'show', 'main:projects/my-app/board/routines/mr-status.md');
+    assert.match(text, /^enabled: false$/m);
+    assert.equal((text.match(/\[Lujker\] OFF/g) ?? []).length, 1);
+    assert.equal((text.match(new RegExp(`RUN ${result}: concurrent`, 'g')) ?? []).length, 1);
+    if (result === 'failed') assert.match(text, /^hold: after 3 failed runs in a row$/m);
+  }
+});
+
 test('routine done publishes only the routine file: pushed from clone b, seen in clone a; a conflict keeps the run; offline stays local; uncommitted changes refuse it', () => {
   const p = pair();
   const env = { ROADCTL_REGISTRY: NOREG, ROADCTL_NOW: T0 };

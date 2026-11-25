@@ -1560,6 +1560,38 @@ const originCell = (st) => {
   return `${p.length ? p.join(', ') : 'in sync'}${st.state === 'offline' ? ' (offline)' : ''}`;
 };
 
+// Resolve only an exact owner OFF against appended run records; all other edits remain conflicts.
+function mergeRoutineOff(ctx, board, file) {
+  if (path.dirname(path.join(ctx.root, file)) !== path.join(board.dir, 'routines')) return false;
+  const entries = gitx(['ls-files', '--stage', '--', file], ctx.root);
+  const modes = entries.out.split('\n').map((line) => line.match(/^(100644|100755) [0-9a-f]+ ([123])\t/)?.[1]);
+  if (!entries.ok || modes.length !== 3 || modes.some((mode) => !mode || mode !== modes[0])) return false;
+  try { if (!fs.lstatSync(path.join(ctx.root, file)).isFile()) return false; } catch { return false; }
+  const versions = [1, 2, 3].map((stage) => spawnSync('git', ['show', `:${stage}:${file}`], { cwd: ctx.root, encoding: 'utf8' }));
+  if (versions.some((v) => v.status !== 0)) return false;
+  const [base, remote, local] = versions.map((v) => v.stdout);
+  const off = local.match(/^- \d{4}-\d\d-\d\d \[[^\]\n]+\] OFF$/gm)?.at(-1);
+  if (!off || !/^enabled: true$/m.test(base) || insertRoutineLog(setHeader(base, 'enabled', 'false'), off) !== local) return false;
+  const lines = remote.split('\n');
+  const run = /^- \d{4}-\d\d-\d\d \[[^\]\n]+\] RUN (?:ok|failed|escalated): /;
+  const hold = /^- \d{4}-\d\d-\d\d \[[^\]\n]+\] HOLD: /;
+  const withoutRunHeaders = (text) => text.replace(/^---\n[\s\S]*?\n---/,
+    (h) => h.replace(/^(?:last_run|last_result|last_reason|fails|hold|hold_id): .*\n/gm, ''));
+  const matches = lines.some((line, i) => {
+    if (!run.test(line)) return false;
+    let candidate = insertRoutineLog(base, line);
+    if (hold.test(lines[i + 1] ?? '')) candidate = insertRoutineLog(candidate, lines[i + 1]);
+    return withoutRunHeaders(candidate) === withoutRunHeaders(remote);
+  });
+  if (!matches) return false;
+  const temp = path.join(ctx.root, path.dirname(file), `.roadctl-off-${crypto.randomBytes(12).toString('hex')}`);
+  try {
+    fs.writeFileSync(temp, insertRoutineLog(setHeader(remote, 'enabled', 'false'), off), { flag: 'wx', mode: parseInt(modes[0], 8) & 0o777 });
+    fs.renameSync(temp, path.join(ctx.root, file));
+  } catch { try { fs.unlinkSync(temp); } catch {} return false; }
+  return gitx(['add', '--', file], ctx.root).ok;
+}
+
 /** Regenerate BOARD.md after a merge when it no longer matches the cards. Returns true when it wrote the file. */
 function regenerateIfStale(dir) {
   const bf = path.join(dir, 'BOARD.md');
@@ -1581,11 +1613,11 @@ function integrate(ctx, board, timeout) {
   for (let i = 0; !r.ok && rebaseInProgress(ctx.root) && i < 30; i++) {
     const files = unmerged(ctx.root);
     const generated = files.length > 0 && files.every((x) => path.basename(x) === 'BOARD.md' && fs.existsSync(path.join(ctx.root, path.dirname(x), 'config.json')));
-    if (files.length && !generated) {
+    if (files.length && !generated && !(files.length === 1 && mergeRoutineOff(ctx, board, files[0]))) {
       gitx(['rebase', '--abort'], ctx.root);
       return { status: 'conflict', files, message: `conflict in ${files.join(', ')}; nothing was changed (the rebase was aborted); another agent edited the same text, decide with the owner` };
     }
-    for (const x of files) {
+    for (const x of generated ? files : []) {
       fs.writeFileSync(path.join(ctx.root, x), generateBoard(loadBoard(path.join(ctx.root, path.dirname(x)))));
       gitx(['add', '--', x], ctx.root);
     }
