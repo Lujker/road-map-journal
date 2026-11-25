@@ -69,16 +69,13 @@ test('P5.21 a8: checked proposal, eligible reserve, delegated report and review 
   try {
     const board = path.join(r.root, 'board');
     fs.cpSync(path.join(here, '..', '..', 'examples', 'board-example', 'board'), board, { recursive: true });
+    const config = path.join(board, 'config.json');
+    fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(fs.readFileSync(config, 'utf8')), requires: '0.13.0' }));
     const proposal = path.join(r.root, 'proposal.json');
     fs.writeFileSync(proposal, JSON.stringify({ plan: 1, cards: [{ key: 'c1', title: 'CSV export', goal: 'Export rows', criteria: [{ id: 'a2', text: 'UTF-8 BOM', check: 'test: csv' }], kind: 'fix', size: 'S', env: 'home-wsl', role: 'worker', effects: 'local files', stop_conditions: 'stop on failure', roadmap: 'P5.21' }] }));
     const check = r.run(['plan', 'check', proposal, '--board', board, '--json']);
     assert.equal(check.status, 0, check.stderr);
     assert.equal(json(check).cards[0].result, 'proposed', 'a proposal grants no permission');
-    const dangerous = JSON.parse(fs.readFileSync(proposal, 'utf8'));
-    dangerous.cards[0].effects = 'delete production data';
-    fs.writeFileSync(proposal, JSON.stringify(dangerous));
-    const unchecked = r.run(['plan', 'check', proposal, '--board', board, '--json']);
-    assert.equal(json(unchecked).cards[0].result, 'proposed', 'size S and free-text effects do not grant permission');
     r.limits();
     const candidate = r.run(['candidates', '--env', 'home-wsl', '--role', 'worker', '--json']);
     assert.equal(candidate.status, 0, candidate.stderr);
@@ -94,19 +91,42 @@ test('P5.21 a8: checked proposal, eligible reserve, delegated report and review 
     assert.equal(unknown.status, 1);
     assert.equal(json(unknown).chosen, null);
     assert.match(json(unknown).candidates.find((x) => x.agent === CODEX).reasons.join(), /limits unknown/);
-    // The already approved example card represents the owner's separate manual handoff; plan check does not apply a proposal.
+    // Materializing and approving the checked proposal is a separate manual step; plan check applies nothing.
     const call = (...args) => r.run([...args, '--board', board]);
-    const delegate = call('delegate', 'W-3', '--to', json(candidate).chosen, '--criteria', 'a2', '--by', ME);
+    const proposed = JSON.parse(fs.readFileSync(proposal, 'utf8')).cards[0];
+    assert.equal(call('new', 'P-1', proposed.title).status, 0);
+    const file = path.join(board, 'cards', fs.readdirSync(path.join(board, 'cards')).find((x) => x.startsWith('P-1-')));
+    let card = fs.readFileSync(file, 'utf8');
+    card = card.replace(/(## Goal\n)[\s\S]*?(?=\n## )/, `$1${proposed.goal}\n`)
+      .replace(/- \[ \] a1:.*$/m, `- [ ] ${proposed.criteria[0].id}: ${proposed.criteria[0].text}`);
+    fs.writeFileSync(file, card);
+    assert.match(card, new RegExp(`title: ${proposed.title}`));
+    assert.match(card, new RegExp(`- \\[ \\] ${proposed.criteria[0].id}: ${proposed.criteria[0].text}`));
+    const approve = call('approve', 'P-1', '--by', 'Owner', '--scope', 'implementation', '--source', 'test decision');
+    assert.equal(approve.status, 0, approve.stderr);
+    const delegate = call('delegate', 'P-1', '--to', json(candidate).chosen, '--criteria', 'a2', '--by', ME);
     assert.equal(delegate.status, 0, delegate.stderr);
-    const claim = call('claim', 'W-3', '--as', CODEX);
+    const claim = call('claim', 'P-1', '--as', CODEX);
     assert.equal(claim.status, 0, claim.stderr);
-    const file = path.join(board, 'cards', 'W-3-eksport-csv.md');
-    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('## Evidence\n', '## Evidence\n- a2: stub CSV check passed\n'));
-    const report = call('report', 'W-3', '--as', CODEX, 'stub CSV check passed');
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('- [ ] a2:', '- [x] a2:') + '\n## Evidence\n- a2: stub CSV check passed\n');
+    const report = call('report', 'P-1', '--as', CODEX, 'stub CSV check passed');
     assert.equal(report.status, 0, report.stderr);
-    const accept = call('accept', 'W-3', '--as', ME);
+    const accept = call('accept', 'P-1', '--as', ME);
     assert.equal(accept.status, 0, accept.stderr);
     assert.match(fs.readFileSync(file, 'utf8'), /REPORT: stub CSV check passed/);
+    // An external effect is escalated explicitly by the worker; plan check does not classify free text.
+    const unsafe = { ...proposed, key: 'c2', title: 'Delete remote data', goal: 'Delete remote data', effects: 'delete external data' };
+    fs.writeFileSync(proposal, JSON.stringify({ plan: 1, cards: [unsafe] }));
+    assert.equal(json(r.run(['plan', 'check', proposal, '--board', board, '--json'])).cards[0].result, 'proposed');
+    assert.equal(call('new', 'P-2', unsafe.title).status, 0);
+    assert.equal(call('approve', 'P-2', '--by', 'Owner', '--scope', 'implementation', '--source', 'test decision').status, 0);
+    assert.equal(call('delegate', 'P-2', '--to', CODEX, '--by', ME).status, 0);
+    assert.equal(call('claim', 'P-2', '--as', CODEX).status, 0);
+    const ask = r.run(['ask', 'P-2', '--as', CODEX, '--board', board], { input: JSON.stringify({ question: { id: 'external', kind: 'confirm', prompt: 'Delete remote data?', reason: 'outside-mandate', scope: ['external'] }, checkpoint: { did: 'no external changes', next: 'wait for owner', in_flight: 'none' } }) });
+    assert.equal(ask.status, 0, ask.stderr);
+    const unsafeFile = path.join(board, 'cards', fs.readdirSync(path.join(board, 'cards')).find((x) => x.startsWith('P-2-')));
+    assert.match(fs.readFileSync(unsafeFile, 'utf8'), /^status: blocked$/m);
+    assert.notEqual(call('report', 'P-2', '--as', CODEX, 'done').status, 0);
   } finally { r.cleanup(); }
 });
 
