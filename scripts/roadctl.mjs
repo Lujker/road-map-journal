@@ -672,12 +672,13 @@ export function ruleStale(board, card) {
 }
 
 export function workBasisStale(board, card) {
-  if (!card.header.work_deps || statusOf(board, card) !== 'doing') return false;
+  if (statusOf(board, card) !== 'doing' || !depsOf(card).length || (compareVersions(board.config.requires, '0.15.0') ?? -1) < 0) return false;
+  if (!card.header.work_deps) return true;
   try { return card.header.work_deps !== dependencyBasis(board, card); } catch { return true; }
 }
 
 export function checkpointWorkBasis(board, card) {
-  if (!card.header.work_deps) return false;
+  if (!workBasisStale(board, card)) return false;
   const byId = new Map(board.cards.map((c) => [c.header.id, c]));
   if (depsOf(card).some((id) => !depMet(board, card, id, byId))) return false;
   try {

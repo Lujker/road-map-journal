@@ -744,6 +744,8 @@ test('P5.35 a13: tick, status, autonomy, inbox and daily digest agree on deferre
 test('P5.35 a12: active claim checkpoints after its dependency changes before reporting', () => {
   const r = rig({ requires: '0.15.0', cards: false });
   r.put('A', { status: 'done', extra: 'accepted: Owner, 2026-11-01\n' });
+  r.put('OLD', { status: 'doing', extra: 'depends_on: A\n' });
+  assert.match(r.ok(['brief']).stdout, /STALE WORK \[OLD\].*checkpoint/, 'work started before the basis format fails closed');
   r.put('B', { extra: 'depends_on: A\napproved: Owner, 2026-11-01, scope=implementation\n' });
   r.ok(['delegate', 'B', '--to', 'worker', '--by', ME]); r.ok(['claim', 'B', '--as', 'worker']);
   assert.match(r.cardText('B'), /^work_deps: [a-f0-9]{64}$/m);
