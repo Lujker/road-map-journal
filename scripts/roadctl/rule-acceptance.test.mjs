@@ -7,6 +7,12 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { boardRequires, loadBoard, brief, briefJson, statusSummary, formatStatus } from '../roadctl.mjs';
 import { RULE_REQUIRES } from './rule-acceptance.mjs';
+import { approvalHash } from './approval-hash.mjs';
+
+function approvedMandate(board, level = 'L3') {
+  const raw = `---\nmandate: 1\nlevel: ${level}\nkinds: fix\nmax_size: M\nbudget: cards_per_day=2, runs_per_week=5\n---\n`;
+  fs.writeFileSync(path.join(board, 'mandate.md'), raw.replace('\n---\n', `\napproved: Owner, 2026-11-20\napproved_hash: ${approvalHash(raw)}\n---\n`));
+}
 
 test('P5.35 a8: older copies refuse boards that use rule acceptance', () => {
   const board = { requires: RULE_REQUIRES };
@@ -72,6 +78,10 @@ test('P5.35 a1: rule acceptance requires green tests, every criterion and an unb
   const content = (p = proof, mark = 'x', evidence = '- a1: tests passed') => `---\nid: A\ntitle: Alpha\nstatus: review\n---\n\n## Acceptance\n- [${mark}] a1: works\n\n## Evidence\n${evidence}\n\n## Rule Evidence\n${JSON.stringify(p)}\n`;
   const api = { compareVersions, boardRequires: (config) => boardRequires(config, RULE_REQUIRES), appendLog, loadRegistry: () => ({ providers: { test: { models: { 'model-a': ['alias-a'], 'model-b': [] } } } }) };
   fs.writeFileSync(file, content());
+  assert.match(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo).reasons[0], /mandate/);
+  approvedMandate(dir, 'L2');
+  assert.match(acceptRule(loadBoard(dir), 'A', 'orchestrator', api, repo).reasons[0], /mandate/);
+  approvedMandate(dir);
   const snapshot = ruleSnapshot(loadBoard(dir), 'A', repo);
   Object.assign(proof.tests, snapshot);
   Object.assign(proof.review, snapshot);
@@ -135,6 +145,7 @@ test('P5.35: CLI accepts a current independent review on a 0.15 copy', () => {
   fs.mkdirSync(path.join(board, 'cards'), { recursive: true });
   fs.mkdirSync(repo);
   fs.writeFileSync(path.join(board, 'config.json'), JSON.stringify({ board_version: 1, requires: RULE_REQUIRES }));
+  approvedMandate(board);
   const env = { ...process.env, HOME: dir, XDG_STATE_HOME: path.join(dir, 'state'), ROADCTL_REGISTRY: path.join(dir, 'registry.json'), GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid' };
   for (const args of [['init', '-q'], ['commit', '--allow-empty', '-qm', 'initial']]) assert.equal(spawnSync('git', args, { cwd: repo, env }).status, 0);
   fs.writeFileSync(env.ROADCTL_REGISTRY, JSON.stringify({ providers: { provider: { models: { alpha: [], beta: [] } } } }));

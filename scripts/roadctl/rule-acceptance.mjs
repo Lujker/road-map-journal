@@ -2,6 +2,7 @@
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
+import { readMandate } from './mandate.mjs';
 
 export const RULE_REQUIRES = '0.15.0';
 
@@ -44,6 +45,8 @@ export function ruleSnapshot(board, id, repo) {
 export function acceptRule(board, id, as, api, repo) {
   const refuse = (reason) => ({ ok: false, reasons: [reason] });
   if ((api.compareVersions(board.config.requires, RULE_REQUIRES) ?? -1) < 0 || api.boardRequires(board.config)) return refuse(`board must require supported roadctl ${RULE_REQUIRES} or newer`);
+  const mandate = readMandate(board, api);
+  if (!mandate || mandate.state !== 'approved' || mandate.problems.length || !['L3', 'L4'].includes(mandate.level)) return refuse('an approved, unchanged L3 or L4 mandate is required');
   if (!/^[A-Za-z0-9@._:-]+$/.test(as ?? '')) return refuse('an agent is required');
   const c = board.cards.find((x) => x.header.id === id);
   if (!c || c.errors.length) return refuse('card is missing or invalid');
