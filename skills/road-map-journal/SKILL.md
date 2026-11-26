@@ -3,7 +3,7 @@ name: road-map-journal
 description: "Use when working with a project's roadmap, development plan, queue, work journal or item status: asking what is next, continuing or resuming planned work, recording a decision, updating an item, or reconciling status with evidence. Follows the project's own conventions. Triggers include «дорожная карта», «что дальше по плану?», «продолжай разработку по плану», «запиши решение», «обнови статус пункта», «давай составим список агентов и исполнителей», «отдай F8 в автономную работу», «оставь это мне», «заведи регулярную задачу»."
 license: MIT
 metadata:
-  version: "0.4.1"
+  version: "0.4.2"
 ---
 
 # Roadmap and work journal
@@ -42,6 +42,8 @@ On a board using `roadctl` owner questions, set the board’s `requires` to at l
 For work that spans several items, agents or sessions, has a budget, or where the owner authorizes a track or continuous mode, read [Long-running work](references/long-running.md) first.
 
 When a card goes to another agent on a board with these roadctl commands, use `roadctl handoff`, a worktree per card (`roadctl worktree`), and the shared test lock (`roadctl lock`); follow [Handing work over](references/handoff.md). Without them, use the portable handoff protocol in [Long-running work](references/long-running.md) and the project's own isolation and test conventions.
+
+On a roadctl 0.16.0 board where the owner has explicitly set `"close_reviewed": true`, `accept ID --rule` may close an ordinary approved card or a card admitted by a current mandate. Close only the exact revision whose tests pass and whose final independent review, from a different known canonical model, has no blockers; every criterion still needs evidence and every dependency and approval basis must still be current. `owner_acceptance: required` and milestone decisions remain owner-only. A board without the opt-in keeps the review-then-owner-acceptance workflow. See [Handing work over](references/handoff.md) and `docs/roadctl.md`.
 
 ## Status and evidence
 

@@ -548,9 +548,9 @@ test('P5.47 a3: skill — a missing installed skill is a warning with the instal
   assert.equal(r.json(['doctor']).by('skill').status, 'warn');
   assert.match(r.json(['doctor']).by('skill').hint, /npx skills add/);
   fs.mkdirSync(path.join(r.home, '.agents', 'skills', 'road-map-journal'), { recursive: true });
-  fs.writeFileSync(path.join(r.home, '.agents', 'skills', 'road-map-journal', 'SKILL.md'), '---\nname: road-map-journal\nmetadata:\n  version: "0.4.1"\n---\n');
+  fs.writeFileSync(path.join(r.home, '.agents', 'skills', 'road-map-journal', 'SKILL.md'), '---\nname: road-map-journal\nmetadata:\n  version: "0.4.2"\n---\n');
   assert.equal(r.json(['doctor']).by('skill').status, 'ok');
-  assert.match(r.json(['doctor']).by('skill').detail, /skill road-map-journal 0\.4\.1/);
+  assert.match(r.json(['doctor']).by('skill').detail, /skill road-map-journal 0\.4\.2/);
 });
 
 test('routines: an enabled routine that cannot run, or that names an agent missing from the registry, is a warning; consistent ones are ok', () => {

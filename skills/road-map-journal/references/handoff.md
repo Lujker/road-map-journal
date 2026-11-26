@@ -15,6 +15,7 @@ For a coordinator that gives cards to other agents and for an agent that takes o
 - Run tests only through the shared lock: `roadctl lock -- <test command>`. Two runs of one project never overlap.
 - Commit in small separate commits. Do not merge into main, push, tag, `approve` or `done`; the coordinator does that after acceptance.
 - Report with `roadctl report <id> --as <you> "<SHA, test result, what is not done>"` after one Evidence line per criterion. A report without code or evidence is a claim, not a result.
+- On a board that explicitly opts in with `close_reviewed: true` and `requires: 0.16.0`, the final worker or coordinator may run `roadctl accept <id> --rule --as <agent> --repo <worktree>` after green tests and independent review of that exact revision by a different known canonical model. This applies to an ordinary owner-approved card as well as a current mandate card. Do not close when a criterion or dependency is stale, a review fix has not itself been reviewed, or `owner_acceptance: required` is present (an `accept=owner` delegation records it automatically). Closing a component card does not answer or waive a milestone decision. The digest tells each recipient once; do not send a second request for acceptance.
 - After the merge `roadctl worktree prune <id>` removes the worktree and branch; it refuses a dirty or unmerged one without `--force`, and `--force` is the owner's or coordinator's call.
 
 ## Review a card
@@ -24,7 +25,7 @@ Return the work only for: (1) a violated criterion of the card, (2) a failing te
 - At most two review rounds per card. After the second, stop and escalate any remaining blocker; only non-blocking follow-ups go to another card.
 - A second review looks only at the earlier blockers and the new diff, not at the whole card.
 - The verdict starts with one line: accept, accept with follow-ups, or return. Then each blocker with `file:line` and the scenario, then the "later" list.
-- A reviewer is read-only: no commits, no `approve`, `done` or `accept`.
+- A reviewer is read-only: no commits, no `approve`, `done` or `accept`. If a blocker is fixed, review the new revision; a PASS on the earlier revision cannot close it.
 - Prefer a reviewer from a different model family than the author when the card is risky; one reviewer is enough for the rest.
 
 ## Save limits (work and answers)
