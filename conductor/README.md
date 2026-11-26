@@ -18,7 +18,7 @@ Choose the dedicated service clone and the local launch profile in [the conducto
 Set `ROADCTL_WORKSPACE` to that clone, `board` to its board directory, and `agent` to the configured profile's agent. Use the same account, registry and `XDG_CACHE_HOME` for the limits check and both schedulers. With the schedules stopped, inspect the proposed work:
 
 ```sh
-roadctl doctor --board "$board" --as "$agent"
+ROADCTL_AS="$agent" roadctl doctor --board "$board" --agent "$agent"
 roadctl tick --board "$board" --as "$agent" --json --no-pull
 ```
 
