@@ -9,7 +9,7 @@ From the repository root, using the same account that owns the service clone and
 ```sh
 units="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 mkdir -p "$units"
-install -m 644 conductor/systemd/roadctl-conductor.{service,timer} "$units/"
+install -m 644 conductor/systemd/roadctl-conductor.service conductor/systemd/roadctl-conductor.timer "$units/"
 systemctl --user daemon-reload
 systemctl --user enable --now roadctl-conductor.timer
 systemctl --user list-timers --all roadctl-conductor.timer
