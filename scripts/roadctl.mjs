@@ -4609,7 +4609,7 @@ TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
 const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, criteriaProblems, readyMilestones, milestoneSummary, milestoneLine, ruleStale, workBasisStale, checkpointWorkBasis, depMet, withRepoLock, repoLockDead, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
-  boardRequires, compareVersions, nowMs, delegationInfo, eligibility, claimable, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits,
+  boardRequires, compareVersions, nowMs, delegationInfo, approvalBasis, scopesOf, eligibility, claimable, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits,
   async tickSnapshot(agent, boardDirs, env, io) {
     let snapshot = null;
     const code = await tickCommand({ as: agent, _boardDirs: boardDirs }, ['tick'], io, env, (t) => {

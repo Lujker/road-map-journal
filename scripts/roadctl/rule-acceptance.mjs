@@ -84,20 +84,23 @@ export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
   if (board.config.close_reviewed === true && (api.compareVersions(board.config.requires, CLOSE_REVIEWED_REQUIRES) ?? -1) < 0) return refuse(`close_reviewed needs the board to require roadctl ${CLOSE_REVIEWED_REQUIRES} or newer`);
   const closes = board.config.close_reviewed === true;
   const mandate = readMandate(board, api);
-  const mandated = mandate?.state === 'approved' && !mandate.problems.length && ['L3', 'L4'].includes(mandate.level);
-  const approved = /\bscope=[^,\n]*\bimplementation\b/.test(c.header.approved ?? '');
-  if (!approved && !mandated) return refuse('scope=implementation approval or an approved, unchanged L3 or L4 mandate is required');
+  const legacyMandate = mandate?.state === 'approved' && !mandate.problems.length && ['L3', 'L4'].includes(mandate.level);
+  const approved = api.scopesOf(c.header.approved).includes('implementation');
+  const mandated = api.approvalBasis(board, c, 'work').ok;
+  if (closes && c.header.by_mandate !== undefined && !mandated) return refuse('by_mandate is stale or the card is outside the current mandate');
+  if (closes ? !approved && !mandated : !legacyMandate) return refuse(closes ? 'scope=implementation approval or a current by_mandate admission is required' : 'an approved, unchanged L3 or L4 mandate is required');
   const st = board.config.status_map?.[c.header.status] ?? c.header.status;
+  const current = () => c.header.rule_content === ruleContent(c) && c.header.rule_deps === dependencyBasis(board, c);
   if (recheck) {
     if (!['review', 'done'].includes(st) || !c.header.rule_id) return refuse('recheck needs a prior rule acceptance in review or done');
-    if (closes && st === 'done') return refuse('card is already closed');
-    try { if (!closes && c.header.rule_content === ruleContent(c) && c.header.rule_deps === dependencyBasis(board, c)) return refuse('acceptance is already current'); } catch { /* validate dependencies below */ }
+    try { if (current() && !(closes && st === 'review')) return refuse('acceptance is already current'); } catch { /* validate dependencies below */ }
   } else {
     if (st !== 'review') return refuse('card must be in review');
     if (c.header.accepted) return refuse('card already has an acceptance');
   }
   if (!c.criteria.length || c.criteria.some((x) => x.mark !== 'x' || !c.evidence.has(x.id))) return refuse('every criterion must be marked and have evidence');
-  if (closes && c.header.owner_acceptance === 'required') return refuse('owner_acceptance is required; only the owner may close this card');
+  const delegatedToOwner = api.delegationInfo(c).delegate?.accept === 'owner';
+  if (closes && (c.header.owner_acceptance === 'required' || delegatedToOwner)) return refuse('owner_acceptance is required; only the owner may close this card');
   if (closes && c.header.owner_acceptance !== undefined) return refuse('owner_acceptance must be required when present');
   let proof;
   try { proof = JSON.parse(c.sections['Rule Evidence']); } catch { return refuse('missing or invalid Rule Evidence'); }
@@ -123,14 +126,22 @@ export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
   next = changeHeader(next, 'rule_id', crypto.randomBytes(32).toString('hex'));
   next = changeHeader(next, 'rule_deps', dependencyHash);
   next = changeHeader(next, 'rule_content', ruleContent(c));
-  if (closes) {
+  const closed = closes && st === 'review';
+  if (closed) {
     next = changeHeader(next, 'status', 'done');
     next = changeHeader(next, 'as_of', api.today());
     next = log(next, api.today(), as, `CLOSED after review: reviewer=${reviewer.agent} revision=${snapshot.revision}`);
   }
-  fs.writeFileSync(c.file, eol === '\r\n' ? next.replace(/\n/g, eol) : next);
-  if (!closes) api.appendLog(board, id, recheck ? 'RECHECKED rule acceptance' : 'ACCEPTED by rule; awaiting owner', { author: as });
-  return { ok: true, closed: closes };
+  next = eol === '\r\n' ? next.replace(/\n/g, eol) : next;
+  if (closed) {
+    const tmp = `${c.file}.${process.pid}.${crypto.randomBytes(8).toString('hex')}.tmp`;
+    try {
+      fs.writeFileSync(tmp, next, { flag: 'wx', mode: fs.statSync(c.file).mode });
+      fs.renameSync(tmp, c.file);
+    } finally { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); }
+  } else fs.writeFileSync(c.file, next);
+  if (!closed) api.appendLog(board, id, recheck ? 'RECHECKED rule acceptance' : 'ACCEPTED by rule; awaiting owner', { author: as });
+  return { ok: true, closed };
 }
 
 export default {
