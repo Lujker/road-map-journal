@@ -1,0 +1,9 @@
+[Unit]
+Description=Check the roadctl queue after each completed turn
+
+[Timer]
+OnActiveSec=1min
+OnUnitInactiveSec=5min
+
+[Install]
+WantedBy=timers.target

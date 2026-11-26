@@ -1,0 +1,9 @@
+[Unit]
+Description=Process one turn of the roadctl queue
+
+[Service]
+Type=oneshot
+SuccessExitStatus=5 6
+ExecStart=%h/.local/bin/roadctl serve --once
+# The supervisor owns the timeout for each action.
+TimeoutStartSec=infinity
