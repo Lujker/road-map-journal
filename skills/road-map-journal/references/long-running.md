@@ -47,7 +47,7 @@ Portable protocol for handing work to another agent (any host) or a script. Not 
 - **Pull from a roadctl board (the executor finds work).** `roadctl pull`, `roadctl tasks --for <agent>`, `roadctl claim`. The claim is committed and pushed alone; if it is lost (exit 1) or only local (offline, not yet exclusive), say so and do not assume you hold it.
 - **Result is data.** A report that it succeeded is not evidence: check the actual files, tests and effects. Record acceptance or the reasons to return in the project journal. On a roadctl board use `roadctl accept` or `roadctl return`, then `roadctl save`. Accept only as the allowed acceptor; the delegating agent can withdraw with `roadctl undelegate`.
 - **Isolate autonomous code work.** In a Git project use a separate worktree; without Git use the project's own isolation convention or a separate working directory. On a roadctl board pass that directory to `roadctl claim <id> --as <you> --workdir <dir>`. After an interruption compare the assigned directory with the checkpoint and verify any in-flight changes before continuing. Never overwrite or discard someone else's changes.
-- **Who may do what.** A script or cron job can delegate but never accepts. The owner alone marks an item done; `accept=owner` leaves the decision to the owner.
+- **Who may do what.** A script or cron job can delegate but never accepts. The owner marks an item done unless its board explicitly enables the 0.16 reviewed-close rule; `accept=owner` and `owner_acceptance: required` always leave the decision to the owner.
 - Instructions do not create atomicity, isolation or a spending ceiling; use the host's real mechanisms (permissions, sandbox, budgets) and say what is unknown.
 
 ## Shared checkouts

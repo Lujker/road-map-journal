@@ -4,6 +4,8 @@ Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. 
 
 ## Unreleased
 
+- Repository: roadctl 0.16.0 (P5.52) adds an owner opt-in `"close_reviewed": true`: `accept --rule` may close an ordinary explicitly approved card or a current mandate card after all criteria have Evidence, green tests and independent different-model review of the current revision. `owner_acceptance: required` and milestone decisions stay owner-only. The close records the closer, reviewer and revision; digest reports it once per recipient. Boards without the opt-in keep the old review workflow; boards using it require 0.16.0. Skill 0.4.2 documents the same handoff and freshness rules.
+
 - P5.25 adds `roadctl serve --once` and a systemd user timer. Each due routine gets a supervised run. Up to three card decisions share one orchestrator run. The [conductor instructions](conductor/README.md) cover local setup, checking a trial queue and switching to an application schedule.
 
 - P5.35: roadctl 0.15.0 adds owner-only milestone continue and move; milestone files using the new state require 0.15.0. Inbox JSON is version 3 on those boards and includes the milestone limit; older boards retain version 2. Continuing leaves cards unaccepted; moving a pending milestone does not waive its decision.
