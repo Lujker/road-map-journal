@@ -481,3 +481,28 @@ test('P5.13 format change (P5.14): VERSION 0.5.0 (notify, the summary form of th
   assert.match(rc.boardRequires({ requires: '0.5.0' }, '0.4.0'), /requires roadctl 0\.5\.0 or newer; this is 0\.4\.0/);
   assert.equal(rc.boardRequires({ requires: '0.5.0' }, rc.VERSION), null);
 });
+
+test('P5.52: reviewed closure is delivered once per recipient, separately from owner commands', () => {
+  const r = rig();
+  try {
+    const sha = 'a'.repeat(40);
+    const ownerCommands = r.digestJson(['--daily']).owner_commands;
+    const file = path.join(r.board, 'cards', 'CLOSED.md');
+    fs.writeFileSync(file, [
+      '---', 'id: CLOSED', 'title: Reviewed change', 'status: done', 'accepted: rule', '---',
+      '## Log', `- 2026-11-10 [coordinator] CLOSED after review: reviewer=reviewer@test revision=${sha}`, '',
+    ].join('\n'));
+    const preview = r.digestJson(['--dry-run']);
+    const sent = r.digestJson();
+    assert.deepEqual(preview.events, sent.events);
+    const notice = sent.events.find((event) => event.kind === 'reviewed-closure');
+    assert.equal(notice.target, 'my-app/CLOSED');
+    assert.equal(notice.agent, 'coordinator');
+    assert.equal(notice.reviewer, 'reviewer@test');
+    assert.equal(notice.revision, sha);
+    assert.match(sent.text, /closed by coordinator, reviewed by reviewer@test/);
+    assert.equal(r.digest().includes('closed by'), false);
+    assert.equal(r.digestJson(['--daily']).owner_commands, ownerCommands);
+    assert.equal(r.digestJson(['--since-state', 'another']).events.filter((e) => e.kind === notice.kind).length, 1);
+  } finally { fs.rmSync(r.dir, { recursive: true, force: true }); }
+});

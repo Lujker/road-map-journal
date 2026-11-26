@@ -281,6 +281,27 @@ function immediate({ boards, refused, env, api, now, name, dry, warn }) {
         size += blocks.at(-1).length + 1;
       }
     }
+    // A reviewed closure is a board decision. Keep its receipt even when run-event receipts expire.
+    for (const board of boards) {
+      for (const card of board.cards) {
+        if ((board.config.status_map?.[card.header.status] ?? card.header.status) !== 'done' || card.header.accepted !== 'rule') continue;
+        const closure = card.log.findLast((entry) => entry.text.startsWith('CLOSED after review: '));
+        const match = closure && /^CLOSED after review: reviewer=([A-Za-z0-9@._:-]+) revision=([0-9a-f]{40,64})$/.exec(closure.text);
+        if (!match) continue;
+        const [, reviewer, revision] = match;
+        const target = `${projectOf(board)}/${card.header.id}`;
+        const key = `@closed/${target}`;
+        const sig = hash(`${closure.date}|${closure.author}|${closure.text}`);
+        if (active[key] === sig) continue;
+        const agent = cleanText(closure.author, 80);
+        const text = String(board.config.language).startsWith('ru')
+          ? `${target}: закрыл ${agent}, ревью ${reviewer}, коммит ${revision}`
+          : `${target}: closed by ${agent}, reviewed by ${reviewer}, commit ${revision}`;
+        if (!push([text], key)) { cut++; continue; }
+        active[key] = sig;
+        shown.push({ sig: `${key}|${sig}`, kind: 'reviewed-closure', target, outcome: 'done', agent, reviewer, revision });
+      }
+    }
     // P5.3: an owner command refused in an unattended run, and (a local setting, a bridge is connected) one that did not come through the bridge: at once, once each
     const bridge = bridgeSetting(env);
     for (const r of readOwnerCommands(env, 0, now)) {
@@ -513,7 +534,7 @@ export default {
   commands: {
     digest: {
       group: 'Look', effect: 'write', hidden: true, summary: 'what to tell the owner about unattended runs: problems at once, a daily overview',
-      purpose: 'Model-free text for a scheduler to forward to the owner (a chat, mail); roadctl sends nothing itself, and an empty output means silence. Without flags: what is new since the last digest of this state name and needs attention (a routine that escalated or failed, a run that crashed, a problem the agent reported with a new key, a question for the owner), each told once; a problem that went away is one "resolved" line. Policy per routine: header `notify: problems` (default; only the above), `always` (every run, skipped ones too) or `never`. `--daily`: one line per enabled routine (last result and age; OVERDUE when it has not run for twice its `every` inside its `hours`), the crashed and skipped runs of this machine, tasks reported and the owner\'s commands of the last 24 hours. The runs of another machine arrive through git: run `roadctl pull` first. A run of the duty orchestrator (`roadctl run done`) is local to its machine. What was told is remembered per state name in the state directory and marked only after the text was produced: if the delivery fails afterwards the message is lost and the daily overview is the safety net.',
+      purpose: 'Model-free text for a scheduler to forward to the owner (a chat, mail); roadctl sends nothing itself, and an empty output means silence. Without flags: what is new since the last digest of this state name and needs attention (a routine that escalated or failed, a run that crashed, a problem the agent reported with a new key, a question for the owner), each told once; a card closed after independent review includes its closer, reviewer and commit; a problem that went away is one "resolved" line. Policy per routine: header `notify: problems` (default; only the above), `always` (every run, skipped ones too) or `never`. `--daily`: one line per enabled routine (last result and age; OVERDUE when it has not run for twice its `every` inside its `hours`), the crashed and skipped runs of this machine, tasks reported and the owner\'s commands of the last 24 hours. The runs of another machine arrive through git: run `roadctl pull` first. A run of the duty orchestrator (`roadctl run done`) is local to its machine. What was told is remembered per state name in the state directory and marked only after the text was produced: if the delivery fails afterwards the message is lost and the daily overview is the safety net.',
       usage: ['roadctl digest [--since-state NAME] [--dry-run] [--all] [--json]', 'roadctl digest --daily [--all] [--json]'],
       flags: [['--since-state NAME', 'the delivery state to use (default "default"); one name per recipient or channel'], ['--daily', 'the overview instead of the news; does not change the delivery state'], ['--dry-run', 'print what would be sent without marking it as sent'], ['--all', 'every board of the central workspace, not only this project'], ['--json', 'machine-readable output (text, events)']],
       examples: ['roadctl pull && roadctl digest --all', 'roadctl digest --daily --all', 'roadctl digest --dry-run --since-state telegram'],
