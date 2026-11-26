@@ -3,9 +3,10 @@ import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { readMandate } from './mandate.mjs';
-import { changeHeader } from './owner-questions.mjs';
+import { changeHeader, log } from './owner-questions.mjs';
 
 export const RULE_REQUIRES = '0.15.0';
+export const CLOSE_REVIEWED_REQUIRES = '0.16.0';
 
 // The registry explicitly maps known aliases to actual canonical models; ambiguity fails closed.
 export function canonicalModel(value, registry) {
@@ -26,7 +27,7 @@ export function canonicalModel(value, registry) {
 
 const deps = (card) => (card.header.depends_on ?? '').split(',').map((id) => id.trim()).filter(Boolean);
 const status = (board, card) => board.config.status_map?.[card.header.status] ?? card.header.status;
-export const ruleContent = (card) => crypto.createHash('sha256').update(JSON.stringify({ criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), proof: (card.sections['Rule Evidence'] ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', depends_on: card.header.depends_on ?? '' })).digest('hex');
+export const ruleContent = (card) => crypto.createHash('sha256').update(JSON.stringify({ criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), proof: (card.sections['Rule Evidence'] ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', ...(card.header.owner_acceptance === undefined ? {} : { owner_acceptance: card.header.owner_acceptance }), depends_on: card.header.depends_on ?? '' })).digest('hex');
 
 /** A unique acceptance id changes on each rule acceptance; dependencies are checked recursively without rewriting cards. */
 export function dependencyBasis(board, card, seen = new Set()) {
@@ -70,27 +71,34 @@ export function ruleSnapshot(board, id, repo) {
     if (!dep || dep.errors.length) throw new Error(`dependency ${id} is missing or invalid`);
     return [id, dep.header.status ?? '', dep.header.accepted ?? '', dep.header.by_mandate ?? '', dep.header.rule_id ?? '', dep.header.rule_deps ?? ''];
   });
-  const data = { revision, criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', depends_on: dependencies };
+  const data = { revision, criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', ...(card.header.owner_acceptance === undefined ? {} : { owner_acceptance: card.header.owner_acceptance }), depends_on: dependencies };
   return { revision, basis: `sha256:${crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex')}` };
 }
 
 export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
   const refuse = (reason) => ({ ok: false, reasons: [reason] });
   if ((api.compareVersions(board.config.requires, RULE_REQUIRES) ?? -1) < 0 || api.boardRequires(board.config)) return refuse(`board must require supported roadctl ${RULE_REQUIRES} or newer`);
-  const mandate = readMandate(board, api);
-  if (!mandate || mandate.state !== 'approved' || mandate.problems.length || !['L3', 'L4'].includes(mandate.level)) return refuse('an approved, unchanged L3 or L4 mandate is required');
   if (!/^[A-Za-z0-9@._:-]+$/.test(as ?? '')) return refuse('an agent is required');
   const c = board.cards.find((x) => x.header.id === id);
   if (!c || c.errors.length) return refuse('card is missing or invalid');
+  if (board.config.close_reviewed === true && (api.compareVersions(board.config.requires, CLOSE_REVIEWED_REQUIRES) ?? -1) < 0) return refuse(`close_reviewed needs the board to require roadctl ${CLOSE_REVIEWED_REQUIRES} or newer`);
+  const closes = board.config.close_reviewed === true;
+  const mandate = readMandate(board, api);
+  const mandated = mandate?.state === 'approved' && !mandate.problems.length && ['L3', 'L4'].includes(mandate.level);
+  const approved = /\bscope=[^,\n]*\bimplementation\b/.test(c.header.approved ?? '');
+  if (!approved && !mandated) return refuse('scope=implementation approval or an approved, unchanged L3 or L4 mandate is required');
   const st = board.config.status_map?.[c.header.status] ?? c.header.status;
   if (recheck) {
     if (!['review', 'done'].includes(st) || !c.header.rule_id) return refuse('recheck needs a prior rule acceptance in review or done');
-    try { if (c.header.rule_content === ruleContent(c) && c.header.rule_deps === dependencyBasis(board, c)) return refuse('acceptance is already current'); } catch { /* validate dependencies below */ }
+    if (closes && st === 'done') return refuse('card is already closed');
+    try { if (!closes && c.header.rule_content === ruleContent(c) && c.header.rule_deps === dependencyBasis(board, c)) return refuse('acceptance is already current'); } catch { /* validate dependencies below */ }
   } else {
     if (st !== 'review') return refuse('card must be in review');
     if (c.header.accepted) return refuse('card already has an acceptance');
   }
   if (!c.criteria.length || c.criteria.some((x) => x.mark !== 'x' || !c.evidence.has(x.id))) return refuse('every criterion must be marked and have evidence');
+  if (closes && c.header.owner_acceptance === 'required') return refuse('owner_acceptance is required; only the owner may close this card');
+  if (closes && c.header.owner_acceptance !== undefined) return refuse('owner_acceptance must be required when present');
   let proof;
   try { proof = JSON.parse(c.sections['Rule Evidence']); } catch { return refuse('missing or invalid Rule Evidence'); }
   if (proof?.tests?.result !== 'pass' || typeof proof.tests.command !== 'string' || !proof.tests.command.trim()) return refuse('green test record required');
@@ -115,9 +123,23 @@ export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
   next = changeHeader(next, 'rule_id', crypto.randomBytes(32).toString('hex'));
   next = changeHeader(next, 'rule_deps', dependencyHash);
   next = changeHeader(next, 'rule_content', ruleContent(c));
+  if (closes) {
+    next = changeHeader(next, 'status', 'done');
+    next = changeHeader(next, 'as_of', api.today());
+    next = log(next, api.today(), as, `CLOSED after review: reviewer=${reviewer.agent} revision=${snapshot.revision}`);
+  }
   fs.writeFileSync(c.file, eol === '\r\n' ? next.replace(/\n/g, eol) : next);
-  api.appendLog(board, id, recheck ? 'RECHECKED rule acceptance' : 'ACCEPTED by rule; awaiting owner', { author: as });
-  return { ok: true };
+  if (!closes) api.appendLog(board, id, recheck ? 'RECHECKED rule acceptance' : 'ACCEPTED by rule; awaiting owner', { author: as });
+  return { ok: true, closed: closes };
 }
 
-export default { name: 'rule-acceptance', cardSections: ['Rule Evidence'], headerKeys: ['rule_id', 'rule_deps', 'rule_content', 'work_deps'], hooks: { 'dep-satisfied'({ board, by, api }) { return { satisfied: ruleDependencySatisfied(board, by, api) }; } } };
+export default {
+  name: 'rule-acceptance', cardSections: ['Rule Evidence'], headerKeys: ['rule_id', 'rule_deps', 'rule_content', 'work_deps', 'owner_acceptance'], hooks: {
+    'dep-satisfied'({ board, by, api }) { return { satisfied: ruleDependencySatisfied(board, by, api) }; },
+    'board-lint'({ board, api }) {
+      if (board.config.close_reviewed !== undefined && typeof board.config.close_reviewed !== 'boolean') return { findings: [{ level: 'error', file: 'config.json', text: 'close_reviewed must be true or false' }] };
+      if (board.config.close_reviewed === true && (api.compareVersions(board.config.requires, CLOSE_REVIEWED_REQUIRES) ?? -1) < 0) return { findings: [{ level: 'error', file: 'config.json', text: `close_reviewed needs the board to require roadctl ${CLOSE_REVIEWED_REQUIRES} or newer` }] };
+      return {};
+    },
+  },
+};

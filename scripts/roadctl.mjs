@@ -78,7 +78,7 @@ try {
   if (e?.code !== 'ERR_MODULE_NOT_FOUND' || !/roadctl[\\/]who-takes\.mjs/.test(String(e.message))) throw e;
 }
 
-export const VERSION = '0.15.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.16.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -1788,6 +1788,7 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
   if (reasons.length) return refuse(...reasons);
   let t = ensureDelegationSection(readNorm(c));
   t = setHeader(t, 'delegate', formatDelegate(d));
+  if (accept === 'owner' && board.config.close_reviewed === true) t = setHeader(t, 'owner_acceptance', 'required');
   for (const [k, v] of basis?.header ?? []) t = setHeader(t, k, v);
   writeCard(c, t);
   appendLog(board, id, `DELEGATED to ${d.to} (host ${d.host}, criteria ${d.criteria === 'all' ? 'all' : d.criteria.join(',')}, accept ${d.accept})`, { author: by });
@@ -4431,9 +4432,9 @@ export const COMMANDS = {
   },
   accept: {
     group: 'Delegate', effect: 'write', summary: 'the acceptor takes a reported result',
-    purpose: 'The allowed acceptor (accept=by: the delegating agent; reviewer: an agent with can_accept in the registry, or any non-script agent without a registry; an agent name) takes the reported result. Never a script; accept=owner is refused because the owner accepts by hand. Removes delegate and claim; moves the card to review when every criterion has evidence, otherwise says which lack it.',
+    purpose: 'The allowed acceptor (accept=by: the delegating agent; reviewer: an agent with can_accept in the registry, or any non-script agent without a registry; an agent name) takes the reported result. Never a script; accept=owner is refused because the owner accepts by hand. Removes delegate and claim; moves the card to review when every criterion has evidence, otherwise says which lack it. With --rule, a board requiring 0.16.0 and setting close_reviewed=true closes current reviewed work; owner_acceptance: required keeps personal acceptance owner-only.',
     usage: ['roadctl accept <id> --as AGENT', 'roadctl accept <id> --rule --as AGENT --repo DIR [--snapshot]'],
-    flags: [['--as AGENT', 'the acceptor (required)'], ['--rule', 'accept by rule with recorded tests and independent review'], ['--repo DIR', 'clean repository containing the checked revision'], ['--snapshot', 'print the revision and basis for rule evidence without writing'], ['--recheck', 'recheck a stale rule acceptance using fresh test and independent review evidence']],
+    flags: [['--as AGENT', 'the acceptor (required)'], ['--rule', 'accept by rule; close when board close_reviewed=true'], ['--repo DIR', 'clean repository containing the checked revision'], ['--snapshot', 'print the revision and basis for rule evidence without writing'], ['--recheck', 'recheck a stale rule acceptance using fresh test and independent review evidence']],
     examples: ['roadctl accept P4.2 --as claude-code@home-wsl'],
     changes: 'Removes the delegate and claim headers, one Log line, and possibly the status (doing -> review). Not committed: run roadctl save.', exits: '0 ok; 1 refused (not allowed, not reported); 2 usage error, unknown card or no board found',
   },
@@ -4932,7 +4933,7 @@ async function mainRun(argv, io, audit) {
           if (flags.snapshot) return out(JSON.stringify(ruleSnapshot(board, args[1], flags.repo), null, 2)), 0;
           const r = acceptRule(board, args[1], flags.as, moduleApi(), flags.repo, { recheck: Boolean(flags.recheck) });
           if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
-          return out(`${args[1]}: ${flags.recheck ? 'rule acceptance rechecked' : 'accepted by rule; awaiting owner'}. Run roadctl save to publish`), 0;
+          return out(`${args[1]}: ${r.closed ? 'closed after review' : flags.recheck ? 'rule acceptance rechecked' : 'accepted by rule; awaiting owner'}. Run roadctl save to publish`), 0;
         }
         const r = acceptCard(board, args[1], { as: flags.as });
         if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;

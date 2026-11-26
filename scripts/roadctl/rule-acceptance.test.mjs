@@ -6,7 +6,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { boardRequires, loadBoard, brief, briefJson, statusSummary, formatStatus } from '../roadctl.mjs';
-import { RULE_REQUIRES } from './rule-acceptance.mjs';
+import { CLOSE_REVIEWED_REQUIRES, RULE_REQUIRES, ruleContent } from './rule-acceptance.mjs';
 import { approvalHash } from './approval-hash.mjs';
 
 function approvedMandate(board, level = 'L3') {
@@ -31,7 +31,7 @@ test('P5.35 a8: an old copy offers no work on a rule-acceptance board', () => {
   const oldScripts = path.join(dir, 'scripts');
   fs.cpSync(source, oldScripts, { recursive: true });
   const bin = path.join(oldScripts, 'roadctl.mjs');
-  fs.writeFileSync(bin, fs.readFileSync(bin, 'utf8').replace("export const VERSION = '0.15.0';", "export const VERSION = '0.14.0';"));
+  fs.writeFileSync(bin, fs.readFileSync(bin, 'utf8').replace("export const VERSION = '0.16.0';", "export const VERSION = '0.14.0';"));
   const r = spawnSync(process.execPath, [bin, 'tick', '--as', 'agent', '--no-pull', '--json', '--board', board], { cwd: dir, encoding: 'utf8', env: { ...process.env, HOME: dir, XDG_STATE_HOME: path.join(dir, 'state') } });
   assert.equal(r.status, 4, r.stderr);
   const result = JSON.parse(r.stdout);
@@ -141,7 +141,7 @@ test('P5.35 a10: aliases and effort cannot disguise same model; unknowns and sel
   assert.equal(canonicalModel('alias-a', { providers: { one: { models: { 'model-a': ['alias-a'], 'model-b': ['alias-a'] } } } }), null);
 });
 
-test('P5.35: CLI accepts a current independent review on a 0.15 copy', () => {
+test('P5.52: opt-in closes an existing current direct approval, preserves owner-only review, and records one close event', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rule-cli-'));
   const source = fileURLToPath(new URL('..', import.meta.url));
   const binDir = path.join(dir, 'bin');
@@ -153,13 +153,13 @@ test('P5.35: CLI accepts a current independent review on a 0.15 copy', () => {
   const repo = path.join(dir, 'repo');
   fs.mkdirSync(path.join(board, 'cards'), { recursive: true });
   fs.mkdirSync(repo);
-  fs.writeFileSync(path.join(board, 'config.json'), JSON.stringify({ board_version: 1, requires: RULE_REQUIRES }));
-  approvedMandate(board);
+  const config = path.join(board, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ board_version: 1, requires: CLOSE_REVIEWED_REQUIRES }));
   const env = { ...process.env, HOME: dir, XDG_STATE_HOME: path.join(dir, 'state'), ROADCTL_REGISTRY: path.join(dir, 'registry.json'), GIT_AUTHOR_NAME: 'Test', GIT_AUTHOR_EMAIL: 'test@example.invalid', GIT_COMMITTER_NAME: 'Test', GIT_COMMITTER_EMAIL: 'test@example.invalid' };
   for (const args of [['init', '-q'], ['commit', '--allow-empty', '-qm', 'initial']]) assert.equal(spawnSync('git', args, { cwd: repo, env }).status, 0);
   fs.writeFileSync(env.ROADCTL_REGISTRY, JSON.stringify({ providers: { provider: { models: { alpha: [], beta: [] } } } }));
   const card = path.join(board, 'cards', 'A.md');
-  const text = '---\nid: A\ntitle: Alpha\nstatus: review\nas_of: 2026-11-21\n---\n\n## Acceptance\n- [x] a1: works\n\n## Evidence\n- a1: verified\n';
+  const text = '---\nid: A\ntitle: Alpha\nstatus: review\nas_of: 2026-11-21\napproved: Owner, 2026-11-21, scope=implementation\nowner_acceptance: required\n---\n\n## Acceptance\n- [x] a1: works\n\n## Evidence\n- a1: verified\n';
   fs.writeFileSync(card, text);
   const run = (extra = []) => spawnSync(process.execPath, [bin, 'accept', 'A', '--rule', '--as', 'orchestrator', '--repo', repo, '--board', board, ...extra], { cwd: dir, env, encoding: 'utf8' });
   const snap = run(['--snapshot']);
@@ -169,7 +169,44 @@ test('P5.35: CLI accepts a current independent review on a 0.15 copy', () => {
   fs.writeFileSync(card, `${text}\n## Rule Evidence\n${JSON.stringify(proof)}\n`);
   const result = run();
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(loadBoard(board).cards[0].header.accepted, 'rule');
+  assert.equal(loadBoard(board).cards[0].header.status, 'review', 'old behavior stays review');
+  fs.writeFileSync(config, JSON.stringify({ board_version: 1, requires: CLOSE_REVIEWED_REQUIRES, close_reviewed: true }));
+  assert.match(run(['--recheck']).stderr, /only the owner may close/);
+  const withoutOwner = fs.readFileSync(card, 'utf8').replace(/^owner_acceptance: required\n/m, '');
+  fs.writeFileSync(card, withoutOwner);
+  const fresh = JSON.parse(run(['--snapshot']).stdout);
+  Object.assign(proof.tests, fresh); Object.assign(proof.review, fresh);
+  fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace(/(## Rule Evidence\n)[^\n]+/, (_, h) => h + JSON.stringify(proof)));
+  const close = run(['--recheck']);
+  assert.equal(close.status, 0, close.stderr);
+  const closed = loadBoard(board).cards[0];
+  assert.equal(closed.header.status, 'done');
+  assert.equal(closed.header.accepted, 'rule');
+  assert.match(closed.log.at(-1).text, new RegExp(`^CLOSED after review: reviewer=reviewer revision=${fresh.revision}$`));
+  assert.equal(closed.log.at(-1).author, 'orchestrator');
+  const once = fs.readFileSync(card, 'utf8');
+  assert.equal(run(['--recheck']).status, 1, 'repeat refuses');
+  assert.equal(fs.readFileSync(card, 'utf8'), once, 'repeat writes no duplicate event');
+});
+
+test('P5.52: legacy hashes stay byte-compatible; owner-only delegation remains owner-only after withdrawal', async () => {
+  const rc = await import('../roadctl.mjs');
+  const crypto = await import('node:crypto');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rule-owner-'));
+  fs.mkdirSync(path.join(dir, 'cards'));
+  fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ requires: CLOSE_REVIEWED_REQUIRES, close_reviewed: true, autonomy: { enabled: true, agents: [], queue: ['B'] } }));
+  const file = path.join(dir, 'cards', 'A.md');
+  fs.writeFileSync(file, '---\nid: A\ntitle: A\nstatus: ready\napproved: Owner, 2026-11-21, scope=implementation\n---\n\n## Acceptance\n- [x] a1: works\n\n## Evidence\n- a1: yes\n');
+  const legacy = loadBoard(dir).cards[0];
+  const expected = crypto.default.createHash('sha256').update(JSON.stringify({ criteria: legacy.criteria, evidence: legacy.sections.Evidence.trim(), proof: '', approved: legacy.header.approved, by_mandate: '', depends_on: '' })).digest('hex');
+  assert.equal(ruleContent(legacy), expected);
+  fs.writeFileSync(path.join(dir, 'cards', 'D.md'), '---\nid: D\ntitle: Done\nstatus: done\naccepted: Owner, 2026-11-20\n---\n');
+  fs.writeFileSync(path.join(dir, 'cards', 'B.md'), '---\nid: B\ntitle: B\nstatus: ready\ndepends_on: D\napproved: Owner, 2026-11-21, scope=implementation+auto\n---\n');
+  assert.equal(rc.autonomyRows(loadBoard(dir)).find((x) => x.id === 'B').eligible, true, 'ordinary owner-done dependency needs no mandate');
+  assert.equal(rc.delegateCard(loadBoard(dir), 'A', { to: 'worker', by: 'agent', accept: 'owner', registry: null }).ok, true);
+  assert.equal(loadBoard(dir).cards[0].header.owner_acceptance, 'required');
+  fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(/^delegate:.*\n/m, ''));
+  assert.equal(loadBoard(dir).cards[0].header.owner_acceptance, 'required', 'withdrawal cannot erase the owner-only decision');
 });
 
 test('P5.35 a12: real milestone return invalidates active and accepted dependency chains until fresh review', async () => {

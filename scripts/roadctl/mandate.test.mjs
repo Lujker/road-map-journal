@@ -361,16 +361,16 @@ test('P5.33 a8: lint refuses the key that would open external systems and unknow
 // ---------------------------------------------------------------- a9: an older copy takes nothing
 
 test('P5.33 a9: an older copy (a version below requires) takes nothing from the board; requires and the module follow the rule of P5.14', FAKES_SKIP, () => {
-  assert.equal(rc.VERSION, '0.15.0'); // P5.35 milestone format; the mandate itself still needs 0.8.0
+  assert.equal(rc.VERSION, '0.16.0'); // P5.52 close_reviewed format; the mandate itself still needs 0.8.0
   assert.equal(MANDATE_REQUIRES, '0.8.0');
   assert.match(rc.boardRequires({ requires: '0.8.0' }, '0.7.0'), /board requires roadctl 0\.8\.0 or newer; this is 0\.7\.0/);
   assert.equal(rc.boardRequires({ requires: '0.8.0' }), null);
   assert.equal(rc.boardRequires({}, '0.7.0'), null, 'a board that has not raised requires is not refused');
   // an older copy end to end: the board asks for more than this checkout is
-  const r = rig({ requires: '0.16.0' }); // newer than this copy
+  const r = rig({ requires: '0.17.0' }); // newer than this copy
   r.write();
   const t = r.run(['tick', '--as', ME, '--no-pull']);
-  assert.match(t.stdout, /requires: my-app: board requires roadctl 0\.16\.0 or newer/);
+  assert.match(t.stdout, /requires: my-app: board requires roadctl 0\.17\.0 or newer/);
   assert.doesNotMatch(t.stdout, /START/);
   // this copy on a board that did not raise requires: the mandate is inert and lint says why
   const old = rig({ requires: false });

@@ -90,7 +90,7 @@ function runCommand({ args, flags, api, env, out, board, journal }) {
     for (const c of cards) {
       const st = board.config.status_map?.[c.header.status] ?? c.header.status;
       if (st === 'done' && sub === 'done') continue;
-      if (st !== 'review' || c.header.accepted !== 'rule' || (sub === 'done' && (!ruleDependencySatisfied(board, c, api) || api.criteriaProblems(c).length))) throw new Error(`card ${c.header.id} is not currently accepted by rule`);
+      if (!['review', ...(sub === 'return' ? ['done'] : [])].includes(st) || c.header.accepted !== 'rule' || (sub === 'done' && (!ruleDependencySatisfied(board, c, api) || api.criteriaProblems(c).length))) throw new Error(`card ${c.header.id} is not currently accepted by rule`);
       const old = fs.readFileSync(c.file, 'utf8');
       const crlf = old.includes('\r\n');
       let updated = old.replace(/\r\n/g, '\n');
