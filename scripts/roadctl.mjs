@@ -4623,7 +4623,7 @@ const wrap = (text, indent, width = 90) => {
 
 /** The overview printed by `roadctl help`. */
 export function helpOverview() {
-  const L = ['roadctl: read and update a project board (cards in board/cards/*.md).', 'Effect marks: [read] only reads, [write] changes board files, [git] uses git/network.', ''];
+  const L = ['roadctl: read and update a project board (cards in board/cards/*.md).', 'Effect marks: [read] only reads, [write] changes board files, [git] uses git/network.'];
   for (const g of HELP_GROUPS) {
     L.push(`${g}:`);
     for (const [name, c] of Object.entries(ALL_COMMANDS)) if (c.group === g && !c.hidden) L.push(`  ${name.padEnd(22)} [${c.effect}]${' '.repeat(5 - c.effect.length)} ${c.summary}`);
