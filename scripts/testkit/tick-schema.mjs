@@ -36,7 +36,8 @@ function shape(value, where, required, optional, problems) {
 
 export function tickJsonProblems(j) {
   const problems = [];
-  if (!shape(j, 'tick', { agent: isStr, decision: (v) => TICK_DECISIONS.includes(v), limits: isObj, items: Array.isArray, sync: (v) => Array.isArray(v) && v.every(isStr), ...(j?.decision === 'paused' ? { pause: isObj } : {}) }, {}, problems)) return problems; // `pause` exists with the decision paused only (otherwise it is an unknown key)
+  if (!shape(j, 'tick', { agent: isStr, decision: (v) => TICK_DECISIONS.includes(v), limits: isObj, items: Array.isArray, sync: (v) => Array.isArray(v) && v.every(isStr), ...(j?.decision === 'paused' ? { pause: isObj } : {}) }, { prompt: (v) => typeof v === 'string', board_dirs: (v) => isObj(v) && Object.values(v).every(isStr) }, problems)) return problems; // prompt + board_dirs appear together only for --json --prompt
+  if (('prompt' in j) !== ('board_dirs' in j)) problems.push('tick: prompt and board_dirs must appear together');
   if (j.decision === 'paused') {
     shape(j.pause, 'tick.pause', { since: strOrNull, by: strOrNull, reason: strOrNull, until: strOrNull }, {}, problems);
     if (j.items.length) problems.push('tick: paused with items');

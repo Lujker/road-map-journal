@@ -31,6 +31,7 @@ roadctl pause [--reason TEXT] [--until SPAN|TIME] [--by NAME] | pause status [--
 roadctl pause --now [--reason TEXT] ...   the same, and the runs held by roadctl supervise on this machine are stopped too
 roadctl resume                    end the pause of this machine (owner only)
 roadctl supervise (--routine ID | --card ID | --orchestrator) --as AGENT [--timeout 30m] [--stdin] [--model NAME] [--detach] -- COMMAND...   run COMMAND as one supervised run: a lock for the whole run, a timeout, a check that a result was reported (see Run supervisor)
+roadctl serve --once [--json]   run one conductor turn from the local conductor.json and exit
 roadctl runs [--open] [--json] [--as AGENT] [-n 20]   the runs of routines and delegated tasks on this machine: outcome, attempt, duration, summary fields (read-only; see Run ledger)
 roadctl run begin <routine|card> --as AGENT [--run ID] | run note [RUN_ID] "text"   start a run (a second begin: exit 5) or leave a checkpoint
 roadctl run done --as AGENT --result ok|escalated|failed --did "text" [--decision T] [--problem "kind: key: text"] [--ask T] [--not-checked T]   the duty orchestrator ends its run with a summary (local; see Run summary and delivery)
@@ -771,8 +772,10 @@ The worker claims its delegation and may end its supervised attempt with `roadct
   },
   "profiles": {
     "worker": { "agent": "claude-code@home-wsl", "model": "claude-sonnet-5-5", "attempt": { "timeout": "30m", "turns": 40 }, "card": { "timeout": "2h" }, "strong": "strong" },
-    "strong": { "agent": "claude-code@home-wsl", "model": "claude-opus-5-5", "attempt": { "timeout": "45m" } }
-  }
+    "strong": { "agent": "claude-code@home-wsl", "model": "claude-opus-5-5", "attempt": { "timeout": "45m" } },
+    "orchestrator": { "agent": "openbot@home-wsl", "model": "orchestrator-model", "attempt": { "timeout": "20m", "turns": 20 } }
+  },
+  "service": { "workspace": "/home/me/services/agent-workspace", "owner_clone": "/home/me/projects/agent-workspace", "profile": "orchestrator" }
 }
 ```
 
@@ -784,9 +787,15 @@ A template is found under the agent's full name, else under its host (`claude-co
 
 `doctor` checks the file (`launch-templates`). Exit codes: 0 described, 1 refused, 2 usage error, invalid file, unknown routine or card, or no board.
 
-**Service clone (P5.29).** Besides `templates` and `profiles`, `conductor.json` may have `"service": { "workspace": "/abs/path/of/the/service/clone", "owner_clone": "/abs/path/of/the/owner/clone" }` (absolute paths; `owner_clone` is optional). Only `doctor` reads it for now (`service-clone`, see [Synchronization with the server](#synchronization-with-the-server)); the conductor service (P5.25) will start in that clone.
+**Service clone (P5.29).** Besides `templates` and `profiles`, `conductor.json` may have `"service": { "workspace": "/abs/path/of/the/service/clone", "owner_clone": "/abs/path/of/the/owner/clone", "profile": "orchestrator" }` (`workspace` and `owner_clone` are absolute; `owner_clone` is optional). `doctor` checks the clone (`service-clone`); `serve --once` requires `workspace` and `profile`. See [Synchronization with the server](#synchronization-with-the-server) and the [service/timer runbook](../conductor/README.md).
 
-**Format.** `conductor.json` is local to a machine, not part of a board: no card, routine or `config.json` key was added, so no board needs a new `requires`. `VERSION` is 0.7.0 so that a launcher can require a copy that has `routine launch`, `supervise --stdin` and `--model`.
+### One conductor turn
+
+`roadctl serve --once [--json]` runs exactly one healthy conductor turn and exits, for a system timer to call again. Its local `conductor.json` needs `service.workspace` (the separate service clone) and `service.profile` (a key in `profiles`; that profile's agent is the scheduled orchestrator). It asks `tick --json --prompt` once. Every `RUN` gets its own synchronous `supervise` call and launch description; up to three other tick decisions, including module kinds such as `RESUME`, share the exact orchestrator prompt made by `tick`. Actions therefore run strictly one at a time.
+
+One machine lock excludes a second `serve` turn. The pause is checked before every supervisor start, and `supervise` checks the board gates again under its own lock. An idle tick is a successful turn. A closed limits gate, pause, invalid launch/config, board outside `service.workspace`, or unreadable pause check starts nothing. Only environment names allowed by the launch description plus roadctl's state/config/workspace variables reach the supervised command; `conductor.json` itself is not put in the environment. The command installs no timer and has no long-loop mode.
+
+**Format.** `conductor.json` is local to a machine, not part of a board: no card, routine or `config.json` key was added, so no board needs a new `requires`. With `--json --prompt`, `tick` adds `prompt` and `board_dirs` to the JSON snapshot; plain `--json` is unchanged. `VERSION` is 0.7.0 so that a launcher can require a copy that has `routine launch`, `supervise --stdin` and `--model`.
 
 ## Plan check (`roadctl plan check`, P5.34 early slice)
 

@@ -3440,7 +3440,8 @@ export async function tickCommand(flags, args, io, env = process.env) {
     const t = { agent: shown, as: asGiven, agentExecutor: agent, decision, limits, items, sync: [...pulled, ...unreadable, ...refused, ...milestones].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
     appendTickLedger(env, { time: isoAt(), agent, decision, counts: countKinds(items), limits: { provider: limits.provider, state: limits.state }, ...(filter ? { filter } : {}) });
     await MODULE_REG.runTickHooks({ agent, decision, limits, items, sync: t.sync, boardDirs: t.boardDirs, filter, routines: loaded.flatMap((b) => { try { return routineRows(b.board).map((r) => ({ project: b.name, ...r })); } catch { return []; } }), env, api: moduleApi() }, io); // module tick hooks (seam): no-op without hooks
-    if (flags.json) out(JSON.stringify({ agent, decision, limits, items, sync: t.sync }, null, 2));
+    const serviceItems = items.filter((i) => i.kind !== 'RUN').slice(0, 3);
+    if (flags.json) out(JSON.stringify({ agent, decision, limits, items, sync: t.sync, ...(flags.prompt ? { prompt: tickPrompt({ ...t, items: serviceItems }), board_dirs: t.boardDirs } : {}) }, null, 2));
     else out(flags.prompt && decision === 'work' ? tickPrompt(t) : tickText(t));
     return TICK_EXIT[decision];
   } finally {

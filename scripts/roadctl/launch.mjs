@@ -55,6 +55,7 @@ export function validateConductor(c) {
     if (!obj(c.service)) throw new Error('"service" must be an object');
     absPath(c.service.workspace, 'service.workspace');
     if (c.service.owner_clone !== undefined) absPath(c.service.owner_clone, 'service.owner_clone');
+    if (c.service.profile !== undefined && (!(typeof c.service.profile === 'string') || !NAME_RE.test(c.service.profile))) throw new Error('service.profile must name a profile');
   }
   if (!obj(c.profiles ?? {})) throw new Error('"profiles" must be an object');
   for (const [name, p] of Object.entries(c.profiles ?? {})) {
@@ -72,6 +73,17 @@ export function validateConductor(c) {
     if (p.strong !== undefined && !(typeof p.strong === 'string' && Object.hasOwn(c.profiles, p.strong) && p.strong !== name)) throw new Error(`${w}.strong must name another profile of this file`);
   }
   return c;
+}
+
+/** One local profile for the conductor's grouped non-RUN decisions. */
+export function serviceDescription(cond, name, stdin, board, host) {
+  const p = cond.conductor.profiles?.[name];
+  if (!p) refuse(`no profile ${name} in ${cond.file}`);
+  const { key, tpl } = templateFor(cond, p.agent, host);
+  const timeout_s = span(p.attempt.timeout, `profiles.${name}.attempt.timeout`);
+  const max_turns = p.attempt.turns ?? tpl.max_turns ?? null;
+  const { argv, env } = fill(tpl, { model: p.model, mcp_config: p.mcp_config ?? tpl.mcp_config, settings: p.settings ?? tpl.settings, max_turns }, p.agent);
+  return { kind: 'orchestrator', profile: name, agent: p.agent, model: p.model, template: key, argv, stdin, env, timeout_s, max_turns, supervise_argv: ['supervise', '--orchestrator', '--as', p.agent, '--model', p.model, '--timeout', `${timeout_s}s`, '--stdin', '--board', board, '--'] };
 }
 
 /**

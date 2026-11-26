@@ -25,7 +25,8 @@ import orchestrator from './orchestrator.mjs';
 import ownerQuestions from './owner-questions.mjs';
 import ruleAcceptance from './rule-acceptance.mjs';
 import milestone from './milestone.mjs';
+import serve from './serve.mjs';
 
-export const MODULES = [probe, doctor, runLedger, pause, digest, supervise, approvalHash, launch, mandate, ownerGateModule, stats, environment, plan, checkpoint, outcomePolicy, lock, worktree, handoff, limitCheckpoint, orchestrator, ownerQuestions, ruleAcceptance, milestone];
+export const MODULES = [probe, doctor, runLedger, pause, digest, supervise, approvalHash, launch, mandate, ownerGateModule, stats, environment, plan, checkpoint, outcomePolicy, lock, worktree, handoff, limitCheckpoint, orchestrator, ownerQuestions, ruleAcceptance, milestone, serve];
 
 export const buildModuleRegistry = (opts) => ({ ...buildRegistry(MODULES, opts), ownerGate }); // P5.3: main() asks ownerGate before every command
