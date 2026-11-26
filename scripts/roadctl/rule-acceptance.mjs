@@ -33,12 +33,12 @@ function admissionFields(card, reviewedClosure) {
   return reviewedClosure && by_mandate ? { admission: [kind, size, goal] } : {};
 }
 
-export const ruleContent = (card, reviewedClosure = card.header.status === 'done' && card.header.accepted === 'rule') => crypto.createHash('sha256').update(JSON.stringify({ criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), proof: (card.sections['Rule Evidence'] ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', ...(card.header.owner_acceptance === undefined ? {} : { owner_acceptance: card.header.owner_acceptance }), depends_on: card.header.depends_on ?? '', ...admissionFields(card, reviewedClosure) })).digest('hex');
+export const ruleContent = (card, reviewedClosure = card.header.rule_admission === 'v1') => crypto.createHash('sha256').update(JSON.stringify({ criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), proof: (card.sections['Rule Evidence'] ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', ...(card.header.owner_acceptance === undefined ? {} : { owner_acceptance: card.header.owner_acceptance }), depends_on: card.header.depends_on ?? '', ...admissionFields(card, reviewedClosure) })).digest('hex');
 
 /** A unique acceptance id changes on each rule acceptance; dependencies are checked recursively without rewriting cards. */
 export function dependencyBasis(board, card, api = null, seen = new Set()) {
   if (seen.has(card.header.id)) throw new Error('dependency cycle');
-  if (status(board, card) === 'done' && card.header.accepted === 'rule' && card.header.rule_id && card.header.by_mandate !== undefined && (api?.compareVersions(board.config.requires, CLOSE_REVIEWED_REQUIRES) ?? -1) >= 0 && !api.approvalBasis(board, card, 'work').ok) throw new Error(`card ${card.header.id} is outside its current mandate admission`);
+  if (card.header.rule_admission === 'v1' && !api?.approvalBasis(board, card, 'work').ok) throw new Error(`card ${card.header.id} is outside its current mandate admission`);
   const next = new Set(seen).add(card.header.id);
   const entries = deps(card).map((id) => {
     const dep = board.cards.find((c) => c.header.id === id);
@@ -135,6 +135,7 @@ export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
   next = changeHeader(next, 'rule_id', crypto.randomBytes(32).toString('hex'));
   next = changeHeader(next, 'rule_deps', dependencyHash);
   const closed = closes && st === 'review';
+  if (closed && c.header.by_mandate) next = changeHeader(next, 'rule_admission', 'v1');
   next = changeHeader(next, 'rule_content', closed ? ruleContent(c, true) : ruleContent(c));
   if (closed) {
     next = changeHeader(next, 'status', 'done');
@@ -154,7 +155,7 @@ export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
 }
 
 export default {
-  name: 'rule-acceptance', cardSections: ['Rule Evidence'], headerKeys: ['rule_id', 'rule_deps', 'rule_content', 'work_deps', 'owner_acceptance'], hooks: {
+  name: 'rule-acceptance', cardSections: ['Rule Evidence'], headerKeys: ['rule_id', 'rule_deps', 'rule_content', 'work_deps', 'owner_acceptance', 'rule_admission'], hooks: {
     'dep-satisfied'({ board, by, api }) { return { satisfied: ruleDependencySatisfied(board, by, api) }; },
     'board-lint'({ board, api }) {
       if (board.config.close_reviewed !== undefined && typeof board.config.close_reviewed !== 'boolean') return { findings: [{ level: 'error', file: 'config.json', text: 'close_reviewed must be true or false' }] };

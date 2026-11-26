@@ -97,7 +97,7 @@ function runCommand({ args, flags, api, env, out, board, journal }) {
       updated = changeHeader(updated, 'status', sub === 'done' ? 'done' : 'doing');
       updated = changeHeader(updated, 'accepted', sub === 'done' ? `${flags.by}, ${now}` : null);
       if (sub === 'return') {
-        for (const key of ['rule_id', 'rule_deps', 'rule_content']) updated = changeHeader(updated, key, null);
+        for (const key of ['rule_id', 'rule_deps', 'rule_content', 'rule_admission']) updated = changeHeader(updated, key, null);
         updated = log(updated, now, flags.by, `RETURNED from milestone ${id}: ${flags.reason.trim()}`);
       }
       updated = changeHeader(updated, 'as_of', now);

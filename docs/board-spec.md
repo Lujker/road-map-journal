@@ -230,3 +230,5 @@ A synthetic board in Russian, written by hand following this spec: [examples/boa
 
 - **Done:** the example board passes the tool's `lint` with no errors or warnings; seeded errors are caught by the tool's tests (see [roadctl.md](roadctl.md)).
 - **Not done, by owner decision (2026-11-10):** a test with a model. Only utilities with code are tested. The intended check was that a fresh agent session given only this spec and the example can say what is next, add a Log entry to the `doing` card and decline to close a card whose criterion lacks evidence. Problems will be fixed as they appear in use.
+
+Mandate-based reviewed closure records `rule_admission: v1` to bind the reviewed kind, size and goal and recheck the mandate when resolving dependencies. A milestone return clears this record with the other rule hashes.

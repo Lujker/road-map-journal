@@ -235,6 +235,12 @@ test('P5.52: opt-in closes an existing current direct approval, preserves owner-
   fs.writeFileSync(path.join(board, 'cards', 'N.md'), '---\nid: N\ntitle: Dependent\nstatus: ready\ndepends_on: M\napproved: Owner, 2026-11-21, scope=implementation+auto\n---\n');
   const dependentEligible = () => autonomyRows(loadBoard(board)).find((x) => x.id === 'N').eligible;
   assert.equal(dependentEligible(), true, 'closed mandate result initially satisfies its dependent');
+  const configBefore = fs.readFileSync(config, 'utf8'), cardBefore = fs.readFileSync(admitted, 'utf8');
+  fs.writeFileSync(config, JSON.stringify({ ...JSON.parse(configBefore), status_map: { shipped: 'done' } }));
+  fs.writeFileSync(admitted, cardBefore.replace('status: done', 'status: shipped'));
+  assert.equal(dependentEligible(), true, 'status aliases preserve the closure proof');
+  fs.writeFileSync(config, configBefore);
+  fs.writeFileSync(admitted, cardBefore);
   const mandateFile = path.join(board, 'mandate.md'), mandateRaw = fs.readFileSync(mandateFile, 'utf8');
   fs.writeFileSync(mandateFile, mandateRaw.replace('kinds: fix', 'kinds: research'));
   assert.equal(dependentEligible(), false, 'changed mandate invalidates the dependent');
@@ -262,6 +268,8 @@ test('P5.52: legacy hashes stay byte-compatible; owner-only delegation remains o
   const legacy = loadBoard(dir).cards[0];
   const expected = crypto.default.createHash('sha256').update(JSON.stringify({ criteria: legacy.criteria, evidence: legacy.sections.Evidence.trim(), proof: '', approved: legacy.header.approved, by_mandate: '', depends_on: '' })).digest('hex');
   assert.equal(ruleContent(legacy), expected);
+  const legacyMandate = { ...legacy, header: { ...legacy.header, by_mandate: 'legacy' } };
+  assert.equal(ruleContent({ ...legacyMandate, header: { ...legacyMandate.header, status: 'done', accepted: 'rule' } }), ruleContent(legacyMandate), 'old hashes remain valid after a status transition');
   fs.writeFileSync(path.join(dir, 'cards', 'D.md'), '---\nid: D\ntitle: Done\nstatus: done\naccepted: Owner, 2026-11-20\n---\n');
   fs.writeFileSync(path.join(dir, 'cards', 'B.md'), '---\nid: B\ntitle: B\nstatus: ready\ndepends_on: D\napproved: Owner, 2026-11-21, scope=implementation+auto\n---\n');
   assert.equal(rc.autonomyRows(loadBoard(dir)).find((x) => x.id === 'B').eligible, true, 'ordinary owner-done dependency needs no mandate');
