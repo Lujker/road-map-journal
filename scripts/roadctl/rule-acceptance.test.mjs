@@ -183,6 +183,8 @@ test('P5.52: opt-in closes an existing current direct approval, preserves owner-
   Object.assign(proof.tests, fresh); Object.assign(proof.review, fresh);
   fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace(/(## Rule Evidence\n)[^\n]+/, (_, h) => h + JSON.stringify(proof)));
   assert.match(run(['--recheck']).stderr, /only the owner may close/, 'live accept=owner delegation also blocks');
+  fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace('accept=owner', 'accept=by'));
+  assert.match(run(['--recheck']).stderr, /finish the delegation/);
   fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace(/^delegate:.*\n/m, ''));
   const close = run(['--recheck']);
   assert.equal(close.status, 0, close.stderr);

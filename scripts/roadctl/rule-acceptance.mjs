@@ -101,6 +101,7 @@ export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
   if (!c.criteria.length || c.criteria.some((x) => x.mark !== 'x' || !c.evidence.has(x.id))) return refuse('every criterion must be marked and have evidence');
   const delegatedToOwner = api.delegationInfo(c).delegate?.accept === 'owner';
   if (closes && (c.header.owner_acceptance === 'required' || delegatedToOwner)) return refuse('owner_acceptance is required; only the owner may close this card');
+  if (closes && ('delegate' in c.header || 'claim' in c.header)) return refuse('finish the delegation before closing the card');
   if (closes && c.header.owner_acceptance !== undefined) return refuse('owner_acceptance must be required when present');
   let proof;
   try { proof = JSON.parse(c.sections['Rule Evidence']); } catch { return refuse('missing or invalid Rule Evidence'); }
