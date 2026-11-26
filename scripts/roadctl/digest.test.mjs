@@ -503,6 +503,8 @@ test('P5.52: reviewed closure is delivered once per recipient, separately from o
     assert.match(sent.text, /closed by coordinator, reviewed by reviewer@test/);
     assert.equal(r.digest().includes('closed by'), false);
     assert.equal(r.digestJson(['--daily']).owner_commands, ownerCommands);
+    fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace('status: done', 'status: ready').replace('accepted: rule\n', ''));
     assert.equal(r.digestJson(['--since-state', 'another']).events.filter((e) => e.kind === notice.kind).length, 1);
+    assert.equal(r.digest().includes('closed by'), false);
   } finally { fs.rmSync(r.dir, { recursive: true, force: true }); }
 });
