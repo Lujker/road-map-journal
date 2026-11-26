@@ -16,7 +16,7 @@ systemctl --user list-timers --all roadctl-conductor.timer
 journalctl --user -u roadctl-conductor.service
 ```
 
-The first turn starts one minute after the timer starts. Later turns start five minutes after the previous service turn ends. To test one turn immediately, use `systemctl --user start roadctl-conductor.service`. For operation after logout, enable lingering for the service account with `loginctl enable-linger "$USER"` if appropriate. In WSL, the distribution must also be running. For example, a Windows logon task can keep a systemd-enabled distribution running by starting `wsl.exe -d Ubuntu-22.04 --exec sleep infinity` with the user's Windows account.
+A busy or paused turn is a normal service exit. The first turn starts one minute after the timer starts. Later turns start five minutes after the previous service turn ends. To test one turn immediately, use `systemctl --user start roadctl-conductor.service`. For operation after logout, enable lingering for the service account with `loginctl enable-linger "$USER"` if appropriate. In WSL, the distribution must also be running. For example, a Windows logon task can keep a systemd-enabled distribution running by starting `wsl.exe -d Ubuntu-22.04 --exec sleep infinity` with the user's Windows account.
 
 ## Switch between the timer and an application routine
 
