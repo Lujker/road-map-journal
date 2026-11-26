@@ -1076,6 +1076,13 @@ const nextOpen = (c) => {
   return o ? `${o.id} — ${sanitize(o.text, 100)}` : null;
 };
 
+function reviewByRule(board, card) {
+  return board.config.close_reviewed === true && !card.header.owner_acceptance && delegationInfo(card).delegate?.accept !== 'owner'
+    && (scopesOf(card.header.approved).includes('implementation') || Boolean(card.header.by_mandate));
+}
+
+const reviewRuleHint = 'verify final tests and independent review, then roadctl accept <id> --rule --as AGENT --repo DIR';
+
 export function generateBoard(board, date = today()) {
   const by = (s) => board.cards.filter((c) => statusOf(board, c) === s);
   const line = (c, extra) => `- [${c.header.id}] ${sanitize(c.header.title, 80)} — ${statusOf(board, c)}${extra ? `; ${extra}` : ''}`;
@@ -1086,7 +1093,7 @@ export function generateBoard(board, date = today()) {
     out.push(`## ${name}`, ...cards.map(fmt), '');
   };
   section('Doing', by('doing'), (c) => line(c, `approved: ${approvedText(c)}${nextOpen(c) ? `; next: ${nextOpen(c)}` : ''}`));
-  section('Review', by('review'), (c) => line(c, 'awaiting owner acceptance'));
+  section('Review', by('review'), (c) => line(c, reviewByRule(board, c) ? reviewRuleHint : 'awaiting owner acceptance'));
   section('Blocked', by('blocked'), (c) => line(c, `(${sanitize(c.header.blocked, 100)})`));
   const ready = by('ready').sort((a, b) => Number(scopesOf(b.header.approved).length > 0) - Number(scopesOf(a.header.approved).length > 0));
   const counts = (names) => names.map((n) => `${n} ${by(n).length}`).join(', ');
@@ -1199,7 +1206,7 @@ export function brief(board) {
   for (const c of board.cards.filter((card) => ruleStale(board, card))) l.push(`STALE RULE [${c.header.id}]: dependency or evidence changed; impact check required`);
   for (const c of board.cards.filter((card) => workBasisStale(board, card))) l.push(`STALE WORK [${c.header.id}]: checkpoint and reassess dependency impact`);
   for (const c of by('doing')) l.push(`DOING [${c.header.id}] ${sanitize(c.header.title, 80)} | approved: ${approvedText(c)} | as_of ${sanitize(c.header.as_of, 10)}${nextOpen(c) ? ` | next ${nextOpen(c)}` : ''}`);
-  for (const c of by('review')) l.push(`REVIEW [${c.header.id}] ${sanitize(c.header.title, 80)} | ${c.header.accepted === 'rule' ? 'accepted by rule; ' : ''}awaiting owner acceptance, do not mark done`);
+  for (const c of by('review')) l.push(`REVIEW [${c.header.id}] ${sanitize(c.header.title, 80)} | ${c.header.accepted === 'rule' ? 'accepted by rule; ' : ''}${reviewByRule(board, c) ? reviewRuleHint : 'awaiting owner acceptance, do not mark done'}`);
   for (const c of by('blocked')) l.push(`BLOCKED [${c.header.id}] ${sanitize(c.header.title, 60)} | ${sanitize(c.header.blocked, 80)}`);
   const ready = by('ready').map((c) => `${c.header.id}${scopesOf(c.header.approved).length ? '*' : ''}${scopesOf(c.header.approved).includes('auto') ? 'auto' : ''}`);
   if (ready.length) l.push(`READY ${ready.join(' ')}  (* = approved; unapproved cards are not permission to start; auto = the owner allowed unattended work)`);
@@ -1250,6 +1257,7 @@ export function cardRow(board, c) {
     title: c.header.title,
     status: statusOf(board, c),
     ...(c.header.accepted === 'rule' ? { accepted: 'rule' } : {}),
+    ...(statusOf(board, c) === 'review' && reviewByRule(board, c) ? { close_reviewed: true } : {}),
     ...(ruleStale(board, c) ? { rule_stale: true } : {}),
     ...(workBasisStale(board, c) ? { work_stale: true } : {}),
     approved: scopesOf(c.header.approved),
@@ -1306,7 +1314,7 @@ export function formatStatus(summaries) {
     for (const id of s.stale_rule ?? []) out.push(`${s.project}: STALE RULE [${id}]: dependency or evidence changed; impact check required`);
     for (const id of s.stale_work ?? []) out.push(`${s.project}: STALE WORK [${id}]: checkpoint and reassess dependency impact`);
     for (const c of s.doing) out.push(`${s.project}: DOING [${c.id}] ${sanitize(c.title, 80)} | approved: ${c.approved.join('+') || 'no'}`);
-    for (const c of s.review.filter((c) => c.accepted === 'rule')) out.push(`${s.project}: REVIEW [${c.id}] ${sanitize(c.title, 80)} | accepted by rule; awaiting owner acceptance`);
+    for (const c of s.review.filter((c) => c.accepted === 'rule')) out.push(`${s.project}: REVIEW [${c.id}] ${sanitize(c.title, 80)} | accepted by rule; ${c.close_reviewed ? reviewRuleHint : 'awaiting owner acceptance'}`);
     if (s.routines?.total) out.push(`${s.project}: ROUTINES switch ${s.routines.switch ? 'on' : 'off'}, ${s.routines.total} routine(s), ${s.routines.enabled} on, due now ${s.routines.due}`);
     if (s.delegated?.length) {
       const n = s.delegations;
@@ -3233,7 +3241,7 @@ export function tickPrompt(t) {
     'Commands:',
   ];
   if (has('TAKE')) L.push(`TAKE   roadctl claim <id> --as ${A}; do what the card's Delegation section allows; roadctl report <id> --as ${A} "changed, ran, left" (or the fields the owner reads: --did "what was done" [--problem "transient|permanent|unknown: key: text"] [--ask "what you need from the owner"])`); // seam (P5.13)
-  if (has('ACCEPT')) L.push(`ACCEPT roadctl show <id> --log 10; verify; roadctl accept <id> --as ${A} or roadctl return <id> --as ${A} "what to fix"; roadctl save`);
+  if (has('ACCEPT')) L.push(`ACCEPT roadctl show <id> --log 10; verify; roadctl accept <id> --as ${A} or roadctl return <id> --as ${A} "what to fix"; after a completed handoff on a close_reviewed board, verify the final evidence and independent review, then roadctl accept <id> --rule --as ${A} --repo DIR; roadctl save`);
   if (t.items.some((i) => i.kind === 'START' && i.basis !== 'mandate')) L.push(`START  the owner put it in the autonomous queue (auto); roadctl show <id>; do it within the approved scope, or roadctl delegate <id> --to worker --by ${by} [--criteria a2,a3] [--accept reviewer]; roadctl save`);
   if (t.items.some((i) => i.kind === 'START' && i.basis === 'mandate')) L.push(`START  (basis: mandate) the owner approved the project mandate; roadctl mandate show; take the card ONLY with roadctl delegate <id> --to worker --by ${by} (it records by_mandate), never by editing its status; stay inside the kinds, size, merge and Forbidden of the mandate; tell the owner when: an owner-only command is refused, you were about to do something forbidden, the same card failed twice in a row, or a question is irreversible; roadctl save`);
   if (has('STALE')) L.push(`STALE  roadctl show <id>; if you delegated it: roadctl undelegate <id> --by ${by} "lease expired"; roadctl save; otherwise tell the owner${t.items.some((i) => i.workdir_dirty) ? '; for an item marked (workdir dirty) the last holder left uncommitted changes in its working directory: do not hand the card on before they are reconciled, tell the owner' : ''}`);
