@@ -768,7 +768,8 @@ The worker claims its delegation and may end its supervised attempt with `roadct
       "settings": "/home/me/.config/road-map-journal/claude-routines.json",
       "max_turns": 30,
       "env": ["HOME"]
-    }
+    },
+    "openbot@home-wsl": { "argv": ["openbot", "run", "stage2", "--model", "{model}"], "max_turns": 20, "env": ["HOME"] }
   },
   "profiles": {
     "worker": { "agent": "claude-code@home-wsl", "model": "claude-sonnet-5-5", "attempt": { "timeout": "30m", "turns": 40 }, "card": { "timeout": "2h" }, "strong": "strong" },
@@ -791,11 +792,11 @@ A template is found under the agent's full name, else under its host (`claude-co
 
 ### One conductor turn
 
-`roadctl serve --once [--json]` runs exactly one healthy conductor turn and exits, for a system timer to call again. Its local `conductor.json` needs `service.workspace` (the separate service clone) and `service.profile` (a key in `profiles`; that profile's agent is the scheduled orchestrator). It asks `tick --json --prompt` once. Every `RUN` gets its own synchronous `supervise` call and launch description; up to three other tick decisions, including module kinds such as `RESUME`, share the exact orchestrator prompt made by `tick`. Actions therefore run strictly one at a time.
+`roadctl serve --once [--json]` runs exactly one healthy conductor turn and exits, for a system timer to call again. Its local `conductor.json` needs `service.workspace` (the separate service clone) and `service.profile` (a key in `profiles`; that profile's agent is the scheduled orchestrator and must have a matching launch template). One internal, model-free tick covers only the boards in that service clone. Every `RUN` gets its own synchronous `supervise` call and launch description; up to three other tick decisions across all boards, including module kinds such as `RESUME`, share one exact orchestrator prompt made by `tick`. The service adds the required final `roadctl run done` instruction. Actions therefore run strictly one at a time.
 
-One machine lock excludes a second `serve` turn. The pause is checked before every supervisor start, and `supervise` checks the board gates again under its own lock. An idle tick is a successful turn. A closed limits gate, pause, invalid launch/config, board outside `service.workspace`, or unreadable pause check starts nothing. Only environment names allowed by the launch description plus roadctl's state/config/workspace variables reach the supervised command; `conductor.json` itself is not put in the environment. The command installs no timer and has no long-loop mode.
+One machine lock excludes a second `serve` turn. Before any pull, the service resolves `workspace/projects`, every project and every board and refuses a symlink that escapes the service clone; an explicit `owner_clone` that resolves to the same directory is also refused. The pause and limits gate are checked again before every supervisor start, and `supervise` checks the board gates under its own lock. An idle tick is a successful turn. A closed limits gate, pause, invalid launch/config, or unreadable pause check starts nothing. Only environment names allowed by the launch description plus roadctl's state/config/workspace variables reach the supervised command; `conductor.json` itself is not put in the environment. The command installs no timer and has no long-loop mode.
 
-**Format.** `conductor.json` is local to a machine, not part of a board: no card, routine or `config.json` key was added, so no board needs a new `requires`. With `--json --prompt`, `tick` adds `prompt` and `board_dirs` to the JSON snapshot; plain `--json` is unchanged. `VERSION` is 0.7.0 so that a launcher can require a copy that has `routine launch`, `supervise --stdin` and `--model`.
+**Format.** `conductor.json` is local to a machine, not part of a board: no card, routine or `config.json` key was added, so no board needs a new `requires`. The public `tick --json` contract is unchanged. `VERSION` is 0.7.0 so that a launcher can require a copy that has `routine launch`, `supervise --stdin` and `--model`.
 
 ## Plan check (`roadctl plan check`, P5.34 early slice)
 

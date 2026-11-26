@@ -3364,7 +3364,7 @@ function tickLedger(flags, args, out, env) {
 }
 
 /** `roadctl tick`: exit 0 work, 4 idle, 1 blocked by the reserve, 3 blocked by unknown limits, 5 busy, 6 paused, 2 usage. */
-export async function tickCommand(flags, args, io, env = process.env) {
+export async function tickCommand(flags, args, io, env = process.env, capture = null) {
   const out = (s) => io.out(`${s}\n`);
   if (flags.ledger) return tickLedger(flags, args, out, env);
   const asGiven = flags.as;
@@ -3393,7 +3393,8 @@ export async function tickCommand(flags, args, io, env = process.env) {
   try {
     const dir = flags.all ? null : findBoard(process.cwd(), typeof flags.board === 'string' ? flags.board : undefined);
     let boards;
-    if (dir) boards = [{ name: path.basename(path.dirname(dir)), dir }];
+    if (Array.isArray(flags._boardDirs)) boards = flags._boardDirs.map((dir) => ({ name: path.basename(path.dirname(dir)), dir })); // internal service snapshot: already containment-checked, never the user board list
+    else if (dir) boards = [{ name: path.basename(path.dirname(dir)), dir }];
     else {
       if (!hasBoardSources(env)) throw new Error('no board and no workspace found; run inside a project, set ROADCTL_WORKSPACE, add a board with roadctl boards add, or use --board DIR');
       boards = knownBoards(env).map((b) => ({ name: b.name, dir: b.dir }));
@@ -3438,10 +3439,10 @@ export async function tickCommand(flags, args, io, env = process.env) {
     const decision = !items.length ? 'idle' : limits.state === 'reserve' ? 'blocked-reserve' : limits.state === 'unknown' ? 'blocked-unknown' : 'work';
     const milestones = loaded.filter((b) => !boardRequires(b.board.config)).flatMap((b) => { const m = milestoneSummary(b.board); return m ? [`milestones: ${sanitize(b.name, 40)}: ${milestoneLine(m)}`] : []; });
     const t = { agent: shown, as: asGiven, agentExecutor: agent, decision, limits, items, sync: [...pulled, ...unreadable, ...refused, ...milestones].sort(), boardDirs: Object.fromEntries(boards.map((b) => [b.name, b.dir])) };
+    if (capture) capture(t);
     appendTickLedger(env, { time: isoAt(), agent, decision, counts: countKinds(items), limits: { provider: limits.provider, state: limits.state }, ...(filter ? { filter } : {}) });
     await MODULE_REG.runTickHooks({ agent, decision, limits, items, sync: t.sync, boardDirs: t.boardDirs, filter, routines: loaded.flatMap((b) => { try { return routineRows(b.board).map((r) => ({ project: b.name, ...r })); } catch { return []; } }), env, api: moduleApi() }, io); // module tick hooks (seam): no-op without hooks
-    const serviceItems = items.filter((i) => i.kind !== 'RUN').slice(0, 3);
-    if (flags.json) out(JSON.stringify({ agent, decision, limits, items, sync: t.sync, ...(flags.prompt ? { prompt: tickPrompt({ ...t, items: serviceItems }), board_dirs: t.boardDirs } : {}) }, null, 2));
+    if (flags.json) out(JSON.stringify({ agent, decision, limits, items, sync: t.sync }, null, 2));
     else out(flags.prompt && decision === 'work' ? tickPrompt(t) : tickText(t));
     return TICK_EXIT[decision];
   } finally {
@@ -4599,7 +4600,16 @@ TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
 const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, criteriaProblems, readyMilestones, milestoneSummary, milestoneLine, ruleStale, workBasisStale, checkpointWorkBasis, depMet, withRepoLock, repoLockDead, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
-  boardRequires, compareVersions, nowMs, delegationInfo, eligibility, claimable, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits, resolveAs: (name, reg) => WHO.resolveAs(name, reg) }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
+  boardRequires, compareVersions, nowMs, delegationInfo, eligibility, claimable, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits,
+  async tickSnapshot(agent, boardDirs, env, io) {
+    let snapshot = null;
+    const code = await tickCommand({ as: agent, _boardDirs: boardDirs }, ['tick'], io, env, (t) => {
+      const decisions = t.items.filter((i) => i.kind !== 'RUN').slice(0, 3);
+      snapshot = { ...t, prompt: tickPrompt({ ...t, items: decisions }) };
+    });
+    return { code, snapshot };
+  },
+  resolveAs: (name, reg) => WHO.resolveAs(name, reg) }); // P5.23: checkLimits (the limits of a candidate executor); P5.9 doctor: the second line; routineDoneWithHooks: P5.2 (the supervisor records a run that ended without a result, through the same hooks as `routine done`)
 
 const wrap = (text, indent, width = 90) => {
   const lines = [];

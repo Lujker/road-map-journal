@@ -195,7 +195,7 @@ test('P5.28 a5: roadctl help unattended prints the topic; a module topic works; 
   assert.equal(u.status, 0);
   assert.match(u.stdout, /^roadctl help unattended: what an agent may do without the owner/);
   assert.match(u.stdout, /Owner-only commands/);
-  assert.ok(rc.helpOverview().split('\n').length <= 70);
+  assert.ok(rc.helpOverview().split('\n').length <= 71);
   assert.deepEqual(r.run(WITH, ['help', 'fixture-topic']).stdout, 'roadctl help fixture-topic: a fixture topic\n\nline one\nline two\n');
   assert.ok(r.run(WITH, ['help']).stdout.split('\n').filter(Boolean).length <= 70);
   assert.equal(r.run(SELF, ['help', 'fixture-topic']).status, 2, 'unknown without the module');

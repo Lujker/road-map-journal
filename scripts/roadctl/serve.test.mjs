@@ -5,7 +5,9 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
-import { acquireServeLock, routeSnapshot, serveLockPath } from './serve.mjs';
+import * as serve from './serve.mjs?p525';
+
+const { acquireServeLock, routeSnapshot, serveLockPath, servicePrompt } = serve;
 
 const scripts = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 const ROADCTL = path.join(scripts, 'roadctl.mjs');
@@ -13,9 +15,9 @@ const EXAMPLE = path.join(scripts, '..', 'examples', 'board-example', 'board');
 
 test('P5.25 a1: every RUN is separate and up to three non-RUN decisions share one supervised prompt', async () => {
   const calls = [];
-  const snapshot = { prompt: 'real tick prompt', board_dirs: { one: '/boards/one', two: '/boards/two' }, items: [
+  const snapshot = { prompt: 'real tick prompt', boardDirs: { one: '/boards/one', two: '/boards/two' }, items: [
     { kind: 'RUN', project: 'one', id: 'r1' }, { kind: 'TAKE', project: 'one', id: 'c1' },
-    { kind: 'RUN', project: 'two', id: 'r2' }, { kind: 'ACCEPT', project: 'one', id: 'c2' },
+    { kind: 'RUN', project: 'two', id: 'r2' }, { kind: 'ACCEPT', project: 'two', id: 'c2' },
     { kind: 'START', project: 'one', id: 'c3' }, { kind: 'STALE', project: 'one', id: 'c4' },
   ] };
   const result = await routeSnapshot(snapshot, {
@@ -27,7 +29,26 @@ test('P5.25 a1: every RUN is separate and up to three non-RUN decisions share on
   assert.deepEqual(calls.map((c) => c.d.kind), ['routine', 'routine', 'orchestrator']);
   assert.deepEqual(calls.slice(0, 2).map((c) => c.d.item.id), ['r1', 'r2']);
   assert.equal(calls[2].d.stdin, 'real tick prompt');
+  assert.match(servicePrompt(calls[2].d.stdin, 'conductor@host'), /roadctl run done --as conductor@host --result ok\|escalated\|failed/);
   assert.deepEqual(result.started.map((x) => x[2]), ['r1', 'r2', 'c1', 'c2', 'c3']);
+});
+
+test('P5.25 a2 CLI: a project symlink cannot escape the service clone before tick', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-serve-symlink-'));
+  const workspace = path.join(dir, 'service');
+  const outside = path.join(dir, 'owner-project');
+  fs.mkdirSync(path.join(workspace, 'projects'), { recursive: true });
+  fs.mkdirSync(path.join(outside, 'board'), { recursive: true });
+  fs.writeFileSync(path.join(outside, 'board', 'config.json'), '{}');
+  fs.symlinkSync(outside, path.join(workspace, 'projects', 'escaped'));
+  const config = path.join(dir, 'config', 'road-map-journal');
+  fs.mkdirSync(config, { recursive: true });
+  fs.writeFileSync(path.join(config, 'conductor.json'), JSON.stringify({ templates: { 'orchestrator@test': { argv: [process.execPath, '-e', ''] } }, profiles: { service: { agent: 'orchestrator@test', model: 'fake', attempt: { timeout: '1m' } } }, service: { workspace, profile: 'service' } }), { mode: 0o600 });
+  const env = { ...process.env, HOME: dir, XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_STATE_HOME: path.join(dir, 'state'), ROADCTL_WORKSPACE: workspace, ROADCTL_REGISTRY: path.join(dir, 'missing.json') };
+  const r = spawnSync(process.execPath, [ROADCTL, 'serve', '--once'], { cwd: workspace, env, encoding: 'utf8' });
+  assert.equal(r.status, 1, r.stderr + r.stdout);
+  assert.match(r.stderr, /project escaped escapes service\.workspace/);
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test('P5.25 a2: the machine lock excludes a second turn and pause stops later starts', async () => {
@@ -41,7 +62,7 @@ test('P5.25 a2: the machine lock excludes a second turn and pause stops later st
 
   let checks = 0;
   const calls = [];
-  const result = await routeSnapshot({ board_dirs: { p: '/board' }, items: [{ kind: 'RUN', project: 'p', id: 'one' }, { kind: 'RUN', project: 'p', id: 'two' }, { kind: 'TAKE', project: 'p', id: 'c' }] }, {
+  const result = await routeSnapshot({ boardDirs: { p: '/board' }, items: [{ kind: 'RUN', project: 'p', id: 'one' }, { kind: 'RUN', project: 'p', id: 'two' }, { kind: 'TAKE', project: 'p', id: 'c' }] }, {
     profile: { agent: 'a' }, paused: () => ++checks === 2,
     describeRoutine: (item) => item, describeService: () => assert.fail('orchestrator must not start'), supervise: (d) => calls.push(d.id),
   });
