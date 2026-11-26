@@ -5,6 +5,8 @@ import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import { installFakes, isProbe, readCalls } from '../testkit/fakes.mjs';
+import { clock, shift, T0 } from '../testkit/time.mjs';
 import * as serve from './serve.mjs?p525';
 
 const { acquireServeLock, routeSnapshot, serveLockPath, servicePrompt } = serve;
@@ -91,4 +93,50 @@ test('P5.25 a1/a2 CLI: an idle real tick is a successful serve turn and leaves n
   assert.deepEqual(JSON.parse(r.stdout), { started: [], paused: false });
   assert.equal(fs.existsSync(serveLockPath(env)), false);
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('P5.25 a3 CLI: cached reserve skips the provider past normal TTL and probes after its reset', { skip: process.platform === 'win32' && 'fake executables are shell scripts' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-serve-reserve-'));
+  const workspace = path.join(dir, 'workspace');
+  const board = path.join(workspace, 'projects', 'queued', 'board');
+  const config = path.join(dir, 'config', 'road-map-journal');
+  const cache = path.join(dir, 'cache', 'road-map-journal');
+  const log = path.join(dir, 'calls.jsonl');
+  const agent = 'codex@test';
+  fs.mkdirSync(path.dirname(board), { recursive: true });
+  fs.cpSync(EXAMPLE, board, { recursive: true });
+  const boardConfig = path.join(board, 'config.json');
+  fs.writeFileSync(boardConfig, JSON.stringify({ ...JSON.parse(fs.readFileSync(boardConfig, 'utf8')), requires: '0.6.0' }));
+  fs.mkdirSync(config, { recursive: true });
+  fs.writeFileSync(path.join(config, 'conductor.json'), JSON.stringify({
+    version: 1,
+    templates: { codex: { argv: [process.execPath, '-e', ''] } },
+    profiles: { service: { agent, model: 'fake', attempt: { timeout: '1m' } } },
+    service: { workspace, profile: 'service' },
+  }), { mode: 0o600 });
+  const registry = path.join(dir, 'registry.json');
+  fs.writeFileSync(registry, JSON.stringify({ version: 1, roles: {}, agents: { [agent]: { host: 'codex', roles: ['worker'] } } }));
+  fs.mkdirSync(cache, { recursive: true });
+  fs.writeFileSync(path.join(cache, 'limits.json'), JSON.stringify({ version: 1, providers: { codex: {
+    provider: 'codex', kind: 'subscription', state: 'known', measured_at: T0, source: 'synthetic',
+    windows: [{ name: 'five_hour', used_percent: 95, resets_at: shift(120) }, { name: 'seven_day', used_percent: 20, resets_at: shift(1440) }],
+    reserve: { five_hour: 10, seven_day: 10 }, closed_until: shift(120),
+  } } }));
+  const bin = installFakes(path.join(dir, 'bin'));
+  const env = { ...process.env, ...clock(shift(30)), HOME: dir, PATH: `${bin}${path.delimiter}${process.env.PATH}`, XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_STATE_HOME: path.join(dir, 'state'), XDG_CACHE_HOME: path.join(dir, 'cache'), ROADCTL_WORKSPACE: workspace, ROADCTL_REGISTRY: registry, FAKE_LOG: log, FAKE_5H: '20' };
+  const setup = (args) => spawnSync(process.execPath, [ROADCTL, ...args, '--board', board], { cwd: workspace, env, encoding: 'utf8' });
+  assert.equal(setup(['routine', 'new', 'due', 'Due', '--agent', agent, '--model', 'fake', '--env', 'test', '--every', '30m']).status, 0);
+  assert.equal(setup(['routine', 'on', 'due', '--by', 'Owner', '--source', 'test']).status, 0);
+  assert.equal(setup(['autonomy', 'routines', 'on', '--by', 'Owner']).status, 0);
+  const run = (at) => spawnSync(process.execPath, [ROADCTL, 'serve', '--once', '--json'], { cwd: workspace, env: { ...env, ...clock(at) }, encoding: 'utf8' });
+  try {
+    const before = run(shift(30));
+    assert.equal(before.status, 1, before.stderr + before.stdout);
+    assert.equal(run(shift(90)).status, 1, 'closed_until outlives the normal ten-minute cache TTL');
+    assert.equal(readCalls(log).filter(isProbe).length, 0, 'no provider call before reset');
+    const after = run(shift(121));
+    assert.equal(readCalls(log).filter(isProbe).length, 1, 'the first turn after reset rechecks the provider once');
+    assert.equal(after.status, 1);
+    assert.match(after.stderr, /supervise: .* failed: no result/, 'the allowed fresh reading reaches the supervisor');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
