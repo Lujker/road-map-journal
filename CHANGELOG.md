@@ -4,6 +4,8 @@ Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. 
 
 ## Unreleased
 
+- P5.25 adds `roadctl serve --once` and a systemd user timer. Each due routine gets a supervised run. Up to three card decisions share one orchestrator run. The [conductor instructions](conductor/README.md) cover local setup, checking a trial queue and switching to an application schedule.
+
 - P5.35: roadctl 0.15.0 adds owner-only milestone continue and move; milestone files using the new state require 0.15.0. Inbox JSON is version 3 on those boards and includes the milestone limit; older boards retain version 2. Continuing leaves cards unaccepted; moving a pending milestone does not waive its decision.
 
 - P5.35 slice 1: rule acceptance records, version guard, review visibility and revision-bound evidence.

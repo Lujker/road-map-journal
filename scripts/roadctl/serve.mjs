@@ -130,7 +130,7 @@ export default {
       usage: ['roadctl serve --once [--json]'], flags: [['--once', 'run exactly one turn and exit'], ['--json', 'print the started actions as JSON']],
       examples: ['roadctl serve --once', 'roadctl serve --once --json'],
       changes: 'May start synchronous supervised runs and writes their normal run ledger/log state; tick may pull boards below service.workspace. No service or timer is installed.',
-      exits: '0 turn dispatched; 1 refused; 2 usage error; 4 no work; 5 another turn is running; 6 paused',
+      exits: '0 work dispatched or idle; 1 refused or reserve reached; 2 usage error; 3 unknown limits; 5 busy; 6 paused',
       run: serveCommand,
     },
   },
