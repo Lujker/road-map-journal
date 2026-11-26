@@ -4938,13 +4938,17 @@ async function mainRun(argv, io, audit) {
         if (flags.rule) {
           const { acceptRule, ruleSnapshot } = await import('./roadctl/rule-acceptance.mjs');
           if (flags.snapshot) return out(JSON.stringify(ruleSnapshot(board, args[1], flags.repo), null, 2)), 0;
-          const r = acceptRule(board, args[1], flags.as, moduleApi(), flags.repo, { recheck: Boolean(flags.recheck) });
+          const r = withRepoLock(board, () => acceptRule(loadBoard(board.dir), args[1], flags.as, moduleApi(), flags.repo, { recheck: Boolean(flags.recheck) }));
+          if (r.status === 'busy') return io.err(`${r.message}\n`), 1;
           if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
           return out(`${args[1]}: ${flags.recheck ? 'rule acceptance rechecked' : 'accepted by rule; awaiting owner'}. Run roadctl save to publish`), 0;
         }
         const r = acceptCard(board, args[1], { as: flags.as });
         if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
-        return out(`${args[1]}: accepted${r.status === 'review' ? '; every criterion has evidence, moved to review (the owner still accepts the card)' : `; stays ${r.status}; ${r.note}`}. Run roadctl save to publish`), 0;
+        const next = r.status === 'review'
+          ? `; every criterion has evidence, moved to review (${reviewByRule(board, findCard(board, args[1])) ? reviewRuleHint : 'the owner still accepts the card'})`
+          : `; stays ${r.status}; ${r.note}`;
+        return out(`${args[1]}: accepted${next}. Run roadctl save to publish`), 0;
       }
       case 'return': {
         if (!args[1] || !flags.as || !args[2]) throw new Error('usage: roadctl return <id> --as AGENT "what to fix"');
