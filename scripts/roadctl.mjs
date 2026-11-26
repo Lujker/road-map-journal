@@ -660,7 +660,7 @@ export function readyMilestones(board, { waiting = false, continued = false } = 
       if ((compareVersions(board.config.requires, '0.15.0') ?? -1) < 0) return statusOf(board, card) === 'done' || card.header.accepted === 'rule';
       if (statusOf(board, card) === 'done') {
         if (!card.header.rule_id) return true;
-        try { return card.header.rule_content === ruleContent(card) && card.header.rule_deps === dependencyBasis(board, card); } catch { return false; }
+        try { return card.header.rule_content === ruleContent(card) && card.header.rule_deps === dependencyBasis(board, card, moduleApi()); } catch { return false; }
       }
       return ruleDependencySatisfied(board, card, moduleApi());
     });
@@ -674,13 +674,13 @@ const pendingMilestoneOperation = (board) => Boolean(STATE?.milestoneTransaction
 
 export function ruleStale(board, card) {
   if (!card.header.rule_id) return false;
-  try { return card.header.rule_content !== ruleContent(card) || card.header.rule_deps !== dependencyBasis(board, card); } catch { return true; }
+  try { return card.header.rule_content !== ruleContent(card) || card.header.rule_deps !== dependencyBasis(board, card, moduleApi()); } catch { return true; }
 }
 
 export function workBasisStale(board, card) {
   if (statusOf(board, card) !== 'doing' || !depsOf(card).length || (compareVersions(board.config.requires, '0.15.0') ?? -1) < 0) return false;
   if (!card.header.work_deps) return true;
-  try { return card.header.work_deps !== dependencyBasis(board, card); } catch { return true; }
+  try { return card.header.work_deps !== dependencyBasis(board, card, moduleApi()); } catch { return true; }
 }
 
 export function checkpointWorkBasis(board, card) {
@@ -688,7 +688,7 @@ export function checkpointWorkBasis(board, card) {
   const byId = new Map(board.cards.map((c) => [c.header.id, c]));
   if (depsOf(card).some((id) => !depMet(board, card, id, byId))) return false;
   try {
-    const next = dependencyBasis(board, card);
+    const next = dependencyBasis(board, card, moduleApi());
     writeCard(card, setHeader(readNorm(card), 'work_deps', next));
     return true;
   } catch { return false; }
@@ -718,7 +718,7 @@ function depMet(board, card, id, byId) {
   if (!dc) return false;
   const status = statusOf(board, dc);
   if (status === 'done' && !dc.header.rule_id) return true;
-  if (status === 'done' && dc.header.rule_id) { try { return dc.header.rule_content === ruleContent(dc) && dc.header.rule_deps === dependencyBasis(board, dc); } catch { return false; } }
+  if (status === 'done' && dc.header.rule_id) { try { return dc.header.rule_content === ruleContent(dc) && dc.header.rule_deps === dependencyBasis(board, dc, moduleApi()); } catch { return false; } }
   return MODULE_REG.callHook('dep-satisfied', { board, card, by: dc, status, env: process.env, api: moduleApi() }).some((h) => h.value?.satisfied === true);
 }
 
@@ -1871,7 +1871,7 @@ function claimCardUnlocked(board, id, { as, lease = '2h', workdir, registry = lo
   if ((compareVersions(board.config.requires, '0.15.0') ?? -1) >= 0 && statusOf(board, c) === 'ready' && depsOf(c).length) {
     const byId = new Map(board.cards.map((x) => [x.header.id, x]));
     if (depsOf(c).some((dep) => !depMet(board, c, dep, byId))) return { status: 'refused', message: 'dependency is not currently accepted' };
-    try { workDeps = dependencyBasis(board, c); } catch { return { status: 'refused', message: 'dependency basis is not current' }; }
+    try { workDeps = dependencyBasis(board, c, moduleApi()); } catch { return { status: 'refused', message: 'dependency basis is not current' }; }
   }
   const original = fs.readFileSync(c.file);
   let t = setHeader(readNorm(c), 'delegate', formatDelegate({ ...chk.d, state: 'claimed' }));

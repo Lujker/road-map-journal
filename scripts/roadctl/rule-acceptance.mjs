@@ -30,8 +30,9 @@ const status = (board, card) => board.config.status_map?.[card.header.status] ??
 export const ruleContent = (card) => crypto.createHash('sha256').update(JSON.stringify({ criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), proof: (card.sections['Rule Evidence'] ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', ...(card.header.owner_acceptance === undefined ? {} : { owner_acceptance: card.header.owner_acceptance }), depends_on: card.header.depends_on ?? '' })).digest('hex');
 
 /** A unique acceptance id changes on each rule acceptance; dependencies are checked recursively without rewriting cards. */
-export function dependencyBasis(board, card, seen = new Set()) {
+export function dependencyBasis(board, card, api = null, seen = new Set()) {
   if (seen.has(card.header.id)) throw new Error('dependency cycle');
+  if (status(board, card) === 'done' && card.header.accepted === 'rule' && card.header.rule_id && card.header.by_mandate !== undefined && (api?.compareVersions(board.config.requires, CLOSE_REVIEWED_REQUIRES) ?? -1) >= 0 && !api.approvalBasis(board, card, 'work').ok) throw new Error(`card ${card.header.id} is outside its current mandate admission`);
   const next = new Set(seen).add(card.header.id);
   const entries = deps(card).map((id) => {
     const dep = board.cards.find((c) => c.header.id === id);
@@ -40,7 +41,7 @@ export function dependencyBasis(board, card, seen = new Set()) {
     if (st !== 'done' && !(st === 'review' && dep.header.accepted === 'rule')) throw new Error(`dependency ${id} is not accepted`);
     if (dep.header.rule_id) {
       if (dep.header.rule_content !== ruleContent(dep)) throw new Error(`dependency ${id} has stale evidence`);
-      const current = dependencyBasis(board, dep, next);
+      const current = dependencyBasis(board, dep, api, next);
       if (dep.header.rule_deps !== current) throw new Error(`dependency ${id} has stale basis`);
     } else if (st !== 'done') throw new Error(`dependency ${id} has no acceptance identity`);
     return [id, dep.header.rule_id ?? dep.header.accepted ?? 'done'];
@@ -53,7 +54,7 @@ export function ruleDependencySatisfied(board, card, api) {
   if (!mandate || mandate.state !== 'approved' || mandate.problems.length || !['L3', 'L4'].includes(mandate.level)) return false;
   if ((api.compareVersions(board.config.requires, RULE_REQUIRES) ?? -1) < 0 || api.boardRequires(board.config)) return false;
   if (card.header.accepted !== 'rule' || !/^[a-f0-9]{64}$/.test(card.header.rule_id ?? '')) return false;
-  try { return card.header.rule_content === ruleContent(card) && card.header.rule_deps === dependencyBasis(board, card); } catch { return false; }
+  try { return card.header.rule_content === ruleContent(card) && card.header.rule_deps === dependencyBasis(board, card, api); } catch { return false; }
 }
 
 export function ruleSnapshot(board, id, repo) {
@@ -90,13 +91,14 @@ export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
   if (closes && c.header.by_mandate !== undefined && !mandated) return refuse('by_mandate is stale or the card is outside the current mandate');
   if (closes ? !approved && !mandated : !legacyMandate) return refuse(closes ? 'scope=implementation approval or a current by_mandate admission is required' : 'an approved, unchanged L3 or L4 mandate is required');
   const st = board.config.status_map?.[c.header.status] ?? c.header.status;
-  const current = () => c.header.rule_content === ruleContent(c) && c.header.rule_deps === dependencyBasis(board, c);
+  const migration = closes && st === 'review' && c.header.accepted === 'rule' && Boolean(c.header.rule_id);
+  const current = () => c.header.rule_content === ruleContent(c) && c.header.rule_deps === dependencyBasis(board, c, api);
   if (recheck) {
     if (!['review', 'done'].includes(st) || !c.header.rule_id) return refuse('recheck needs a prior rule acceptance in review or done');
     try { if (current() && !(closes && st === 'review')) return refuse('acceptance is already current'); } catch { /* validate dependencies below */ }
   } else {
     if (st !== 'review') return refuse('card must be in review');
-    if (c.header.accepted) return refuse('card already has an acceptance');
+    if (c.header.accepted && !migration) return refuse('card already has an acceptance');
   }
   if (!c.criteria.length || c.criteria.some((x) => x.mark !== 'x' || !c.evidence.has(x.id))) return refuse('every criterion must be marked and have evidence');
   const delegatedToOwner = api.delegationInfo(c).delegate?.accept === 'owner';
@@ -119,11 +121,11 @@ export function acceptRule(board, id, as, api, repo, { recheck = false } = {}) {
   try { snapshot = ruleSnapshot(board, id, repo); } catch (e) { return refuse(e.message); }
   if ([proof.tests, proof.review].some((p) => p.revision !== snapshot.revision || p.basis !== snapshot.basis)) return refuse('test or review record is stale for this revision or basis');
   let dependencyHash;
-  try { dependencyHash = dependencyBasis(board, c); } catch (e) { return refuse(e.message); }
+  try { dependencyHash = dependencyBasis(board, c, api); } catch (e) { return refuse(e.message); }
   const raw = fs.readFileSync(c.file, 'utf8');
   const eol = raw.includes('\r\n') ? '\r\n' : '\n';
   let next = raw.replace(/\r\n/g, '\n');
-  if (!recheck) next = changeHeader(next, 'accepted', 'rule');
+  if (!recheck && !migration) next = changeHeader(next, 'accepted', 'rule');
   next = changeHeader(next, 'rule_id', crypto.randomBytes(32).toString('hex'));
   next = changeHeader(next, 'rule_deps', dependencyHash);
   next = changeHeader(next, 'rule_content', ruleContent(c));

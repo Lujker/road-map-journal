@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { boardRequires, loadBoard, brief, briefJson, statusSummary, formatStatus } from '../roadctl.mjs';
+import { autonomyRows, boardRequires, loadBoard, brief, briefJson, statusSummary, formatStatus } from '../roadctl.mjs';
 import { CLOSE_REVIEWED_REQUIRES, RULE_REQUIRES, ruleContent } from './rule-acceptance.mjs';
 import { approvalHash } from './approval-hash.mjs';
 
@@ -176,17 +176,17 @@ test('P5.52: opt-in closes an existing current direct approval, preserves owner-
   assert.equal(result.status, 0, result.stderr);
   assert.equal(loadBoard(board).cards[0].header.status, 'review', 'old behavior stays review');
   fs.writeFileSync(config, JSON.stringify({ board_version: 1, requires: CLOSE_REVIEWED_REQUIRES, close_reviewed: true }));
-  assert.match(run(['--recheck']).stderr, /only the owner may close/);
+  assert.match(run().stderr, /only the owner may close/);
   const withoutOwner = fs.readFileSync(card, 'utf8').replace(/^owner_acceptance: required\n/m, '').replace(/^---\n/, '---\ndelegate: to=worker host=any criteria=all by=agent accept=owner state=reported at=2026-11-21T00:00:00Z\n');
   fs.writeFileSync(card, withoutOwner);
   const fresh = JSON.parse(run(['--snapshot']).stdout);
   Object.assign(proof.tests, fresh); Object.assign(proof.review, fresh);
   fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace(/(## Rule Evidence\n)[^\n]+/, (_, h) => h + JSON.stringify(proof)));
-  assert.match(run(['--recheck']).stderr, /only the owner may close/, 'live accept=owner delegation also blocks');
+  assert.match(run().stderr, /only the owner may close/, 'live accept=owner delegation also blocks');
   fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace('accept=owner', 'accept=by'));
   assert.match(run(['--recheck']).stderr, /finish the delegation/);
   fs.writeFileSync(card, fs.readFileSync(card, 'utf8').replace(/^delegate:.*\n/m, ''));
-  const close = run(['--recheck']);
+  const close = run();
   assert.equal(close.status, 0, close.stderr);
   const closed = loadBoard(board).cards[0];
   assert.equal(closed.header.status, 'done');
@@ -221,8 +221,27 @@ test('P5.52: opt-in closes an existing current direct approval, preserves owner-
   const admittedBasis = JSON.parse(runId('M', ['--snapshot']).stdout);
   const admittedProof = { tests: { result: 'pass', command: 'node --test', ...admittedBasis }, worker: proof.worker, review: { ...proof.review, ...admittedBasis } };
   fs.writeFileSync(admitted, `${admittedText}\n## Rule Evidence\n${JSON.stringify(admittedProof)}\n`);
+  fs.writeFileSync(admitted, fs.readFileSync(admitted, 'utf8').replace('kind: fix', 'kind: research'));
+  assert.match(runId('M').stderr, /outside the current mandate|current by_mandate admission/, 'admission is rechecked after the snapshot');
+  fs.writeFileSync(admitted, fs.readFileSync(admitted, 'utf8').replace('kind: research', 'kind: fix'));
   assert.equal(runId('M').status, 0, 'current by_mandate admission closes on opt-in');
   assert.equal(loadBoard(board).cards.find((c) => c.header.id === 'M').header.status, 'done');
+
+  fs.writeFileSync(config, JSON.stringify({ board_version: 1, requires: CLOSE_REVIEWED_REQUIRES, close_reviewed: true, autonomy: { enabled: true, agents: [], queue: ['N'] } }));
+  fs.writeFileSync(path.join(board, 'cards', 'N.md'), '---\nid: N\ntitle: Dependent\nstatus: ready\ndepends_on: M\napproved: Owner, 2026-11-21, scope=implementation+auto\n---\n');
+  const dependentEligible = () => autonomyRows(loadBoard(board)).find((x) => x.id === 'N').eligible;
+  assert.equal(dependentEligible(), true, 'closed mandate result initially satisfies its dependent');
+  const mandateFile = path.join(board, 'mandate.md'), mandateRaw = fs.readFileSync(mandateFile, 'utf8');
+  fs.writeFileSync(mandateFile, mandateRaw.replace('kinds: fix', 'kinds: research'));
+  assert.equal(dependentEligible(), false, 'changed mandate invalidates the dependent');
+  fs.writeFileSync(mandateFile, mandateRaw);
+  const closedRaw = fs.readFileSync(admitted, 'utf8');
+  for (const [from, to, label] of [['kind: fix', 'kind: research', 'kind'], ['size: S', 'size: L', 'size'], ['size: S', 'size: S\ngoal: G9', 'goal']]) {
+    fs.writeFileSync(admitted, closedRaw.replace(from, to));
+    assert.equal(dependentEligible(), false, `changed ${label} invalidates the dependent`);
+  }
+  fs.writeFileSync(admitted, closedRaw);
+  assert.equal(dependentEligible(), true, 'restoring admission restores the current dependency');
 
   fs.writeFileSync(bad, fs.readFileSync(bad, 'utf8').replace('status: review', 'status: review\nby_mandate: stale'));
   assert.match(runId('B').stderr, /by_mandate is stale/, 'stale mandate marker wins over explicit approval');
