@@ -224,6 +224,10 @@ test('P5.52: opt-in closes an existing current direct approval, preserves owner-
   fs.writeFileSync(admitted, fs.readFileSync(admitted, 'utf8').replace('kind: fix', 'kind: research'));
   assert.match(runId('M').stderr, /outside the current mandate|current by_mandate admission/, 'admission is rechecked after the snapshot');
   fs.writeFileSync(admitted, fs.readFileSync(admitted, 'utf8').replace('kind: research', 'kind: fix'));
+  const reviewed = fs.readFileSync(admitted, 'utf8');
+  fs.writeFileSync(admitted, reviewed.replace('size: S', 'size: M'));
+  assert.match(runId('M').stderr, /stale for this revision or basis/, 'a different permitted size needs fresh review');
+  fs.writeFileSync(admitted, reviewed);
   assert.equal(runId('M').status, 0, 'current by_mandate admission closes on opt-in');
   assert.equal(loadBoard(board).cards.find((c) => c.header.id === 'M').header.status, 'done');
 
@@ -236,7 +240,7 @@ test('P5.52: opt-in closes an existing current direct approval, preserves owner-
   assert.equal(dependentEligible(), false, 'changed mandate invalidates the dependent');
   fs.writeFileSync(mandateFile, mandateRaw);
   const closedRaw = fs.readFileSync(admitted, 'utf8');
-  for (const [from, to, label] of [['kind: fix', 'kind: research', 'kind'], ['size: S', 'size: L', 'size'], ['size: S', 'size: S\ngoal: G9', 'goal']]) {
+  for (const [from, to, label] of [['kind: fix', 'kind: research', 'kind'], ['size: S', 'size: M', 'permitted size'], ['size: S', 'size: L', 'size'], ['size: S', 'size: S\ngoal: G9', 'goal']]) {
     fs.writeFileSync(admitted, closedRaw.replace(from, to));
     assert.equal(dependentEligible(), false, `changed ${label} invalidates the dependent`);
   }
