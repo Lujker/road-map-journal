@@ -2165,9 +2165,9 @@ ${common}
 
 1. Read the card (\`${rc} show ID --log 10\`): the Delegation section, the criteria named in \`delegate:\` and the latest REPORT entry in the Log. The report is a claim, not proof.
 2. Verify yourself: read the changed files, run the card's Checks and the project's tests, compare the result with each criterion. Do not trust numbers or statements from the report; look at the files and test output.
-3. If everything holds, run \`${rc} accept ID --as AS\`. It moves the card to review only when every criterion already has evidence; if it lists criteria without evidence, tell the delegating agent which ones, do not invent evidence.
+3. If everything holds, run \`${rc} accept ID --as AS\`. It moves the card to review only when every criterion already has evidence; if it lists criteria without evidence, tell the delegating agent which ones, do not invent evidence. On a close_reviewed board, give the coordinator your final verdict, model, run, revision and basis for the rule closure.
 4. If something is wrong or unverifiable, run \`${rc} return ID --as AS "what to fix"\` with concrete, checkable points.
-5. You only read and run checks. Never edit project files, never run done or approve (only the owner accepts a card), never commit or push project files. \`accept\` and \`return\` change the board locally; publish them with \`${rc} save\` only if the owner's standing instructions allow saving board files, otherwise tell the delegating agent to run it.
+5. You only read and run checks. Never edit project files, never run done or approve (these commands record owner actions), never commit or push project files. \`accept\` and \`return\` change the board locally; publish them with \`${rc} save\` only if the owner's standing instructions allow saving board files, otherwise tell the delegating agent to run it.
 `;
   return { 'road-worker.md': worker, 'road-reviewer.md': reviewer };
 }
@@ -2568,7 +2568,7 @@ For any task about a project's plan, roadmap, journal, backlog, task cards, stat
 
 - A project's existing plan stays where it is and keeps the project's own conventions. Do not migrate it unless the owner asks.
 - New boards, cards and plan notes do not go into the project repository. They live in the owner's agent workspace, \`${ws}/projects/<project-name>/board/\` (format: the skill's references/board.md). Ask before creating a board for a project that has none.
-- \`node ${helper} where\` prints the board for the current directory; \`brief\`, \`show <id>\`, \`log <id> "..."\` and \`lint\` work from the project's code directory. The tool never marks anything done or accepted for you.
+- \`node ${helper} where\` prints the board for the current directory; \`brief\`, \`show <id>\`, \`log <id> "..."\` and \`lint\` work from the project's code directory. On a board with close_reviewed enabled, close completed work using the verified final tests and independent review with the accept --rule command; the digest notifies the owner.
 - Commits to the workspace repository are made only when the owner asks, with one exception: the board files this skill and \`roadctl\` write (\`${ws}/projects/<project-name>/board/\`, including its notes). For those, work in the background without asking: before the first write in a session run \`node ${helper} pull\`; after a decision, a verified result or a handoff run \`node ${helper} save "<short message>"\` (it lints, commits only that board's paths, merges other agents' changes and pushes; it never forces and leaves other changed files alone). Ask only when it reports a conflict, a lint error or a refused push, or when you are unsure the change is worth recording. Being offline is not a reason to ask: the commit stays local and the next \`save\` pushes it. Never run \`approve\` or \`done\` unless the owner told you to.
 ${INSTR_END}
 `;
@@ -4939,13 +4939,17 @@ async function mainRun(argv, io, audit) {
         if (flags.rule) {
           const { acceptRule, ruleSnapshot } = await import('./roadctl/rule-acceptance.mjs');
           if (flags.snapshot) return out(JSON.stringify(ruleSnapshot(board, args[1], flags.repo), null, 2)), 0;
-          const r = acceptRule(board, args[1], flags.as, moduleApi(), flags.repo, { recheck: Boolean(flags.recheck) });
+          const r = withRepoLock(board, () => acceptRule(loadBoard(board.dir), args[1], flags.as, moduleApi(), flags.repo, { recheck: Boolean(flags.recheck) }));
+          if (r.status === 'busy') return io.err(`${r.message}\n`), 1;
           if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
           return out(`${args[1]}: ${r.closed ? 'closed after review' : flags.recheck ? 'rule acceptance rechecked' : 'accepted by rule; awaiting owner'}. Run roadctl save to publish`), 0;
         }
         const r = acceptCard(board, args[1], { as: flags.as });
         if (!r.ok) return io.err(`refused: ${r.reasons.join('; ')}\n`), 1;
-        return out(`${args[1]}: accepted${r.status === 'review' ? '; every criterion has evidence, moved to review (the owner still accepts the card)' : `; stays ${r.status}; ${r.note}`}. Run roadctl save to publish`), 0;
+        const next = r.status === 'review'
+          ? `; every criterion has evidence, moved to review (${reviewByRule(board, findCard(board, args[1])) ? reviewRuleHint : 'the owner still accepts the card'})`
+          : `; stays ${r.status}; ${r.note}`;
+        return out(`${args[1]}: accepted${next}. Run roadctl save to publish`), 0;
       }
       case 'return': {
         if (!args[1] || !flags.as || !args[2]) throw new Error('usage: roadctl return <id> --as AGENT "what to fix"');

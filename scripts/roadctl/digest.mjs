@@ -284,22 +284,25 @@ function immediate({ boards, refused, env, api, now, name, dry, warn }) {
     // A reviewed closure is a board decision. Keep its receipt even when run-event receipts expire.
     for (const board of boards) {
       for (const card of board.cards) {
-        if ((board.config.status_map?.[card.header.status] ?? card.header.status) !== 'done' || card.header.accepted !== 'rule') continue;
-        const closure = card.log.findLast((entry) => entry.text.startsWith('CLOSED after review: '));
-        const match = closure && /^CLOSED after review: reviewer=([A-Za-z0-9@._:-]+) revision=([0-9a-f]{40,64})$/.exec(closure.text);
-        if (!match) continue;
-        const [, reviewer, revision] = match;
-        const target = `${projectOf(board)}/${card.header.id}`;
-        const key = `@closed/${target}`;
-        const sig = hash(`${closure.date}|${closure.author}|${closure.text}`);
-        if (active[key] === sig) continue;
-        const agent = cleanText(closure.author, 80);
-        const text = String(board.config.language).startsWith('ru')
-          ? `${target}: закрыл ${agent}, ревью ${reviewer}, коммит ${revision}`
-          : `${target}: closed by ${agent}, reviewed by ${reviewer}, commit ${revision}`;
-        if (!push([text], key)) { cut++; continue; }
-        active[key] = sig;
-        shown.push({ sig: `${key}|${sig}`, kind: 'reviewed-closure', target, outcome: 'done', agent, reviewer, revision });
+        const counts = new Map();
+        for (const closure of card.log) {
+          const match = /^CLOSED after review: reviewer=([A-Za-z0-9@._:-]+) revision=([0-9a-f]{40,64})$/.exec(closure.text);
+          if (!match) continue;
+          const [, reviewer, revision] = match;
+          const target = `${projectOf(board)}/${card.header.id}`;
+          const sig = hash(`${closure.date}|${closure.author}|${closure.text}`);
+          const occurrence = (counts.get(sig) ?? 0) + 1;
+          counts.set(sig, occurrence);
+          const key = `@closed/${target}/${sig}`;
+          if ((active[key] ?? 0) >= occurrence) continue;
+          const agent = cleanText(closure.author, 80);
+          const text = String(board.config.language).startsWith('ru')
+            ? `${target}: закрыл ${agent}, ревью ${reviewer}, коммит ${revision}`
+            : `${target}: closed by ${agent}, reviewed by ${reviewer}, commit ${revision}`;
+          if (!push([text], key)) { cut++; continue; }
+          active[key] = occurrence;
+          shown.push({ sig: `${key}/${occurrence}`, kind: 'reviewed-closure', target, outcome: 'done', agent, reviewer, revision });
+        }
       }
     }
     // P5.3: an owner command refused in an unattended run, and (a local setting, a bridge is connected) one that did not come through the bridge: at once, once each
