@@ -163,3 +163,38 @@ test('P5.25 a5: TAKE checks the remote path before starting; local needs no ssh'
   assert.equal(gate(0), null);
   assert.equal(calls.length, before);
 });
+
+test('P5.25 a5 CLI: executor uses the route from its actual prompt', { skip: process.platform === 'win32' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-route-cli-'));
+  try {
+    const workspace = path.join(dir, 'workspace');
+    const board = path.join(workspace, 'projects', 'my-app', 'board');
+    fs.cpSync(EXAMPLE, board, { recursive: true });
+    const cfg = path.join(board, 'config.json');
+    fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg)), requires: '0.6.0' }));
+    const card = path.join(board, 'cards', 'W-3-export.md');
+    const cardPath = fs.existsSync(card) ? card : fs.readdirSync(path.join(board, 'cards')).map(x => path.join(board, 'cards', x)).find(x => fs.readFileSync(x, 'utf8').includes('id: W-3\n'));
+    const initial = fs.readFileSync(cardPath, 'utf8').replace('status: doing', 'status: doing\nenv: remote\ndelegate: to=claude-code@home-wsl host=any criteria=all by=other accept=by state=open at=2026-11-20T09:00:00Z');
+    fs.writeFileSync(cardPath, initial.replace(/\ndelegate: [^\n]+/, ''));
+    const log = path.join(dir, 'ssh.log');
+    const bin = installFakes(path.join(dir, 'bin'), { extra: { ssh: `printf '%s\\n' "$*" >> '${log}'\n[ ! -f '${dir}/unreachable' ]` } });
+    const registry = path.join(dir, 'registry.json');
+    fs.writeFileSync(registry, JSON.stringify({ version: 1, roles: {}, agents: { other: {}, 'claude-code@home-wsl': { machine: 'home-wsl', roles: ['worker', 'orchestrator'] } }, environments: { remote: { machine: 'work', placement: 'remote-access', access: [{ from: 'home-wsl', ssh: 'work-host' }] }, local: { machine: 'home-wsl', placement: 'remote-access' } } }));
+    const worker = path.join(dir, 'worker.cjs');
+    fs.writeFileSync(worker, `const fs=require('fs'), cp=require('child_process');\nconst s=fs.readFileSync(0,'utf8'); const m=s.match(/Environment access paths \\(data\\): (.*)/); if(!m) process.exit(7); const p=JSON.parse(m[1])[0]; if(p.access.via==='ssh') { if(cp.spawnSync('ssh',[p.access.ssh,'echo','safe-action']).status!==0) process.exit(8); } else if(p.access.via!=='local') process.exit(9); cp.spawnSync(process.execPath,[${JSON.stringify(ROADCTL)},'run','done','--as','claude-code@home-wsl','--result','ok','--did','fixture','--board',${JSON.stringify(board)}],{stdio:'inherit',env:process.env});`);
+    const config = path.join(dir, 'config', 'road-map-journal'); fs.mkdirSync(config, { recursive: true });
+    fs.writeFileSync(path.join(config, 'conductor.json'), JSON.stringify({ version: 1, templates: { 'claude-code@home-wsl': { argv: [process.execPath, worker] } }, profiles: { service: { agent: 'claude-code@home-wsl', model: 'fake', attempt: { timeout: '1m' } } }, service: { workspace, profile: 'service' } }), { mode: 0o600 });
+    const env = { ...process.env, ...clock(), HOME: dir, PATH: `${bin}${path.delimiter}${process.env.PATH}`, XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_STATE_HOME: path.join(dir, 'state'), XDG_CACHE_HOME: path.join(dir, 'cache'), ROADCTL_WORKSPACE: workspace, ROADCTL_REGISTRY: registry, FAKE_LOG: path.join(dir, 'calls') };
+    const delegated = spawnSync(process.execPath, [ROADCTL, 'delegate', 'W-3', '--to', 'claude-code@home-wsl', '--by', 'other', '--board', board], { cwd: workspace, env, encoding: 'utf8' });
+    assert.equal(delegated.status, 0, delegated.stderr);
+    const delegatedCard = fs.readFileSync(cardPath, 'utf8');
+    const run = () => spawnSync(process.execPath, [ROADCTL, 'serve', '--once', '--json'], { cwd: workspace, env, encoding: 'utf8' });
+    const remote = run(); assert.equal(remote.status, 0, remote.stderr + remote.stdout); assert.deepEqual(JSON.parse(remote.stdout).started, [['TAKE', 'my-app', 'W-3']]);
+    assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['-o BatchMode=yes -o ConnectTimeout=5 -- work-host true', 'work-host echo safe-action']);
+    fs.unlinkSync(log); fs.writeFileSync(cardPath, delegatedCard.replace('env: remote', 'env: local'));
+    const local = run(); assert.equal(local.status, 0, local.stderr + local.stdout); assert.deepEqual(JSON.parse(local.stdout).started, [['TAKE', 'my-app', 'W-3']]); assert.equal(fs.existsSync(log), false);
+    fs.writeFileSync(cardPath, delegatedCard); fs.writeFileSync(path.join(dir, 'unreachable'), '');
+    const unavailable = run(); assert.equal(unavailable.status, 1); assert.match(unavailable.stderr, /unreachable/);
+    assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['-o BatchMode=yes -o ConnectTimeout=5 -- work-host true']);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
