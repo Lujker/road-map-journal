@@ -725,7 +725,7 @@ export function checkConductorScheduler(ctx, loaded) {
         const m = source.match(/^AGENT = "([A-Za-z0-9_.@/-]+)"$/m);
         const hash = m && createHash('sha256').update(source.replace(m[0], 'AGENT = "<agent>"')).digest('hex');
         // shortcut: only unmodified documented templates are recognized; extend when their behavior can be verified safely.
-        if (['8f2ef6361d459a2e39f4d849b8d984a8573a7f90366f1391e28752e006e8c719', '1007031bd26a514310abdf90cc2ca13d718038480126514fa9e314948d593815'].includes(hash)) match = m;
+        if (['8f2ef6361d459a2e39f4d849b8d984a8573a7f90366f1391e28752e006e8c719', '1007031bd26a514310abdf90cc2ca13d718038480126514fa9e314948d593815', '77755996529ce291eb25edbebb430a9808d56167d69a5694c579d8a00feeed14'].includes(hash)) match = m;
       } catch { /* unknown monitor */ }
     }
     const agent = match && resolve(match[1]);
