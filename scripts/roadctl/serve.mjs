@@ -117,11 +117,20 @@ async function serveCommand(ctx) {
     let boards;
     try { boards = serviceBoards(service.workspace); } catch (e) { ctx.io.err(`roadctl serve: refused: ${clean(e.message)}\n`); return 1; }
     if (!boards.length) { ctx.io.err('roadctl serve: refused: service.workspace has no projects/*/board/config.json\n'); return 1; }
+    const foreign = [];
+    const rootOf = (board) => spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: board, encoding: "utf8" }).stdout?.trim();
+    const offlineRoots = new Set();
     for (const board of boards) {
       const state = ctx.api.syncState(ctx.api.loadBoard(board));
       if (state.state !== 'ok' || !state.ahead || state.pending) continue;
       const r = child(['save', '--json', '--board', board], { env, cwd: service.workspace });
+      if (json(r)?.status === 'saved-local') offlineRoots.add(rootOf(board));
+      if (r.status !== 0 && json(r)?.status === 'foreign-commits') { foreign.push({ board, message: r.stderr || r.stdout }); continue; }
       if (r.status !== 0) { ctx.io.err(`roadctl serve: sync refused: ${clean(r.stderr || r.stdout)}\n`); return 1; }
+    }
+    for (const f of foreign) {
+      const state = ctx.api.syncState(ctx.api.loadBoard(f.board));
+      if (state.state === 'ok' && state.ahead && !offlineRoots.has(rootOf(f.board)) && !boards.some(b => rootOf(b) === rootOf(f.board) && ctx.api.syncState(ctx.api.loadBoard(b)).pending)) { ctx.io.err(`roadctl serve: sync refused: ${clean(f.message)}\n`); return 1; }
     }
     const paused = () => {
       const r = child(['pause', 'status', '--json'], { env, cwd: service.workspace });

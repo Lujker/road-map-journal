@@ -236,12 +236,13 @@ test('P5.25 a8: asynchronous actions never overlap', async () => {
   assert.equal(max, 1);
 });
 
-test('P5.25 a11: offline result is delivered on the next turn without rerunning', { skip: process.platform === 'win32' }, () => {
+for (const multiple of [false, true]) test(`P5.25 a11: offline result delivered without rerunning (${multiple ? 'two boards' : 'one board'})`, { skip: process.platform === 'win32' }, () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-serve-offline-'));
   try {
     const workspace = path.join(dir, 'workspace'), origin = path.join(dir, 'origin.git');
-    const board = path.join(workspace, 'projects', 'my-app', 'board');
+    const board = path.join(workspace, 'projects', multiple ? 'z-app' : 'my-app', 'board');
     fs.cpSync(EXAMPLE, board, { recursive: true });
+    if (multiple) fs.cpSync(EXAMPLE, path.join(workspace, 'projects', 'a-app', 'board'), { recursive: true });
     const cfg = path.join(board, 'config.json');
     fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg)), requires: '0.6.0' }));
     const git = (cwd, ...args) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout; };
@@ -277,5 +278,12 @@ test('P5.25 a11: offline result is delivered on the next turn without rerunning'
     const routine = files.find(f => f.includes('routine') && f.endsWith('due.md')); assert.ok(routine, files.join('\n'));
     const remote = git(dir, '--git-dir', origin, 'show', `main:${routine}`);
     assert.equal((remote.match(/offline fixture/g) || []).length, 1);
+    if (multiple) {
+      fs.writeFileSync(path.join(workspace, 'foreign.txt'), 'private');
+      git(workspace, 'add', 'foreign.txt'); git(workspace, 'commit', '-m', 'foreign');
+      const refused = cli('serve', '--once', '--json');
+      assert.notEqual(refused.status, 0); assert.match(refused.stderr, /foreign-commits/);
+      assert.ok(!git(dir, '--git-dir', origin, 'ls-tree', '-r', '--name-only', 'main').includes('foreign.txt'));
+    }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
