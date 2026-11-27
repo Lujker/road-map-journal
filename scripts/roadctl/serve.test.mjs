@@ -196,5 +196,36 @@ test('P5.25 a5 CLI: executor uses the route from its actual prompt', { skip: pro
     fs.writeFileSync(cardPath, delegatedCard); fs.writeFileSync(path.join(dir, 'unreachable'), '');
     const unavailable = run(); assert.equal(unavailable.status, 1); assert.match(unavailable.stderr, /unreachable/);
     assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['-o BatchMode=yes -o ConnectTimeout=5 -- work-host true']);
+    fs.rmSync(path.join(dir, 'unreachable')); fs.writeFileSync(cardPath, delegatedCard.replace('env: remote', 'env: local'));
+    const configFile = path.join(config, 'conductor.json');
+    const limited = JSON.parse(fs.readFileSync(configFile)); limited.service.max_starts_per_hour = { 'claude-code@home-wsl': 1 };
+    fs.writeFileSync(configFile, JSON.stringify(limited));
+    assert.equal(run().status, 0);
+    const blocked = run(); assert.equal(blocked.status, 1); assert.match(blocked.stderr, /hourly start limit reached/);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('P5.25 a8: hourly starts persist across turns and agents have independent rolling limits', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-hourly-'));
+  const env = { XDG_STATE_HOME: dir };
+  try {
+    const reserve = serve.reserveHourlyStart;
+    assert.equal(reserve(env, 'a', 2, 10000000), true);
+    assert.equal(reserve(env, 'a', 2, 10001000), true);
+    assert.equal(reserve(env, 'a', 2, 10002000), false);
+    assert.equal(reserve(env, 'b', 1, 10002000), true);
+    assert.equal(reserve(env, 'b', 1, 10003000), false);
+    assert.equal(reserve(env, 'a', 2, 13600000), true);
+    assert.equal(reserve(env, 'a', 2, 13600001), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('P5.25 a8: asynchronous actions never overlap', async () => {
+  let active = 0; let max = 0;
+  await routeSnapshot({ boardDirs: { p: '/board' }, items: [{ kind: 'RUN', project: 'p', id: 'a' }, { kind: 'RUN', project: 'p', id: 'b' }, { kind: 'TAKE', project: 'p', id: 'c' }] }, {
+    profile: { agent: 'a' }, paused: () => false,
+    describeRoutine: i => i, describeService: () => ({}),
+    supervise: async () => { active++; max = Math.max(max, active); await new Promise(resolve => setImmediate(resolve)); active--; },
+  });
+  assert.equal(max, 1);
 });

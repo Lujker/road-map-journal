@@ -54,6 +54,13 @@ export function validateConductor(c) {
   if (c.service !== undefined) { // P5.29 a3: where the service works; read by doctor only
     if (!obj(c.service)) throw new Error('"service" must be an object');
     absPath(c.service.workspace, 'service.workspace');
+    if (c.service.max_starts_per_hour !== undefined) {
+      if (!obj(c.service.max_starts_per_hour)) throw new Error('service.max_starts_per_hour must be an object');
+      for (const [agent, limit] of Object.entries(c.service.max_starts_per_hour)) {
+        if (!NAME_RE.test(agent)) throw new Error('service.max_starts_per_hour keys must name agents');
+        posInt(limit, `service.max_starts_per_hour.${agent}`);
+      }
+    }
     if (c.service.owner_clone !== undefined) absPath(c.service.owner_clone, 'service.owner_clone');
     if (c.service.profile !== undefined && (!(typeof c.service.profile === 'string') || !NAME_RE.test(c.service.profile))) throw new Error('service.profile must name a profile');
   }

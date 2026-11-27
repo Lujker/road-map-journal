@@ -56,6 +56,24 @@ export async function routeSnapshot(snapshot, { profile, describeRoutine, descri
   return { started, paused: false };
 }
 
+// Called under the machine serve lock; reserve before starting so a crash cannot erase a start.
+export function reserveHourlyStart(env, agent, limit, now = Date.now()) {
+  if (limit === undefined) return true;
+  const file = path.join(stateDir(env), 'serve-starts.json');
+  let history = {};
+  try { history = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (!history || typeof history !== 'object' || Array.isArray(history) || Object.values(history).some(v => !Array.isArray(v) || v.some(t => !Number.isFinite(t)))) throw new Error('invalid serve start history');
+  const recent = (history[agent] ?? []).filter(t => t > now - 3600000);
+  if (recent.length >= limit) return false;
+  history[agent] = [...recent, now];
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  try { fs.writeFileSync(tmp, JSON.stringify(history), { mode: 0o600 }); fs.renameSync(tmp, file); }
+  finally { fs.rmSync(tmp, { force: true }); }
+  return true;
+}
+
 const child = (args, { env, cwd, input } = {}) => spawnSync(process.execPath, [ROADCTL, ...args], { env, cwd, input, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
 const json = (r) => { try { return JSON.parse(r.stdout); } catch { return null; } };
 export const servicePrompt = (prompt, agent) => `${prompt}\nFinish this supervised orchestrator run with: roadctl run done --as ${agent} --result ok|escalated|failed --did "what was done".`;
@@ -121,6 +139,7 @@ async function serveCommand(ctx) {
     const supervise = async (d) => {
       const limits = await ctx.api.checkLimits(d.agent, reg, { env });
       if (limits.code !== 0) throw new Error(`limits gate closed before ${d.kind}: ${clean(limits.message)}`);
+      if (!reserveHourlyStart(env, d.agent, service.max_starts_per_hour?.[d.agent])) throw new Error(`hourly start limit reached for ${d.agent}`);
       const keep = new Set(['HOME', 'PATH', 'LANG', 'XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ROADCTL_WORKSPACE', 'ROADCTL_REGISTRY', 'ROADCTL_NOW', 'ROADCTL_DATE', 'ROADCTL_HOST', ...(d.env ?? [])]);
       const runEnv = Object.fromEntries(Object.entries(env).filter(([name]) => keep.has(name)));
       runEnv.ROADCTL_UNATTENDED = '1';
