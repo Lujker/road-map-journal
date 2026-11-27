@@ -73,6 +73,19 @@ const snapshot = (dir) => {
   return out;
 };
 
+test('P5.54: a changed mandate stops queued START until fresh approval', FAKES_SKIP, () => {
+  const r = rig();
+  r.write();
+  r.approve();
+  r.put('Q-1', { kind: 'fix', size: 'S', extra: 'approved: Owner, 2026-11-01, scope=implementation+auto, source=chat\n' });
+  r.setConfig({ autonomy: { enabled: true, agents: [], queue: ['Q-1'] } });
+  assert.equal(r.starts()[0].id, 'Q-1');
+  r.edit((s) => s.replace('finish stage 2', 'finish stage 3'));
+  assert.deepEqual(r.starts(), []);
+  r.approve();
+  assert.equal(r.starts()[0].id, 'Q-1');
+});
+
 // ---------------------------------------------------------------- a1: without an approved mandate nothing changes
 
 test('P5.33 a1: without a mandate, or with one that is not approved, tick and delegate behave exactly as before (same bytes); the queue path still works', FAKES_SKIP, () => {

@@ -228,6 +228,11 @@ export default {
   name: 'mandate',
   headerKeys: ['kind', 'size', 'goal', 'by_mandate'],
   hooks: {
+    'start-admit'({ board, api }) {
+      return readMandate(board, api)?.state === 'changed'
+        ? { admit: false, reason: 'the mandate changed after approval; the owner must approve it again' }
+        : {};
+    },
     /** START, `delegate` and lint rule 6: another basis than `approved` for a card. {} = this module has nothing to say (no mandate, or level L1/L2: the card path is unchanged). */
     'approval-basis'({ board, card, mode, api }) {
       const m = readMandate(board, api);
