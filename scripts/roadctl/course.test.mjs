@@ -1,0 +1,138 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { spawnSync } from 'node:child_process';
+import test from 'node:test';
+import { fileURLToPath } from 'node:url';
+import { approvalHash } from './approval-hash.mjs';
+import { basisProblems, courseReason, readCourse } from './course.mjs';
+import { boardRequires, loadBoard, workBasisStale } from '../roadctl.mjs';
+
+const cli = fileURLToPath(new URL('../roadctl.mjs', import.meta.url));
+const mandate = '---\nmandate: 1\nlevel: L3\nkinds: fix\nmax_size: M\nbudget: cards_per_day=2, runs_per_week=2\n---\n\n## Goals\n- G1 (priority 1): work\n';
+const makeCard = (id, status) => `---\nid: ${id}\ntitle: ${id}\nstatus: ${status}\nas_of: 2026-11-27\n---\n\n## Goal\nResult\n\n## Acceptance\n- [ ] a1: works\n`;
+function rig() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'course-')), board = path.join(dir, 'board');
+  fs.mkdirSync(path.join(board, 'cards'), { recursive: true });
+  fs.writeFileSync(path.join(board, 'config.json'), JSON.stringify({ board_version: 1, title: 'Test', requires: '0.17.0', status_map: {} }));
+  const m = mandate.replace('\n---\n\n', `\napproved: Owner, 2026-11-27\napproved_hash: ${approvalHash(mandate)}\n---\n\n`);
+  fs.writeFileSync(path.join(board, 'mandate.md'), m);
+  for (const [id, state] of [['A', 'doing'], ['B', 'ready'], ['C', 'done'], ['D', 'ready']]) fs.writeFileSync(path.join(board, 'cards', `${id}.md`), makeCard(id, state));
+  const env = { ...process.env, HOME: dir, XDG_STATE_HOME: path.join(dir, 'state'), XDG_CONFIG_HOME: path.join(dir, 'config'), ROADCTL_REGISTRY: path.join(dir, 'none') };
+  delete env.ROADCTL_UNATTENDED; delete env.ROADCTL_RUN_ID;
+  const run = (args, input) => spawnSync(process.execPath, [cli, ...args, '--board', board], { cwd: dir, env, input, encoding: 'utf8' });
+  const good = (args, input) => { const r = run(args, input); assert.equal(r.status, 0, r.stderr + r.stdout); return r; };
+  const file = path.join(dir, 'proposal.json');
+  const draft = (objective, deferred = []) => { fs.writeFileSync(file, JSON.stringify({ course: 1, objective, added: ['Result'], deferred })); };
+  const preview = () => JSON.parse(good(['course', 'preview', file, '--json']).stdout);
+  const confirm = (p) => good(['course', 'confirm', file, '--hash', p.confirmation_hash, '--by', 'Owner']);
+  const show = () => JSON.parse(good(['course', 'show']).stdout);
+  const raw = (id) => fs.readFileSync(path.join(board, 'cards', `${id}.md`), 'utf8');
+  const write = (id, s) => fs.writeFileSync(path.join(board, 'cards', `${id}.md`), s);
+  return { dir, board, file, run, good, draft, preview, confirm, show, raw, write };
+}
+const api = { compareVersions: (a, b) => Number(a.split('.')[1]) - Number(b.split('.')[1]) };
+
+test('P5.54: preview is read only, typed, stale confirmation fails, and basis is exact', () => {
+  const r = rig(); r.draft('First');
+  const boardBytes = () => fs.readdirSync(r.board, { recursive: true, withFileTypes: true }).filter((x) => x.isFile()).map((x) => [path.relative(r.board, path.join(x.parentPath ?? x.path, x.name)), fs.readFileSync(path.join(x.parentPath ?? x.path, x.name), 'utf8')]).sort();
+  const before = boardBytes(); const p = r.preview();
+  assert.deepEqual(boardBytes(), before);
+  fs.writeFileSync(r.file, JSON.stringify({ deferred: [], added: ['Result'], objective: 'First', course: 1 }));
+  assert.deepEqual(r.preview(), p, 'conversational and technical inputs use the same typed proposal');
+  assert.deepEqual(p.impact, { added: ['Result'], preserved: ['B', 'D'], deferred: [], reassess: ['A', 'B', 'D'] });
+  assert.match(r.good(['course', 'preview', r.file]).stdout, /added: Result[\s\S]*preserved: B, D[\s\S]*deferred: \(none\)[\s\S]*reassess: A, B, D/);
+  r.write('B', r.raw('B') + '\nChanged\n');
+  assert.notEqual(r.run(['course', 'confirm', r.file, '--hash', p.confirmation_hash, '--by', 'Owner']).status, 0);
+  assert.equal(fs.existsSync(path.join(r.board, 'course.json')), false);
+  const now = r.preview(); r.confirm(now);
+  const c = r.show().course.current;
+  assert.deepEqual(basisProblems({ plan_mandate: c.mandate, plan_course: c.revision, plan_generation: String(c.generation) }), []);
+  assert.notDeepEqual(basisProblems({ plan_mandate: c.mandate }), []);
+  assert.notDeepEqual(basisProblems({ plan_mandate: c.mandate, plan_course: c.revision, plan_generation: '0' }), []);
+  let b = loadBoard(r.board), card = b.cards.find((x) => x.header.id === 'B');
+  assert.match(courseReason(b, card, api), /stale/);
+  r.write('B', r.raw('B').replace('status: ready\n', `status: ready\nplan_mandate: ${c.mandate}\nplan_course: ${c.revision}\nplan_generation: ${c.generation}\n`));
+  b = loadBoard(r.board); card = b.cards.find((x) => x.header.id === 'B'); assert.equal(courseReason(b, card, api), null);
+  const mfile = path.join(r.board, 'mandate.md'), m = fs.readFileSync(mfile, 'utf8');
+  fs.writeFileSync(mfile, m.replace('G1 (priority 1): work', 'G1 (priority 1): changed'));
+  assert.match(courseReason(loadBoard(r.board), card, api), /changed/);
+  fs.unlinkSync(mfile); assert.match(courseReason(loadBoard(r.board), card, api), /missing/);
+});
+
+test('P5.54: changing course invalidates future, checkpoints active and leaves completed bytes unchanged', () => {
+  const r = rig(); r.draft('First'); r.confirm(r.preview());
+  const first = r.show().course.current, completed = r.raw('C');
+  r.write('B', r.raw('B').replace('status: ready\n', `status: ready\nplan_mandate: ${first.mandate}\nplan_course: ${first.revision}\nplan_generation: ${first.generation}\n`));
+  r.write('A', r.raw('A').replace('status: doing\n', `status: doing\napproved: Owner, 2026-11-27, scope=implementation\ndelegate: to=worker host=any criteria=all by=coordinator accept=by state=claimed at=2026-11-20T09:00:00Z\nclaim: worker at=2026-11-20T09:00:00Z until=2026-11-20T10:30:00Z\nplan_mandate: ${first.mandate}\nplan_course: ${first.revision}\nplan_generation: ${first.generation}\n`));
+  let b = loadBoard(r.board); assert.equal(workBasisStale(b, b.cards.find((c) => c.header.id === 'A')), false);
+  r.draft('Second', ['D']); const p = r.preview(); assert.deepEqual(p.impact.reassess, ['A', 'B']); r.confirm(p);
+  b = loadBoard(r.board); assert.equal(r.raw('C'), completed);
+  assert.match(courseReason(b, b.cards.find((c) => c.header.id === 'B'), api), /stale/);
+  assert.match(courseReason(b, b.cards.find((c) => c.header.id === 'D'), api), /deferred/);
+  assert.equal(workBasisStale(b, b.cards.find((c) => c.header.id === 'A')), true);
+  assert.match(r.run(['report', 'A', '--as', 'worker', 'finished']).stderr, /checkpoint/);
+  fs.writeFileSync(path.join(r.dir, 'none'), JSON.stringify({ version: 1, agents: { worker: { host: 'test', roles: ['worker'] } }, agent_profiles: { developer: { executor: 'worker' } } }));
+  r.good(['checkpoint', 'A', '--as', 'developer'], JSON.stringify({ did: 'saved', next: 'reassess', in_flight: 'none' }));
+  b = loadBoard(r.board); assert.equal(workBasisStale(b, b.cards.find((c) => c.header.id === 'A')), false);
+  assert.match(r.run(['report', 'A', '--as', 'worker', 'finished']).stderr, /no Evidence/);
+  r.draft('Invalid', ['C']); assert.notEqual(r.run(['course', 'preview', r.file]).status, 0);
+  assert.equal(r.raw('C'), completed);
+});
+
+test('P5.54: owner-only confirmation, undo and ambiguous external effect', () => {
+  const r = rig(); r.draft('First'); const p = r.preview();
+  const unattended = spawnSync(process.execPath, [cli, 'course', 'confirm', r.file, '--hash', p.confirmation_hash, '--by', 'Owner', '--board', r.board], { encoding: 'utf8', env: { ...process.env, HOME: r.dir, XDG_STATE_HOME: path.join(r.dir, 'state'), ROADCTL_UNATTENDED: '1' } });
+  assert.notEqual(unattended.status, 0); assert.equal(fs.existsSync(path.join(r.board, 'course.json')), false);
+  r.confirm(p); let show = r.show();
+  r.good(['course', 'undo', '--hash', show.hash, '--by', 'Owner']); assert.equal(readCourse(loadBoard(r.board)).current, null);
+  r.confirm(r.preview()); show = r.show();
+  assert.equal(show.course.current.generation, 2);
+  r.good(['course', 'effect', '--hash', show.hash, '--by', 'Owner']); show = r.show();
+  const refused = r.run(['course', 'undo', '--hash', show.hash, '--by', 'Owner']);
+  assert.notEqual(refused.status, 0); assert.match(refused.stderr, /automatic rollback is impossible/);
+  r.draft('Second'); r.confirm(r.preview()); show = r.show();
+  assert.match(r.run(['course', 'undo', '--hash', show.hash, '--by', 'Owner']).stderr, /automatic rollback is impossible/);
+});
+
+test('P5.54: same course again is a new generation and an old client refuses the board', () => {
+  const r = rig(); r.draft('Same'); r.confirm(r.preview());
+  const a = r.show().course.current;
+  r.draft('Same'); r.confirm(r.preview());
+  const b = r.show().course.current;
+  assert.equal(a.revision, b.revision); assert.equal(b.generation, a.generation + 1);
+  assert.deepEqual(r.show().course.history, [a, b]);
+  assert.match(boardRequires({ requires: '0.17.0' }, '0.16.0'), /requires roadctl 0\.17\.0/);
+  assert.match(courseReason(loadBoard(r.board), { header: { id: 'B', plan_mandate: a.mandate, plan_course: a.revision, plan_generation: String(a.generation) } }, api), /stale/);
+});
+
+test('P5.54: actual delegation and queue require a current complete basis; schema checks milestones', () => {
+  const r = rig(); r.draft('First'); r.confirm(r.preview());
+  const c = r.show().course.current;
+  const config = path.join(r.board, 'config.json');
+  fs.writeFileSync(config, JSON.stringify({ board_version: 1, title: 'Test', requires: '0.17.0', status_map: {}, autonomy: { enabled: true, agents: [], queue: ['B'] } }));
+  r.write('B', r.raw('B').replace('status: ready\n', 'status: ready\napproved: Owner, 2026-11-27, scope=implementation+auto, source=chat\n'));
+  assert.match(r.run(['delegate', 'B', '--to', 'worker', '--by', 'coordinator']).stderr, /basis is stale or missing/);
+  assert.match(r.good(['autonomy']).stdout, /basis is stale or missing/);
+  r.write('B', r.raw('B').replace('status: ready\n', `status: ready\nplan_mandate: ${c.mandate}\nplan_course: ${c.revision}\nplan_generation: ${c.generation}\n`));
+  assert.doesNotMatch(r.good(['autonomy']).stdout, /basis is stale or missing/);
+  r.good(['new', 'E', 'New result']);
+  assert.match(fs.readFileSync(path.join(r.board, 'cards', 'E-new-result.md'), 'utf8'), new RegExp(`plan_generation: ${c.generation}`));
+  r.good(['milestone', 'add', 'NEW', '--cards', 'B', '--why', 'Result']);
+  assert.match(fs.readFileSync(path.join(r.board, 'milestones', 'NEW.md'), 'utf8'), new RegExp(`plan_course: ${c.revision}`));
+  fs.writeFileSync(path.join(r.board, 'milestones', 'M.md'), `---\nid: M\ncards: B\nplan_mandate: ${c.mandate}\nplan_course: ${c.revision}\nplan_generation: ${c.generation}\n---\n\n## Goal\nResult\n`);
+  const lint = () => JSON.parse(r.run(['lint', '--json']).stdout);
+  assert.equal(lint().filter((x) => /plan basis needs/.test(x.msg)).length, 0);
+  const mf = path.join(r.board, 'milestones', 'M.md');
+  fs.writeFileSync(mf, fs.readFileSync(mf, 'utf8').replace('plan_generation: 1', 'plan_generation: invalid'));
+  assert.ok(lint().some((x) => /plan basis needs/.test(x.msg)));
+  r.good(['delegate', 'B', '--to', 'worker', '--by', 'coordinator']);
+  r.draft('Second'); r.confirm(r.preview());
+  assert.match(r.run(['claim', 'B', '--as', 'worker']).stderr, /basis is stale or missing/);
+  fs.unlinkSync(path.join(r.board, 'mandate.md'));
+  fs.writeFileSync(config, JSON.stringify({ board_version: 1, title: 'Test', requires: '0.17.0', status_map: {}, autonomy: { enabled: true, agents: [], queue: ['D'] } }));
+  r.write('D', r.raw('D').replace('status: ready\n', 'status: ready\napproved: Owner, 2026-11-27, scope=implementation+auto, source=chat\n'));
+  assert.match(r.good(['autonomy']).stdout, /mandate is missing/);
+  assert.match(r.run(['delegate', 'D', '--to', 'worker', '--by', 'coordinator']).stderr, /mandate is missing/);
+});

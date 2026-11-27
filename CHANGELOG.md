@@ -4,6 +4,8 @@ Skill versions follow `metadata.version` in `skills/road-map-journal/SKILL.md`. 
 
 ## Unreleased
 
+- Repository: roadctl 0.17.0 (P5.54) adds a read-only course proposal preview and owner-confirmed course, with distinct mandate and course hashes and plan generations on opted-in boards. Stale future work is held, active work needs a checkpoint, and undo refuses after a recorded ambiguous external effect. The owner records that boundary; roadctl cannot detect arbitrary effects. Boards using this format require 0.17.0.
+
 - Repository: roadctl 0.16.0 (P5.52) adds an owner opt-in `"close_reviewed": true`: `accept --rule` may close an ordinary explicitly approved card or a current mandate card after all criteria have Evidence, green tests and independent different-model review of the current revision. `owner_acceptance: required` and milestone decisions stay owner-only. The close records the closer, reviewer and revision; digest reports it once per recipient. Boards without the opt-in keep the old review workflow; boards using it require 0.16.0. Skill 0.4.2 documents the same handoff and freshness rules.
 
 - P5.25 adds `roadctl serve --once` and a systemd user timer. Each due routine gets a supervised run. Up to three card decisions share one orchestrator run. The [conductor instructions](conductor/README.md) cover local setup, checking a trial queue and switching to an application schedule.

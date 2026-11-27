@@ -32,7 +32,7 @@ test('P5.35 a8: an old copy offers no work on a rule-acceptance board', () => {
   const oldScripts = path.join(dir, 'scripts');
   fs.cpSync(source, oldScripts, { recursive: true });
   const bin = path.join(oldScripts, 'roadctl.mjs');
-  fs.writeFileSync(bin, fs.readFileSync(bin, 'utf8').replace("export const VERSION = '0.16.0';", "export const VERSION = '0.14.0';"));
+  fs.writeFileSync(bin, fs.readFileSync(bin, 'utf8').replace("export const VERSION = '0.17.0';", "export const VERSION = '0.14.0';"));
   const r = spawnSync(process.execPath, [bin, 'tick', '--as', 'agent', '--no-pull', '--json', '--board', board], { cwd: dir, encoding: 'utf8', env: { ...process.env, HOME: dir, XDG_STATE_HOME: path.join(dir, 'state') } });
   assert.equal(r.status, 4, r.stderr);
   const result = JSON.parse(r.stdout);

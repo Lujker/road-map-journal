@@ -374,16 +374,16 @@ test('P5.33 a8: lint refuses the key that would open external systems and unknow
 // ---------------------------------------------------------------- a9: an older copy takes nothing
 
 test('P5.33 a9: an older copy (a version below requires) takes nothing from the board; requires and the module follow the rule of P5.14', FAKES_SKIP, () => {
-  assert.equal(rc.VERSION, '0.16.0'); // P5.52 close_reviewed format; the mandate itself still needs 0.8.0
+  assert.equal(rc.VERSION, '0.17.0'); // course basis format; the mandate itself still needs 0.8.0
   assert.equal(MANDATE_REQUIRES, '0.8.0');
   assert.match(rc.boardRequires({ requires: '0.8.0' }, '0.7.0'), /board requires roadctl 0\.8\.0 or newer; this is 0\.7\.0/);
   assert.equal(rc.boardRequires({ requires: '0.8.0' }), null);
   assert.equal(rc.boardRequires({}, '0.7.0'), null, 'a board that has not raised requires is not refused');
   // an older copy end to end: the board asks for more than this checkout is
-  const r = rig({ requires: '0.17.0' }); // newer than this copy
+  const r = rig({ requires: '0.18.0' }); // newer than this copy
   r.write();
   const t = r.run(['tick', '--as', ME, '--no-pull']);
-  assert.match(t.stdout, /requires: my-app: board requires roadctl 0\.17\.0 or newer/);
+  assert.match(t.stdout, /requires: my-app: board requires roadctl 0\.18\.0 or newer/);
   assert.doesNotMatch(t.stdout, /START/);
   // this copy on a board that did not raise requires: the mandate is inert and lint says why
   const old = rig({ requires: false });
@@ -766,13 +766,13 @@ test('P5.35 a12: active claim checkpoints after its dependency changes before re
   assert.match(r.cardText('B'), /^work_deps: [a-f0-9]{64}$/m);
   r.editCard('A', (s) => s.replace('status: done', 'status: doing').replace('accepted: Owner, 2026-11-01\n', ''));
   assert.match(r.ok(['brief']).stdout, /STALE WORK \[B\].*checkpoint/);
-  assert.match(r.ok(['digest', '--daily']).stdout, /active work has a changed dependency/);
+  assert.match(r.ok(['digest', '--daily']).stdout, /active work has a changed basis/);
   let report = r.run(['report', 'B', '--as', 'worker', 'finished']);
   assert.notEqual(report.status, 0); assert.match(report.stderr, /checkpoint/);
   const checkpoint = (as = 'worker') => spawnSync(process.execPath, [SELF, 'checkpoint', 'B', '--board', r.board, '--as', as], { cwd: r.ws, encoding: 'utf8', env: r.env, input: JSON.stringify({ did: 'saved work', next: 'check impact', in_flight: 'none' }) });
-  assert.match(checkpoint().stdout, /dependencies still unresolved/);
+  assert.match(checkpoint().stdout, /dependencies or course basis still unresolved/);
   r.editCard('A', (s) => s.replace('status: doing', 'status: done\naccepted: Owner, 2026-11-10'));
-  assert.match(checkpoint('other').stdout, /dependencies still unresolved/);
+  assert.match(checkpoint('other').stdout, /dependencies or course basis still unresolved/);
   assert.match(checkpoint().stdout, /reassess and check the impact/);
   r.editCard('B', (s) => s.replace('- [ ] a1:', '- [x] a1:') + '\n## Evidence\n- a1: checked after impact\n');
   report = r.run(['report', 'B', '--as', 'worker', 'finished']); assert.equal(report.status, 0, report.stderr);

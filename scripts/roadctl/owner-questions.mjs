@@ -326,7 +326,7 @@ export function ownerItems(board, time, api) {
       continue;
     }
     if (board.cards.includes(item) && api.workBasisStale(board, item)) {
-      const reason = 'active work has a changed dependency: checkpoint and reassess its impact';
+      const reason = 'active work has a changed basis: checkpoint and reassess its impact';
       items.push({ type: 'refused', target: item.header.id, hash: sha(raw), reason, confirmation: `${item.header.id}: ${reason}` });
     }
     if (board.cards.includes(item) && api.ruleStale(board, item)) {
