@@ -140,3 +140,26 @@ test('P5.25 a3 CLI: cached reserve skips the provider past normal TTL and probes
     assert.match(after.stderr, /supervise: .* failed: no result/, 'the allowed fresh reading reaches the supervisor');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('P5.25 a5: TAKE checks the remote path before starting; local needs no ssh', async () => {
+  const { environmentGate, accessOf } = await import('./environment.mjs');
+  const reg = { agents: { 'a@home': { machine: 'home' } }, environments: { remote: { machine: 'work', placement: 'remote-access', access: [{ from: 'home', ssh: 'work-host' }] }, local: { machine: 'home', placement: 'remote-access' } } };
+  const api = { loadRegistry: () => reg };
+  const board = { cards: [{ header: { id: 'c', env: 'remote' } }] };
+  const calls = [];
+  const gate = (status) => environmentGate(api, {}, board, { kind: 'task', id: 'c' }, 'a@home', { spawn: (cmd, argv) => { calls.push([cmd, argv]); return { status }; } });
+  const snapshot = { prompt: 'work', boardDirs: { p: '/board' }, items: [{ kind: 'TAKE', project: 'p', id: 'c' }] };
+  let started = 0;
+  const options = { profile: {}, paused: () => false, describeService: () => ({}), supervise: () => { started++; }, checkDecision: () => gate(1) };
+  await assert.rejects(routeSnapshot(snapshot, options), /unreachable/);
+  assert.equal(started, 0);
+  options.checkDecision = () => gate(0);
+  await routeSnapshot(snapshot, options);
+  assert.equal(started, 1);
+  assert.deepEqual(calls[0], ['ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '--', 'work-host', 'true']]);
+  assert.equal(accessOf(reg, 'a@home', 'remote').ssh, 'work-host');
+  board.cards[0].header.env = 'local';
+  const before = calls.length;
+  assert.equal(gate(0), null);
+  assert.equal(calls.length, before);
+});

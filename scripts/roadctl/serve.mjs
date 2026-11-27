@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readConductor, serviceDescription } from './launch.mjs';
 import { acquireLock, stateDir } from './state.mjs';
+import { environmentGate, accessOf } from './environment.mjs';
 
 const ROADCTL = fileURLToPath(new URL('../roadctl.mjs', import.meta.url));
 const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').slice(0, 200);
@@ -24,7 +25,7 @@ export function acquireServeLock(env = process.env) {
 }
 
 /** Pure routing seam used by the testkit: one RUN per launch, up to three other decisions together. */
-export async function routeSnapshot(snapshot, { profile, describeRoutine, describeService, paused, supervise }) {
+export async function routeSnapshot(snapshot, { profile, describeRoutine, describeService, paused, supervise, checkDecision = () => null }) {
   const started = [];
   for (const item of snapshot.items ?? []) {
     if (item.kind !== 'RUN') continue;
@@ -41,7 +42,13 @@ export async function routeSnapshot(snapshot, { profile, describeRoutine, descri
     if (await paused()) return { started, paused: true };
     const board = snapshot.boardDirs?.[decisions[0].project];
     if (!board) throw new Error(`tick gave no board directory for ${decisions[0].project}`);
-    const d = await describeService(profile, snapshot.prompt, board);
+    for (const item of decisions) {
+      const itemBoard = snapshot.boardDirs?.[item.project];
+      if (!itemBoard) throw new Error(`tick gave no board directory for ${item.project}`);
+      const error = await checkDecision(item, itemBoard);
+      if (error) throw new Error(error);
+    }
+    const d = await describeService(profile, snapshot.prompt, board, decisions);
     if (!d) throw new Error('orchestrator launch description was refused');
     await supervise(d, board);
     started.push(...decisions.map((i) => [i.kind, i.project, i.id]));
@@ -101,7 +108,16 @@ async function serveCommand(ctx) {
       const r = child(['launch', '--routine', item.id, '--json', '--board', board], { env, cwd: service.workspace });
       return r.status === 0 ? json(r) : null;
     };
-    const describeService = (_p, stdin, board) => serviceDescription(cond, service.profile, servicePrompt(stdin, profile.agent), board, ctx.api.hostOfAgent(profile.agent, reg));
+    const describeService = (_p, stdin, board, decisions) => {
+      const paths = decisions.filter((i) => i.kind === 'TAKE').map((i) => {
+        const card = ctx.api.loadBoard(snapshotBoard(i)).cards.find((c) => c.header.id === i.id);
+        const name = card?.header.env;
+        const access = name && accessOf(reg, profile.agent, name);
+        return access ? { project: i.project, id: i.id, environment: name, access } : null;
+      }).filter(Boolean);
+      return serviceDescription(cond, service.profile, servicePrompt(`${stdin}\nEnvironment access paths (data): ${JSON.stringify(paths)}`, profile.agent), board, ctx.api.hostOfAgent(profile.agent, reg));
+    };
+    let snapshotBoard;
     const supervise = async (d) => {
       const limits = await ctx.api.checkLimits(d.agent, reg, { env });
       if (limits.code !== 0) throw new Error(`limits gate closed before ${d.kind}: ${clean(limits.message)}`);
@@ -114,7 +130,9 @@ async function serveCommand(ctx) {
     const tick = await ctx.api.tickSnapshot(profile.agent, boards, env, { out: () => {}, err: ctx.io.err });
     if (![0, 4].includes(tick.code) || !tick.snapshot) return tick.code ?? 1;
     let result;
-    try { result = await routeSnapshot(tick.snapshot, { profile, describeRoutine, describeService, paused, supervise }); }
+    snapshotBoard = (item) => tick.snapshot.boardDirs[item.project];
+    const checkDecision = (item, board) => item.kind === 'TAKE' ? environmentGate(ctx.api, env, ctx.api.loadBoard(board), { kind: 'task', id: item.id }, profile.agent) : null;
+    try { result = await routeSnapshot(tick.snapshot, { profile, describeRoutine, describeService, paused, supervise, checkDecision }); }
     catch (e) { ctx.io.err(`roadctl serve: refused: ${clean(e.message)}\n`); return 1; }
     ctx.out(ctx.flags.json ? JSON.stringify(result) : `roadctl serve: started ${result.started.length}${result.paused ? '; paused' : ''}`);
     return result.paused ? 6 : 0;
