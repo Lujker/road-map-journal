@@ -108,6 +108,19 @@ test('P5.54: same course again is a new generation and an old client refuses the
   assert.match(courseReason(loadBoard(r.board), { header: { id: 'B', plan_mandate: a.mandate, plan_course: a.revision, plan_generation: String(a.generation) } }, api), /stale/);
 });
 
+test('P5.54: undo restores an earlier course as a new generation without erasing history', () => {
+  const r = rig(); r.draft('First'); r.confirm(r.preview());
+  const first = r.show().course.current;
+  r.draft('Second'); r.confirm(r.preview());
+  const before = r.show(); r.good(['course', 'undo', '--hash', before.hash, '--by', 'Owner']);
+  const after = r.show().course;
+  assert.equal(after.current.objective, 'First');
+  assert.equal(after.current.revision, first.revision);
+  assert.equal(after.current.generation, 3);
+  assert.equal(after.current.source, 'undo');
+  assert.deepEqual(after.history.map((c) => c.objective), ['First', 'Second', 'First']);
+});
+
 test('P5.54: actual delegation and queue require a current complete basis; schema checks milestones', () => {
   const r = rig(); r.draft('First'); r.confirm(r.preview());
   const c = r.show().course.current;
