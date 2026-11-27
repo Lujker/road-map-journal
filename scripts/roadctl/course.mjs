@@ -18,7 +18,7 @@ export function basisProblems(header) {
   if (header.work_course !== undefined && !hashRe.test(header.work_course)) problems.push('work_course needs a basis hash');
   return problems;
 }
-const validCurrent = (c) => c && typeof c === 'object' && hashRe.test(c.mandate) && hashRe.test(c.revision) && Number.isSafeInteger(c.generation) && c.generation > 0 && text(c.objective) && Array.isArray(c.added) && c.added.length <= 100 && c.added.every(text) && Array.isArray(c.deferred) && c.deferred.length <= 100 && c.deferred.every(text) && new Set(c.deferred).size === c.deferred.length && c.revision === hash({ objective: c.objective, added: c.added, deferred: c.deferred });
+const validCurrent = (c) => c && typeof c === 'object' && hashRe.test(c.mandate) && hashRe.test(c.revision) && Number.isSafeInteger(c.generation) && c.generation > 0 && text(c.author) && text(c.source) && typeof c.at === 'string' && Number.isFinite(Date.parse(c.at)) && text(c.objective) && Array.isArray(c.added) && c.added.length <= 100 && c.added.every(text) && Array.isArray(c.deferred) && c.deferred.length <= 100 && c.deferred.every(text) && new Set(c.deferred).size === c.deferred.length && c.revision === hash({ objective: c.objective, added: c.added, deferred: c.deferred });
 
 export function readCourse(board) {
   let raw;
@@ -83,10 +83,11 @@ function snapshot(board, input, api) {
   const current = { ...p, mandate: mandate.hash, revision: hash(p), generation: (previous?.last_generation ?? 0) + 1 };
   const agreement = { level: mandate.level, kinds: mandate.kinds, max_size: mandate.max_size, merge: mandate.merge, budget: mandate.budget, forbidden: mandate.forbidden, tell_owner: [...TELL_OWNER_FLOOR, ...mandate.tell_extra] };
   const preserved = board.cards.filter((c) => ['idea', 'ready', 'parked'].includes(status(board, c)) && !p.deferred.includes(c.header.id)).map((c) => c.header.id);
-  const impact = { added: p.added, preserved, deferred: p.deferred, reassess: board.cards.filter((c) => status(board, c) === 'doing').map((c) => c.header.id).concat(preserved) };
   const files = board.cards.map((c) => [c.name, fs.readFileSync(c.file, 'utf8')]);
   const md = path.join(board.dir, 'milestones');
   const milestones = fs.existsSync(md) ? fs.readdirSync(md).filter((f) => f.endsWith('.md')).sort().map((f) => [f, fs.readFileSync(path.join(md, f), 'utf8')]) : [];
+  const activeMilestones = milestones.filter(([f]) => api.parseCard(path.join(md, f)).header.milestone_done !== 'true').map(([f]) => `milestone:${f.slice(0, -3)}`);
+  const impact = { added: p.added, preserved: [...preserved, ...activeMilestones], deferred: p.deferred, reassess: board.cards.filter((c) => status(board, c) === 'doing').map((c) => c.header.id).concat(preserved, activeMilestones) };
   const token = hash({ current, previous, config: board.config, files, milestones });
   return { current, previous, agreement, impact, token };
 }
@@ -123,8 +124,10 @@ function command(ctx) {
         return 0;
       }
       if (!text(flags.by) || flags.hash !== s.token) throw new Error('confirmation needs --by and the current preview hash');
+      if (flags.source !== undefined && !text(flags.source)) throw new Error('source must be a nonempty single line');
       if (ctx.audit) ctx.audit.hash = s.token;
-      save(board, { version: 1, current: s.current, previous: s.previous?.current ?? null, history: [...(s.previous?.history ?? []), s.current], last_generation: s.current.generation, ambiguous: s.previous?.ambiguous ?? false, by: flags.by });
+      const current = { ...s.current, author: flags.by, at: new Date(api.nowMs(env)).toISOString(), source: flags.source ?? 'unspecified' };
+      save(board, { version: 1, current, previous: s.previous?.current ?? null, history: [...(s.previous?.history ?? []), current], last_generation: current.generation, ambiguous: s.previous?.ambiguous ?? false, by: flags.by });
       out('course confirmed; future work requires the new basis, active work needs a checkpoint; save the board'); return 0;
     }
     if (args.length !== 2 || !text(flags.by)) throw new Error('owner name required');
@@ -139,7 +142,7 @@ function command(ctx) {
     if (!m || m.state !== 'approved' || m.problems.length || m.hash !== c.previous.mandate) throw new Error('previous course mandate is not currently approved');
     if (c.last_generation >= Number.MAX_SAFE_INTEGER) throw new Error('plan generation is exhausted');
     const generation = c.last_generation + 1;
-    const restored = { ...c.previous, generation };
+    const restored = { ...c.previous, generation, author: flags.by, at: new Date(api.nowMs(env)).toISOString(), source: 'undo' };
     save(board, { version: 1, current: restored, previous: c.current, history: [...c.history, restored], last_generation: generation, ambiguous: false, by: flags.by });
     out('previous course restored as a new generation; future work needs reassessment'); return 0;
   };
@@ -173,5 +176,5 @@ export default {
   commands: { course: { group: 'Owner only', effect: 'write', owner: { sub: ['confirm', 'undo', 'effect'] }, hidden: true,
     summary: 'preview and confirm a project course', purpose: 'Preview a typed proposal without writing; confirm the exact preview as the owner. The mandate remains the authority. Mark a possible external effect before it happens; automatic rollback then refuses.',
     usage: ['roadctl course preview FILE', 'roadctl course confirm FILE --hash HASH --by OWNER', 'roadctl course show', 'roadctl course undo --hash HASH --by OWNER', 'roadctl course effect --hash HASH --by OWNER'],
-    flags: [['--hash HASH', 'hash from preview or show'], ['--by OWNER', 'owner name']], examples: ['roadctl course preview proposal.json'], changes: 'Confirm, undo and effect write course.json; preview and show do not write.', exits: '0 success; 1 refused; 2 invalid input', run: command } },
+    flags: [['--hash HASH', 'hash from preview or show'], ['--by OWNER', 'owner name'], ['--source TEXT', 'confirmation source, if known']], examples: ['roadctl course preview proposal.json'], changes: 'Confirm, undo and effect write course.json; preview and show do not write.', exits: '0 success; 1 refused; 2 invalid input', run: command } },
 };

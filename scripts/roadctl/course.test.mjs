@@ -48,6 +48,7 @@ test('P5.54: preview is read only, typed, stale confirmation fails, and basis is
   assert.equal(fs.existsSync(path.join(r.board, 'course.json')), false);
   const now = r.preview(); r.confirm(now);
   const c = r.show().course.current;
+  assert.equal(c.author, 'Owner'); assert.equal(c.source, 'unspecified'); assert.ok(Number.isFinite(Date.parse(c.at)));
   assert.deepEqual(basisProblems({ plan_mandate: c.mandate, plan_course: c.revision, plan_generation: String(c.generation) }), []);
   assert.notDeepEqual(basisProblems({ plan_mandate: c.mandate }), []);
   assert.notDeepEqual(basisProblems({ plan_mandate: c.mandate, plan_course: c.revision, plan_generation: '0' }), []);
@@ -128,7 +129,9 @@ test('P5.54: actual delegation and queue require a current complete basis; schem
   fs.writeFileSync(mf, fs.readFileSync(mf, 'utf8').replace('plan_generation: 1', 'plan_generation: invalid'));
   assert.ok(lint().some((x) => /plan basis needs/.test(x.msg)));
   r.good(['delegate', 'B', '--to', 'worker', '--by', 'coordinator']);
-  r.draft('Second'); r.confirm(r.preview());
+  r.draft('Second'); const next = r.preview();
+  assert.ok(next.impact.reassess.includes('milestone:M')); assert.ok(next.impact.reassess.includes('milestone:NEW'));
+  r.confirm(next);
   assert.match(r.run(['claim', 'B', '--as', 'worker']).stderr, /basis is stale or missing/);
   fs.unlinkSync(path.join(r.board, 'mandate.md'));
   fs.writeFileSync(config, JSON.stringify({ board_version: 1, title: 'Test', requires: '0.17.0', status_map: {}, autonomy: { enabled: true, agents: [], queue: ['D'] } }));
