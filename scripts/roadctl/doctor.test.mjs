@@ -764,5 +764,12 @@ test('P5.25 a10: conductor installation and active Hermes agent conflicts', FAKE
     const result = all.filter(x => x.id === 'conductor-hermes');
     assert.deepEqual(result.map(x => x.status), ['warn', 'ok', 'warn']);
     assert.match(result[0].detail, /same agent/); assert.match(result[2].detail, /unknown/);
+    const scripts = path.join(r.home, '.hermes', 'scripts'); fs.mkdirSync(scripts);
+    const monitor = path.join(scripts, 'hermes-monitor-tick.py');
+    fs.writeFileSync(monitor, fs.readFileSync('examples/scheduler/hermes-monitor-tick.py', 'utf8').replace('hermes@home-host', AGENT));
+    jobs([{ enabled: true, monitor_script: 'hermes-monitor-tick.py', prompt: 'Follow the tick prompt in the monitored output.' }]);
+    assert.match(check().find(x => x.id === 'conductor-hermes').detail, /same agent/);
+    fs.appendFileSync(monitor, '\nAGENT = "other@host"\n');
+    assert.match(check().find(x => x.id === 'conductor-hermes').detail, /unknown/);
   } finally { fs.rmSync(r.root, { recursive: true, force: true }); }
 });

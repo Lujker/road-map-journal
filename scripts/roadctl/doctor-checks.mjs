@@ -9,6 +9,7 @@
 //   api: the helpers of ctx.api in roadctl.mjs (see docs/developing-roadctl.md); spawn: child_process.spawnSync (replaceable in tests)
 import fs from 'node:fs';
 import path from 'node:path';
+import { createHash } from 'node:crypto';
 import { INSTALLED_JSON, declaredVersion, fingerprint, readInstalledJson } from './fingerprint.mjs';
 import { readConductor } from './launch.mjs';
 import { pauseLine, readPause } from './pause.mjs';
@@ -714,7 +715,19 @@ export function checkConductorScheduler(ctx, loaded) {
   catch (e) { if (e.code === 'ENOENT') return out; return [...out, res('conductor-hermes', 'warn', 'Hermes jobs unreadable: agent unknown')]; }
   for (const job of jobs.filter(j => j.enabled === true)) {
     const prompt = typeof job.prompt === 'string' ? job.prompt.trim() : '';
-    const match = !job.script && prompt.match(/^roadctl\s+tick\s+--as\s+([A-Za-z0-9_.@/-]+)(?:\s+--[A-Za-z0-9-]+(?:\s+[A-Za-z0-9_./:@-]+)?)*$/);
+    let match = !job.script && !job.monitor_script && !job.monitor_url && prompt.match(/^roadctl\s+tick\s+--as\s+([A-Za-z0-9_.@/-]+)(?:\s+--[A-Za-z0-9-]+(?:\s+[A-Za-z0-9_./:@-]+)?)*$/);
+    if (typeof job.monitor_script === 'string' && !job.script) {
+      try {
+        const root = fs.realpathSync(path.join(ctx.env.HERMES_HOME?.trim() || path.join(ctx.home, '.hermes'), 'scripts'));
+        const file = fs.realpathSync(path.resolve(root, job.monitor_script));
+        if (!file.startsWith(root + path.sep)) throw new Error();
+        const source = fs.readFileSync(file, 'utf8');
+        const m = source.match(/^AGENT = "([A-Za-z0-9_.@/-]+)"$/m);
+        const hash = m && createHash('sha256').update(source.replace(m[0], 'AGENT = "<agent>"')).digest('hex');
+        // shortcut: only unmodified documented templates are recognized; extend when their behavior can be verified safely.
+        if (['8f2ef6361d459a2e39f4d849b8d984a8573a7f90366f1391e28752e006e8c719', '1007031bd26a514310abdf90cc2ca13d718038480126514fa9e314948d593815'].includes(hash)) match = m;
+      } catch { /* unknown monitor */ }
+    }
     const agent = match && resolve(match[1]);
     if (!agent || !service) out.push(res('conductor-hermes', 'warn', 'active Hermes job: agent unknown; cannot check for duplicate launcher'));
     else if (agent === service) out.push(res('conductor-hermes', 'warn', `active Hermes job and conductor use the same agent ${agent}`));
