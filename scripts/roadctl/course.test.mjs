@@ -91,6 +91,7 @@ test('P5.54: owner-only confirmation, undo and ambiguous external effect', () =>
   r.confirm(r.preview()); show = r.show();
   assert.equal(show.course.current.generation, 2);
   r.good(['course', 'effect', '--hash', show.hash, '--by', 'Owner']); show = r.show();
+  assert.match(r.good(['course', 'preview', r.file]).stdout, /Automatic rollback is impossible/);
   const refused = r.run(['course', 'undo', '--hash', show.hash, '--by', 'Owner']);
   assert.notEqual(refused.status, 0); assert.match(refused.stderr, /automatic rollback is impossible/);
   r.draft('Second'); r.confirm(r.preview()); show = r.show();

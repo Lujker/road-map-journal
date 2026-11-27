@@ -112,13 +112,15 @@ function command(ctx) {
       if (fs.statSync(file).size > 1048576) throw new Error('proposal too large');
       const s = snapshot(board, JSON.parse(fs.readFileSync(file, 'utf8')), api);
       if (sub === 'preview') {
-        if (flags.json) out(JSON.stringify({ proposal: s.current, agreement: s.agreement, impact: s.impact, confirmation_hash: s.token, permission: 'The existing mandate remains the authority; this proposal grants no permission.' }, null, 2));
+        const rollback = s.previous?.ambiguous ? 'Automatic rollback is impossible after a recorded ambiguous external effect.' : 'Undo is available until an ambiguous external effect is recorded.';
+        if (flags.json) out(JSON.stringify({ proposal: s.current, agreement: s.agreement, impact: s.impact, confirmation_hash: s.token, rollback, permission: 'The existing mandate remains the authority; this proposal grants no permission.' }, null, 2));
         else {
           out(`Course: ${s.current.objective}`);
           out(`Existing agreement: ${s.agreement.level}; work ${s.agreement.kinds.join(', ') || '(none)'}, size ${s.agreement.max_size ?? '-'}, merge ${s.agreement.merge}; budget ${Object.entries(s.agreement.budget).map(([k, v]) => `${k}=${v}`).join(', ') || '(none)'}`);
           out(`Forbidden: ${s.agreement.forbidden.join('; ') || '(none listed)'}`);
           out(`Tell the owner: ${s.agreement.tell_owner.join('; ')}`);
           for (const [label, items] of Object.entries(s.impact)) out(`${label}: ${items.length ? items.join(', ') : '(none)'}`);
+          out(rollback);
           out(`The existing mandate remains the authority; this grants no permission. Confirmation hash: ${s.token}`);
         }
         return 0;
