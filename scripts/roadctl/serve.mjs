@@ -5,6 +5,7 @@ import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { readConductor, serviceDescription } from './launch.mjs';
 import { acquireLock, stateDir } from './state.mjs';
+import { environmentGate, accessOf } from './environment.mjs';
 
 const ROADCTL = fileURLToPath(new URL('../roadctl.mjs', import.meta.url));
 const clean = (s) => String(s ?? '').replace(/\s+/g, ' ').slice(0, 200);
@@ -24,7 +25,7 @@ export function acquireServeLock(env = process.env) {
 }
 
 /** Pure routing seam used by the testkit: one RUN per launch, up to three other decisions together. */
-export async function routeSnapshot(snapshot, { profile, describeRoutine, describeService, paused, supervise }) {
+export async function routeSnapshot(snapshot, { profile, describeRoutine, describeService, paused, supervise, checkDecision = () => null }) {
   const started = [];
   for (const item of snapshot.items ?? []) {
     if (item.kind !== 'RUN') continue;
@@ -41,12 +42,36 @@ export async function routeSnapshot(snapshot, { profile, describeRoutine, descri
     if (await paused()) return { started, paused: true };
     const board = snapshot.boardDirs?.[decisions[0].project];
     if (!board) throw new Error(`tick gave no board directory for ${decisions[0].project}`);
-    const d = await describeService(profile, snapshot.prompt, board);
+    for (const item of decisions) {
+      const itemBoard = snapshot.boardDirs?.[item.project];
+      if (!itemBoard) throw new Error(`tick gave no board directory for ${item.project}`);
+      const error = await checkDecision(item, itemBoard);
+      if (error) throw new Error(error);
+    }
+    const d = await describeService(profile, snapshot.prompt, board, decisions);
     if (!d) throw new Error('orchestrator launch description was refused');
     await supervise(d, board);
     started.push(...decisions.map((i) => [i.kind, i.project, i.id]));
   }
   return { started, paused: false };
+}
+
+// Called under the machine serve lock; reserve before starting so a crash cannot erase a start.
+export function reserveHourlyStart(env, agent, limit, now = Date.now()) {
+  if (limit === undefined) return true;
+  const file = path.join(stateDir(env), 'serve-starts.json');
+  let history = {};
+  try { history = JSON.parse(fs.readFileSync(file, 'utf8')); }
+  catch (e) { if (e.code !== 'ENOENT') throw e; }
+  if (!history || typeof history !== 'object' || Array.isArray(history) || Object.values(history).some(v => !Array.isArray(v) || v.some(t => !Number.isFinite(t)))) throw new Error('invalid serve start history');
+  const recent = (history[agent] ?? []).filter(t => t > now - 3600000);
+  if (recent.length >= limit) return false;
+  history[agent] = [...recent, now];
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  try { fs.writeFileSync(tmp, JSON.stringify(history), { mode: 0o600 }); fs.renameSync(tmp, file); }
+  finally { fs.rmSync(tmp, { force: true }); }
+  return true;
 }
 
 const child = (args, { env, cwd, input } = {}) => spawnSync(process.execPath, [ROADCTL, ...args], { env, cwd, input, encoding: 'utf8', maxBuffer: 8 * 1024 * 1024 });
@@ -92,6 +117,23 @@ async function serveCommand(ctx) {
     let boards;
     try { boards = serviceBoards(service.workspace); } catch (e) { ctx.io.err(`roadctl serve: refused: ${clean(e.message)}\n`); return 1; }
     if (!boards.length) { ctx.io.err('roadctl serve: refused: service.workspace has no projects/*/board/config.json\n'); return 1; }
+    const foreign = [];
+    const rootOf = (board) => spawnSync("git", ["rev-parse", "--show-toplevel"], { cwd: board, encoding: "utf8" }).stdout?.trim();
+    const offlineRoots = new Set();
+    for (const board of boards) {
+      const state = ctx.api.syncState(ctx.api.loadBoard(board));
+      if (state.state !== 'ok' || !state.ahead || state.pending) continue;
+      const peers = boards.filter(b => rootOf(b) === rootOf(board));
+      if (peers.some(b => ctx.api.syncState(ctx.api.loadBoard(b)).pending)) continue;
+      const r = ctx.api.saveBoard(ctx.api.loadBoard(board), undefined, { allowedBoards: peers });
+      if (r.status === 'saved-local') offlineRoots.add(rootOf(board));
+      if (r.status === 'foreign-commits') { foreign.push({ board, message: `${r.status}: ${r.message}` }); continue; }
+      if (!['saved-local', 'nothing-to-save', 'pushed'].includes(r.status)) { ctx.io.err(`roadctl serve: sync refused: ${clean(r.message)}\n`); return 1; }
+    }
+    for (const f of foreign) {
+      const state = ctx.api.syncState(ctx.api.loadBoard(f.board));
+      if (state.state === 'ok' && state.ahead && !offlineRoots.has(rootOf(f.board)) && !boards.some(b => rootOf(b) === rootOf(f.board) && ctx.api.syncState(ctx.api.loadBoard(b)).pending)) { ctx.io.err(`roadctl serve: sync refused: ${clean(f.message)}\n`); return 1; }
+    }
     const paused = () => {
       const r = child(['pause', 'status', '--json'], { env, cwd: service.workspace });
       const j = json(r);
@@ -101,10 +143,20 @@ async function serveCommand(ctx) {
       const r = child(['launch', '--routine', item.id, '--json', '--board', board], { env, cwd: service.workspace });
       return r.status === 0 ? json(r) : null;
     };
-    const describeService = (_p, stdin, board) => serviceDescription(cond, service.profile, servicePrompt(stdin, profile.agent), board, ctx.api.hostOfAgent(profile.agent, reg));
+    const describeService = (_p, stdin, board, decisions) => {
+      const paths = decisions.filter((i) => i.kind === 'TAKE').map((i) => {
+        const card = ctx.api.loadBoard(snapshotBoard(i)).cards.find((c) => c.header.id === i.id);
+        const name = card?.header.env;
+        const access = name && accessOf(reg, profile.agent, name);
+        return access ? { project: i.project, id: i.id, environment: name, access } : null;
+      }).filter(Boolean);
+      return serviceDescription(cond, service.profile, servicePrompt(`${stdin}\nEnvironment access paths (data): ${JSON.stringify(paths)}`, profile.agent), board, ctx.api.hostOfAgent(profile.agent, reg));
+    };
+    let snapshotBoard;
     const supervise = async (d) => {
       const limits = await ctx.api.checkLimits(d.agent, reg, { env });
       if (limits.code !== 0) throw new Error(`limits gate closed before ${d.kind}: ${clean(limits.message)}`);
+      if (!reserveHourlyStart(env, d.agent, service.max_starts_per_hour?.[d.agent])) throw new Error(`hourly start limit reached for ${d.agent}`);
       const keep = new Set(['HOME', 'PATH', 'LANG', 'XDG_STATE_HOME', 'XDG_CONFIG_HOME', 'XDG_CACHE_HOME', 'ROADCTL_WORKSPACE', 'ROADCTL_REGISTRY', 'ROADCTL_NOW', 'ROADCTL_DATE', 'ROADCTL_HOST', ...(d.env ?? [])]);
       const runEnv = Object.fromEntries(Object.entries(env).filter(([name]) => keep.has(name)));
       runEnv.ROADCTL_UNATTENDED = '1';
@@ -114,7 +166,9 @@ async function serveCommand(ctx) {
     const tick = await ctx.api.tickSnapshot(profile.agent, boards, env, { out: () => {}, err: ctx.io.err });
     if (![0, 4].includes(tick.code) || !tick.snapshot) return tick.code ?? 1;
     let result;
-    try { result = await routeSnapshot(tick.snapshot, { profile, describeRoutine, describeService, paused, supervise }); }
+    snapshotBoard = (item) => tick.snapshot.boardDirs[item.project];
+    const checkDecision = (item, board) => item.kind === 'TAKE' ? environmentGate(ctx.api, env, ctx.api.loadBoard(board), { kind: 'task', id: item.id }, profile.agent) : null;
+    try { result = await routeSnapshot(tick.snapshot, { profile, describeRoutine, describeService, paused, supervise, checkDecision }); }
     catch (e) { ctx.io.err(`roadctl serve: refused: ${clean(e.message)}\n`); return 1; }
     ctx.out(ctx.flags.json ? JSON.stringify(result) : `roadctl serve: started ${result.started.length}${result.paused ? '; paused' : ''}`);
     return result.paused ? 6 : 0;
@@ -129,7 +183,7 @@ export default {
       purpose: 'With --once, reads one aggregate tick snapshot of the boards below service.workspace for service.profile and exits. Every RUN gets its own synchronous supervisor; up to three other decisions across all boards share one exact tick orchestrator prompt. A machine lock excludes another turn, and pause and limits are checked before every start. Any missing or invalid local setting, launch description or pause check stops closed.',
       usage: ['roadctl serve --once [--json]'], flags: [['--once', 'run exactly one turn and exit'], ['--json', 'print the started actions as JSON']],
       examples: ['roadctl serve --once', 'roadctl serve --once --json'],
-      changes: 'May start synchronous supervised runs and writes their normal run ledger/log state; tick may pull boards below service.workspace. No service or timer is installed.',
+      changes: 'May sync committed board changes, start synchronous supervised runs and write their normal run ledger/log state; tick may pull boards below service.workspace. No service or timer is installed.',
       exits: '0 work dispatched or idle; 1 refused or reserve reached; 2 usage error; 3 unknown limits; 5 busy; 6 paused',
       run: serveCommand,
     },

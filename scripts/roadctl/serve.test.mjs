@@ -140,3 +140,167 @@ test('P5.25 a3 CLI: cached reserve skips the provider past normal TTL and probes
     assert.match(after.stderr, /supervise: .* failed: no result/, 'the allowed fresh reading reaches the supervisor');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('P5.25 a5: TAKE checks the remote path before starting; local needs no ssh', async () => {
+  const { environmentGate, accessOf } = await import('./environment.mjs');
+  const reg = { agents: { 'a@home': { machine: 'home' } }, environments: { remote: { machine: 'work', placement: 'remote-access', access: [{ from: 'home', ssh: 'work-host' }] }, local: { machine: 'home', placement: 'remote-access' } } };
+  const api = { loadRegistry: () => reg };
+  const board = { cards: [{ header: { id: 'c', env: 'remote' } }] };
+  const calls = [];
+  const gate = (status) => environmentGate(api, {}, board, { kind: 'task', id: 'c' }, 'a@home', { spawn: (cmd, argv) => { calls.push([cmd, argv]); return { status }; } });
+  const snapshot = { prompt: 'work', boardDirs: { p: '/board' }, items: [{ kind: 'TAKE', project: 'p', id: 'c' }] };
+  let started = 0;
+  const options = { profile: {}, paused: () => false, describeService: () => ({}), supervise: () => { started++; }, checkDecision: () => gate(1) };
+  await assert.rejects(routeSnapshot(snapshot, options), /unreachable/);
+  assert.equal(started, 0);
+  options.checkDecision = () => gate(0);
+  await routeSnapshot(snapshot, options);
+  assert.equal(started, 1);
+  assert.deepEqual(calls[0], ['ssh', ['-o', 'BatchMode=yes', '-o', 'ConnectTimeout=5', '--', 'work-host', 'true']]);
+  assert.equal(accessOf(reg, 'a@home', 'remote').ssh, 'work-host');
+  board.cards[0].header.env = 'local';
+  const before = calls.length;
+  assert.equal(gate(0), null);
+  assert.equal(calls.length, before);
+});
+
+test('P5.25 a5 CLI: executor uses the route from its actual prompt', { skip: process.platform === 'win32' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-route-cli-'));
+  try {
+    const workspace = path.join(dir, 'workspace');
+    const board = path.join(workspace, 'projects', 'my-app', 'board');
+    fs.cpSync(EXAMPLE, board, { recursive: true });
+    const cfg = path.join(board, 'config.json');
+    fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg)), requires: '0.6.0' }));
+    const card = path.join(board, 'cards', 'W-3-export.md');
+    const cardPath = fs.existsSync(card) ? card : fs.readdirSync(path.join(board, 'cards')).map(x => path.join(board, 'cards', x)).find(x => fs.readFileSync(x, 'utf8').includes('id: W-3\n'));
+    const initial = fs.readFileSync(cardPath, 'utf8').replace('status: doing', 'status: doing\nenv: remote\ndelegate: to=claude-code@home-wsl host=any criteria=all by=other accept=by state=open at=2026-11-20T09:00:00Z');
+    fs.writeFileSync(cardPath, initial.replace(/\ndelegate: [^\n]+/, ''));
+    const log = path.join(dir, 'ssh.log');
+    const bin = installFakes(path.join(dir, 'bin'), { extra: { ssh: `printf '%s\\n' "$*" >> '${log}'\n[ ! -f '${dir}/unreachable' ]` } });
+    const registry = path.join(dir, 'registry.json');
+    fs.writeFileSync(registry, JSON.stringify({ version: 1, roles: {}, agents: { other: {}, 'claude-code@home-wsl': { machine: 'home-wsl', roles: ['worker', 'orchestrator'] } }, environments: { remote: { machine: 'work', placement: 'remote-access', access: [{ from: 'home-wsl', ssh: 'work-host' }] }, local: { machine: 'home-wsl', placement: 'remote-access' } } }));
+    const worker = path.join(dir, 'worker.cjs');
+    fs.writeFileSync(worker, `const fs=require('fs'), cp=require('child_process');\nfs.writeFileSync(${JSON.stringify(path.join(dir, 'worker-env.json'))}, JSON.stringify(process.env));\nconst s=fs.readFileSync(0,'utf8'); const m=s.match(/Environment access paths \\(data\\): (.*)/); if(!m) process.exit(7); const p=JSON.parse(m[1])[0]; if(p.access.via==='ssh') { if(cp.spawnSync('ssh',[p.access.ssh,'echo','safe-action']).status!==0) process.exit(8); } else if(p.access.via!=='local') process.exit(9); cp.spawnSync(process.execPath,[${JSON.stringify(ROADCTL)},'run','done','--as','claude-code@home-wsl','--result','ok','--did','fixture','--board',${JSON.stringify(board)}],{stdio:'inherit',env:process.env});`);
+    const config = path.join(dir, 'config', 'road-map-journal'); fs.mkdirSync(config, { recursive: true });
+    fs.writeFileSync(path.join(config, 'conductor.json'), JSON.stringify({ version: 1, templates: { 'claude-code@home-wsl': { argv: [process.execPath, worker], env: ['ALLOWED_FIXTURE'] } }, profiles: { service: { agent: 'claude-code@home-wsl', model: 'fake', attempt: { timeout: '1m' } } }, service: { workspace, profile: 'service', fixture_secret: 'config-only-sentinel' } }), { mode: 0o600 });
+    const env = { ...process.env, ALLOWED_FIXTURE: 'allowed-value', PRIVATE_FIXTURE: 'private-sentinel', ...clock(), HOME: dir, PATH: `${bin}${path.delimiter}${process.env.PATH}`, XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_STATE_HOME: path.join(dir, 'state'), XDG_CACHE_HOME: path.join(dir, 'cache'), ROADCTL_WORKSPACE: workspace, ROADCTL_REGISTRY: registry, FAKE_LOG: path.join(dir, 'calls') };
+    const delegated = spawnSync(process.execPath, [ROADCTL, 'delegate', 'W-3', '--to', 'claude-code@home-wsl', '--by', 'other', '--board', board], { cwd: workspace, env, encoding: 'utf8' });
+    assert.equal(delegated.status, 0, delegated.stderr);
+    const delegatedCard = fs.readFileSync(cardPath, 'utf8');
+    const run = () => spawnSync(process.execPath, [ROADCTL, 'serve', '--once', '--json'], { cwd: workspace, env, encoding: 'utf8' });
+    const remote = run(); assert.equal(remote.status, 0, remote.stderr + remote.stdout); assert.deepEqual(JSON.parse(remote.stdout).started, [['TAKE', 'my-app', 'W-3']]);
+    assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['-o BatchMode=yes -o ConnectTimeout=5 -- work-host true', 'work-host echo safe-action']);
+    const workerEnv = JSON.parse(fs.readFileSync(path.join(dir, 'worker-env.json'), 'utf8'));
+    assert.equal(workerEnv.ALLOWED_FIXTURE, 'allowed-value');
+    assert.equal(workerEnv.HOME, dir);
+    assert.equal(workerEnv.PRIVATE_FIXTURE, undefined);
+    assert.ok(!Object.values(workerEnv).some(value => value.includes('config-only-sentinel')));
+    assert.ok(!Object.values(workerEnv).includes(fs.readFileSync(path.join(config, 'conductor.json'), 'utf8')));
+    fs.unlinkSync(log); fs.writeFileSync(cardPath, delegatedCard.replace('env: remote', 'env: local'));
+    const local = run(); assert.equal(local.status, 0, local.stderr + local.stdout); assert.deepEqual(JSON.parse(local.stdout).started, [['TAKE', 'my-app', 'W-3']]); assert.equal(fs.existsSync(log), false);
+    fs.writeFileSync(cardPath, delegatedCard); fs.writeFileSync(path.join(dir, 'unreachable'), '');
+    const unavailable = run(); assert.equal(unavailable.status, 1); assert.match(unavailable.stderr, /unreachable/);
+    assert.deepEqual(fs.readFileSync(log, 'utf8').trim().split('\n'), ['-o BatchMode=yes -o ConnectTimeout=5 -- work-host true']);
+    fs.rmSync(path.join(dir, 'unreachable')); fs.writeFileSync(cardPath, delegatedCard.replace('env: remote', 'env: local'));
+    const configFile = path.join(config, 'conductor.json');
+    const limited = JSON.parse(fs.readFileSync(configFile)); limited.service.max_starts_per_hour = { 'claude-code@home-wsl': 1 };
+    fs.writeFileSync(configFile, JSON.stringify(limited));
+    assert.equal(run().status, 0);
+    const blocked = run(); assert.equal(blocked.status, 1); assert.match(blocked.stderr, /hourly start limit reached/);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('P5.25 a8: hourly starts persist across turns and agents have independent rolling limits', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-hourly-'));
+  const env = { XDG_STATE_HOME: dir };
+  try {
+    const reserve = serve.reserveHourlyStart;
+    assert.equal(reserve(env, 'a', 2, 10000000), true);
+    assert.equal(reserve(env, 'a', 2, 10001000), true);
+    assert.equal(reserve(env, 'a', 2, 10002000), false);
+    assert.equal(reserve(env, 'b', 1, 10002000), true);
+    assert.equal(reserve(env, 'b', 1, 10003000), false);
+    assert.equal(reserve(env, 'a', 2, 13600000), true);
+    assert.equal(reserve(env, 'a', 2, 13600001), false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('P5.25 a8: asynchronous actions never overlap', async () => {
+  let active = 0; let max = 0;
+  await routeSnapshot({ boardDirs: { p: '/board' }, items: [{ kind: 'RUN', project: 'p', id: 'a' }, { kind: 'RUN', project: 'p', id: 'b' }, { kind: 'TAKE', project: 'p', id: 'c' }] }, {
+    profile: { agent: 'a' }, paused: () => false,
+    describeRoutine: i => i, describeService: () => ({}),
+    supervise: async () => { active++; max = Math.max(max, active); await new Promise(resolve => setImmediate(resolve)); active--; },
+  });
+  assert.equal(max, 1);
+});
+
+for (const multiple of [false, true]) test(`P5.25 a11: offline result delivered without rerunning (${multiple ? 'two boards' : 'one board'})`, { skip: process.platform === 'win32' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-serve-offline-'));
+  try {
+    const workspace = path.join(dir, 'workspace'), origin = path.join(dir, 'origin.git');
+    const board = path.join(workspace, 'projects', multiple ? 'z-app' : 'my-app', 'board');
+    fs.cpSync(EXAMPLE, board, { recursive: true });
+    if (multiple) fs.cpSync(EXAMPLE, path.join(workspace, 'projects', 'a-app', 'board'), { recursive: true });
+    const cfg = path.join(board, 'config.json');
+    fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg)), requires: '0.6.0' }));
+    const git = (cwd, ...args) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout; };
+    git(dir, 'init', '--bare', '-b', 'main', origin);
+    git(workspace, 'init', '-b', 'main');
+    git(workspace, 'config', 'user.name', 'Test'); git(workspace, 'config', 'user.email', 'test@example.com');
+    const agent = 'claude-code@home-wsl';
+    const registry = path.join(dir, 'registry.json');
+    fs.writeFileSync(registry, JSON.stringify({ version: 1, roles: {}, agents: { other: {}, [agent]: { machine: 'home-wsl', roles: ['worker', 'orchestrator'] } } }));
+    const log = path.join(dir, 'worker.log'), result = path.join(dir, 'result.log'), worker = path.join(dir, 'worker.cjs');
+    fs.writeFileSync(worker, `const fs=require('fs'),cp=require('child_process'); fs.appendFileSync(${JSON.stringify(log)},'run\\n'); const r=cp.spawnSync(process.execPath,[${JSON.stringify(ROADCTL)},'routine','done','due','--as',${JSON.stringify(agent)},'--result','ok','offline fixture','--board',${JSON.stringify(board)}],{encoding:'utf8',env:process.env}); fs.writeFileSync(${JSON.stringify(result)},r.stdout+r.stderr); process.exit(r.status);`);
+    const config = path.join(dir, 'config', 'road-map-journal'); fs.mkdirSync(config, { recursive: true });
+    fs.writeFileSync(path.join(config, 'conductor.json'), JSON.stringify({ version: 1, templates: { [agent]: { argv: [process.execPath, worker] } }, profiles: { service: { agent, model: 'fake', attempt: { timeout: '1m' } } }, service: { workspace, profile: 'service' } }), { mode: 0o600 });
+    const bin = installFakes(path.join(dir, 'bin'));
+    const env = { ...process.env, ...clock(), HOME: dir, PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: path.join(dir, 'calls'), XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_STATE_HOME: path.join(dir, 'state'), XDG_CACHE_HOME: path.join(dir, 'cache'), ROADCTL_WORKSPACE: workspace, ROADCTL_REGISTRY: registry };
+    const cli = (...args) => spawnSync(process.execPath, [ROADCTL, ...args], { cwd: workspace, env, encoding: 'utf8' });
+    for (const args of [['routine', 'new', 'due', 'Due', '--agent', agent, '--model', 'fake', '--env', 'test', '--every', '30m'], ['routine', 'on', 'due', '--by', 'Owner', '--source', 'test'], ['autonomy', 'routines', 'on', '--by', 'Owner']]) { const r = cli(...args, '--board', board); assert.equal(r.status, 0, r.stderr); }
+    git(workspace, 'add', '.'); git(workspace, 'commit', '-m', 'fixture'); git(workspace, 'remote', 'add', 'origin', origin); git(workspace, 'push', '-u', 'origin', 'main');
+    fs.renameSync(origin, `${origin}.offline`);
+    const offline = cli('serve', '--once', '--json'); assert.equal(offline.status, 0, offline.stderr + offline.stdout);
+    assert.match(fs.readFileSync(result, 'utf8'), /recorded-local/);
+    fs.renameSync(`${origin}.offline`, origin);
+    const unsaved = path.join(board, 'unsaved.txt');
+    fs.writeFileSync(unsaved, 'keep local');
+    const dirty = cli('serve', '--once', '--json'); assert.equal(dirty.status, 0, dirty.stderr + dirty.stdout);
+    assert.equal(git(workspace, 'rev-list', '--count', '@{u}..HEAD').trim(), '1');
+    assert.equal(fs.readFileSync(unsaved, 'utf8'), 'keep local');
+    fs.rmSync(unsaved);
+    const online = cli('serve', '--once', '--json'); assert.equal(online.status, 0, online.stderr + online.stdout);
+    assert.deepEqual(JSON.parse(online.stdout).started, []);
+    assert.equal(fs.readFileSync(log, 'utf8'), 'run\n');
+    const files = git(dir, '--git-dir', origin, 'ls-tree', '-r', '--name-only', 'main').trim().split('\n');
+    const routine = files.find(f => f.includes('routine') && f.endsWith('due.md')); assert.ok(routine, files.join('\n'));
+    const remote = git(dir, '--git-dir', origin, 'show', `main:${routine}`);
+    assert.equal((remote.match(/offline fixture/g) || []).length, 1);
+    if (multiple) {
+      const other = path.join(workspace, 'projects', 'a-app', 'board');
+      fs.renameSync(origin, `${origin}.offline`);
+      for (const [dir, marker] of [[board, 'first-result'], [other, 'second-result']]) {
+        fs.writeFileSync(path.join(dir, 'offline-result.txt'), marker);
+        git(workspace, 'add', path.relative(workspace, dir));
+        git(workspace, 'commit', '-m', marker);
+      }
+      fs.renameSync(`${origin}.offline`, origin);
+      const both = cli('serve', '--once', '--json');
+      assert.equal(both.status, 0, both.stderr + both.stdout);
+      assert.equal(git(workspace, 'rev-list', '--count', '@{u}..HEAD').trim(), '0');
+      for (const [dir, marker] of [[board, 'first-result'], [other, 'second-result']]) {
+        assert.equal(git(dir, '--git-dir', origin, 'show', `main:${path.relative(workspace, path.join(dir, 'offline-result.txt'))}`).trim(), marker);
+      }
+      fs.writeFileSync(path.join(workspace, 'foreign.txt'), 'private');
+      git(workspace, 'add', 'foreign.txt'); git(workspace, 'commit', '-m', 'foreign');
+      fs.writeFileSync(path.join(board, 'offline-result.txt'), 'third-result');
+      git(workspace, 'add', path.relative(workspace, board)); git(workspace, 'commit', '-m', 'board result');
+      const refused = cli('serve', '--once', '--json');
+      assert.notEqual(refused.status, 0); assert.match(refused.stderr, /foreign-commits/);
+      assert.ok(!git(dir, '--git-dir', origin, 'ls-tree', '-r', '--name-only', 'main').includes('foreign.txt'));
+      assert.equal(git(dir, '--git-dir', origin, 'show', `main:${path.relative(workspace, path.join(board, 'offline-result.txt'))}`).trim(), 'first-result');
+    }
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
