@@ -235,3 +235,47 @@ test('P5.25 a8: asynchronous actions never overlap', async () => {
   });
   assert.equal(max, 1);
 });
+
+test('P5.25 a11: offline result is delivered on the next turn without rerunning', { skip: process.platform === 'win32' }, () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'rc-serve-offline-'));
+  try {
+    const workspace = path.join(dir, 'workspace'), origin = path.join(dir, 'origin.git');
+    const board = path.join(workspace, 'projects', 'my-app', 'board');
+    fs.cpSync(EXAMPLE, board, { recursive: true });
+    const cfg = path.join(board, 'config.json');
+    fs.writeFileSync(cfg, JSON.stringify({ ...JSON.parse(fs.readFileSync(cfg)), requires: '0.6.0' }));
+    const git = (cwd, ...args) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); assert.equal(r.status, 0, r.stderr); return r.stdout; };
+    git(dir, 'init', '--bare', '-b', 'main', origin);
+    git(workspace, 'init', '-b', 'main');
+    git(workspace, 'config', 'user.name', 'Test'); git(workspace, 'config', 'user.email', 'test@example.com');
+    const agent = 'claude-code@home-wsl';
+    const registry = path.join(dir, 'registry.json');
+    fs.writeFileSync(registry, JSON.stringify({ version: 1, roles: {}, agents: { other: {}, [agent]: { machine: 'home-wsl', roles: ['worker', 'orchestrator'] } } }));
+    const log = path.join(dir, 'worker.log'), result = path.join(dir, 'result.log'), worker = path.join(dir, 'worker.cjs');
+    fs.writeFileSync(worker, `const fs=require('fs'),cp=require('child_process'); fs.appendFileSync(${JSON.stringify(log)},'run\\n'); const r=cp.spawnSync(process.execPath,[${JSON.stringify(ROADCTL)},'routine','done','due','--as',${JSON.stringify(agent)},'--result','ok','offline fixture','--board',${JSON.stringify(board)}],{encoding:'utf8',env:process.env}); fs.writeFileSync(${JSON.stringify(result)},r.stdout+r.stderr); process.exit(r.status);`);
+    const config = path.join(dir, 'config', 'road-map-journal'); fs.mkdirSync(config, { recursive: true });
+    fs.writeFileSync(path.join(config, 'conductor.json'), JSON.stringify({ version: 1, templates: { [agent]: { argv: [process.execPath, worker] } }, profiles: { service: { agent, model: 'fake', attempt: { timeout: '1m' } } }, service: { workspace, profile: 'service' } }), { mode: 0o600 });
+    const bin = installFakes(path.join(dir, 'bin'));
+    const env = { ...process.env, ...clock(), HOME: dir, PATH: `${bin}${path.delimiter}${process.env.PATH}`, FAKE_LOG: path.join(dir, 'calls'), XDG_CONFIG_HOME: path.join(dir, 'config'), XDG_STATE_HOME: path.join(dir, 'state'), XDG_CACHE_HOME: path.join(dir, 'cache'), ROADCTL_WORKSPACE: workspace, ROADCTL_REGISTRY: registry };
+    const cli = (...args) => spawnSync(process.execPath, [ROADCTL, ...args], { cwd: workspace, env, encoding: 'utf8' });
+    for (const args of [['routine', 'new', 'due', 'Due', '--agent', agent, '--model', 'fake', '--env', 'test', '--every', '30m'], ['routine', 'on', 'due', '--by', 'Owner', '--source', 'test'], ['autonomy', 'routines', 'on', '--by', 'Owner']]) { const r = cli(...args, '--board', board); assert.equal(r.status, 0, r.stderr); }
+    git(workspace, 'add', '.'); git(workspace, 'commit', '-m', 'fixture'); git(workspace, 'remote', 'add', 'origin', origin); git(workspace, 'push', '-u', 'origin', 'main');
+    fs.renameSync(origin, `${origin}.offline`);
+    const offline = cli('serve', '--once', '--json'); assert.equal(offline.status, 0, offline.stderr + offline.stdout);
+    assert.match(fs.readFileSync(result, 'utf8'), /recorded-local/);
+    fs.renameSync(`${origin}.offline`, origin);
+    const unsaved = path.join(board, 'unsaved.txt');
+    fs.writeFileSync(unsaved, 'keep local');
+    const dirty = cli('serve', '--once', '--json'); assert.equal(dirty.status, 0, dirty.stderr + dirty.stdout);
+    assert.equal(git(workspace, 'rev-list', '--count', '@{u}..HEAD').trim(), '1');
+    assert.equal(fs.readFileSync(unsaved, 'utf8'), 'keep local');
+    fs.rmSync(unsaved);
+    const online = cli('serve', '--once', '--json'); assert.equal(online.status, 0, online.stderr + online.stdout);
+    assert.deepEqual(JSON.parse(online.stdout).started, []);
+    assert.equal(fs.readFileSync(log, 'utf8'), 'run\n');
+    const files = git(dir, '--git-dir', origin, 'ls-tree', '-r', '--name-only', 'main').trim().split('\n');
+    const routine = files.find(f => f.includes('routine') && f.endsWith('due.md')); assert.ok(routine, files.join('\n'));
+    const remote = git(dir, '--git-dir', origin, 'show', `main:${routine}`);
+    assert.equal((remote.match(/offline fixture/g) || []).length, 1);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

@@ -117,6 +117,12 @@ async function serveCommand(ctx) {
     let boards;
     try { boards = serviceBoards(service.workspace); } catch (e) { ctx.io.err(`roadctl serve: refused: ${clean(e.message)}\n`); return 1; }
     if (!boards.length) { ctx.io.err('roadctl serve: refused: service.workspace has no projects/*/board/config.json\n'); return 1; }
+    for (const board of boards) {
+      const state = ctx.api.syncState(ctx.api.loadBoard(board));
+      if (state.state !== 'ok' || !state.ahead || state.pending) continue;
+      const r = child(['save', '--json', '--board', board], { env, cwd: service.workspace });
+      if (r.status !== 0) { ctx.io.err(`roadctl serve: sync refused: ${clean(r.stderr || r.stdout)}\n`); return 1; }
+    }
     const paused = () => {
       const r = child(['pause', 'status', '--json'], { env, cwd: service.workspace });
       const j = json(r);
@@ -166,7 +172,7 @@ export default {
       purpose: 'With --once, reads one aggregate tick snapshot of the boards below service.workspace for service.profile and exits. Every RUN gets its own synchronous supervisor; up to three other decisions across all boards share one exact tick orchestrator prompt. A machine lock excludes another turn, and pause and limits are checked before every start. Any missing or invalid local setting, launch description or pause check stops closed.',
       usage: ['roadctl serve --once [--json]'], flags: [['--once', 'run exactly one turn and exit'], ['--json', 'print the started actions as JSON']],
       examples: ['roadctl serve --once', 'roadctl serve --once --json'],
-      changes: 'May start synchronous supervised runs and writes their normal run ledger/log state; tick may pull boards below service.workspace. No service or timer is installed.',
+      changes: 'May sync committed board changes, start synchronous supervised runs and write their normal run ledger/log state; tick may pull boards below service.workspace. No service or timer is installed.',
       exits: '0 work dispatched or idle; 1 refused or reserve reached; 2 usage error; 3 unknown limits; 5 busy; 6 paused',
       run: serveCommand,
     },
