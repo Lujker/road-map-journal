@@ -700,6 +700,29 @@ export function checkServiceClone(ctx) {
   return res('service-clone', 'ok', `the service works in ${shown}, a clone of its own (not the working clone of the owner)`);
 }
 
+export function checkConductorScheduler(ctx, loaded) {
+  const dir = path.join(ctx.env.XDG_CONFIG_HOME || path.join(ctx.home, '.config'), 'systemd', 'user');
+  const present = ['roadctl-conductor.service', 'roadctl-conductor.timer'].map(n => fs.existsSync(path.join(dir, n)));
+  const out = [res('conductor-install', present.every(Boolean) ? 'ok' : present.some(Boolean) ? 'warn' : 'skip', present.every(Boolean) ? 'conductor service and timer unit files installed (activation not checked)' : present.some(Boolean) ? 'conductor installation incomplete: service or timer unit missing' : 'conductor service and timer unit files absent')];
+  if (!present.every(Boolean)) return out;
+  const c = readConductor(ctx.env);
+  const name = c.state === 'ok' && c.conductor.profiles?.[c.conductor.service?.profile]?.agent;
+  const resolve = n => { if (!n || !loaded.reg) return null; const r = ctx.api.resolveAs(n, loaded.reg); return r.error ? null : r.executor; };
+  const service = resolve(name);
+  let jobs;
+  try { const data = JSON.parse(fs.readFileSync(path.join(ctx.env.HERMES_HOME?.trim() || path.join(ctx.home, '.hermes'), 'cron', 'jobs.json'), 'utf8')); jobs = Array.isArray(data) ? data : data.jobs; if (!Array.isArray(jobs)) throw new Error(); }
+  catch (e) { if (e.code === 'ENOENT') return out; return [...out, res('conductor-hermes', 'warn', 'Hermes jobs unreadable: agent unknown')]; }
+  for (const job of jobs.filter(j => j.enabled === true)) {
+    const prompt = typeof job.prompt === 'string' ? job.prompt.trim() : '';
+    const match = !job.script && prompt.match(/^roadctl\s+tick\s+--as\s+([A-Za-z0-9_.@/-]+)(?:\s+--[A-Za-z0-9-]+(?:\s+[A-Za-z0-9_./:@-]+)?)*$/);
+    const agent = match && resolve(match[1]);
+    if (!agent || !service) out.push(res('conductor-hermes', 'warn', 'active Hermes job: agent unknown; cannot check for duplicate launcher'));
+    else if (agent === service) out.push(res('conductor-hermes', 'warn', `active Hermes job and conductor use the same agent ${agent}`));
+    else out.push(res('conductor-hermes', 'ok', 'active Hermes job uses a different agent'));
+  }
+  return out;
+}
+
 export const CHECKS = [
   ['runtime', checkRuntime],
   ['installed-copy', checkInstalledCopy],
@@ -715,5 +738,6 @@ export const CHECKS = [
   ['skill', checkSkill],
   ['launch-templates', (ctx, loaded) => checkLaunch(ctx, loaded)],
   ['service-clone', checkServiceClone],
+  ['conductor-install', checkConductorScheduler],
   ['boards', (ctx, loaded) => checkBoards(ctx, loaded)],
 ];

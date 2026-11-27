@@ -744,3 +744,25 @@ test('P5.29 a3: doctor warns when the service config points at the working clone
   conductor({ workspace: 'relative/clone' });
   assert.equal(r.json(['doctor']).by('launch-templates').status, 'fail');
 });
+
+test('P5.25 a10: conductor installation and active Hermes agent conflicts', FAKES_SKIP, () => {
+  const r = rig();
+  try {
+    const check = () => r.json(['doctor']).j.checks;
+    assert.equal(check().find(x => x.id === 'conductor-install').status, 'skip');
+    const units = path.join(r.env.XDG_CONFIG_HOME, 'systemd', 'user');
+    fs.mkdirSync(units, { recursive: true });
+    for (const n of ['roadctl-conductor.service', 'roadctl-conductor.timer']) fs.writeFileSync(path.join(units, n), 'fixture');
+    const cfg = path.join(r.env.XDG_CONFIG_HOME, 'road-map-journal');
+    fs.mkdirSync(cfg, { recursive: true });
+    fs.writeFileSync(path.join(cfg, 'conductor.json'), JSON.stringify({ version: 1, templates: {}, profiles: { service: { agent: AGENT, model: 'fake', attempt: { timeout: '1m' } } }, service: { workspace: r.ws, profile: 'service' } }), { mode: 0o600 });
+    const cron = path.join(r.home, '.hermes', 'cron'); fs.mkdirSync(cron, { recursive: true });
+    const jobs = j => fs.writeFileSync(path.join(cron, 'jobs.json'), JSON.stringify({ jobs: j }));
+    const registry = JSON.parse(fs.readFileSync(r.regFile)); registry.agents['other@host'] = { host: 'codex', machine: 'host', roles: ['orchestrator'] }; fs.writeFileSync(r.regFile, JSON.stringify(registry));
+    jobs([{ enabled: true, prompt: `roadctl tick --as ${AGENT} --json` }, { enabled: true, prompt: 'roadctl tick --as other@host' }, { enabled: true, script: '/opaque' }, { enabled: false, prompt: `roadctl tick --as ${AGENT}` }]);
+    const all = check(); assert.equal(all.find(x => x.id === 'conductor-install').status, 'ok');
+    const result = all.filter(x => x.id === 'conductor-hermes');
+    assert.deepEqual(result.map(x => x.status), ['warn', 'ok', 'warn']);
+    assert.match(result[0].detail, /same agent/); assert.match(result[2].detail, /unknown/);
+  } finally { fs.rmSync(r.root, { recursive: true, force: true }); }
+});
