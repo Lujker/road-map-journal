@@ -279,11 +279,28 @@ for (const multiple of [false, true]) test(`P5.25 a11: offline result delivered 
     const remote = git(dir, '--git-dir', origin, 'show', `main:${routine}`);
     assert.equal((remote.match(/offline fixture/g) || []).length, 1);
     if (multiple) {
+      const other = path.join(workspace, 'projects', 'a-app', 'board');
+      fs.renameSync(origin, `${origin}.offline`);
+      for (const [dir, marker] of [[board, 'first-result'], [other, 'second-result']]) {
+        fs.writeFileSync(path.join(dir, 'offline-result.txt'), marker);
+        git(workspace, 'add', path.relative(workspace, dir));
+        git(workspace, 'commit', '-m', marker);
+      }
+      fs.renameSync(`${origin}.offline`, origin);
+      const both = cli('serve', '--once', '--json');
+      assert.equal(both.status, 0, both.stderr + both.stdout);
+      assert.equal(git(workspace, 'rev-list', '--count', '@{u}..HEAD').trim(), '0');
+      for (const [dir, marker] of [[board, 'first-result'], [other, 'second-result']]) {
+        assert.equal(git(dir, '--git-dir', origin, 'show', `main:${path.relative(workspace, path.join(dir, 'offline-result.txt'))}`).trim(), marker);
+      }
       fs.writeFileSync(path.join(workspace, 'foreign.txt'), 'private');
       git(workspace, 'add', 'foreign.txt'); git(workspace, 'commit', '-m', 'foreign');
+      fs.writeFileSync(path.join(board, 'offline-result.txt'), 'third-result');
+      git(workspace, 'add', path.relative(workspace, board)); git(workspace, 'commit', '-m', 'board result');
       const refused = cli('serve', '--once', '--json');
       assert.notEqual(refused.status, 0); assert.match(refused.stderr, /foreign-commits/);
       assert.ok(!git(dir, '--git-dir', origin, 'ls-tree', '-r', '--name-only', 'main').includes('foreign.txt'));
+      assert.equal(git(dir, '--git-dir', origin, 'show', `main:${path.relative(workspace, path.join(board, 'offline-result.txt'))}`).trim(), 'first-result');
     }
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

@@ -1665,7 +1665,7 @@ const defaultMessage = (ctx, board, pending) => {
 
 /** Commit only the board's paths and push. Never forces; lints first and again after a merge. */
 export const saveBoard = repoLocked((...a) => saveBoardUnlocked(...a));
-function saveBoardUnlocked(board, message, { timeout = netTimeout() } = {}) {
+function saveBoardUnlocked(board, message, { timeout = netTimeout(), allowedBoards = [] } = {}) {
   if (pendingMilestoneOperation(board)) return { status: 'error', message: 'milestone operation awaits recovery; nothing was committed' };
   const ctx = syncContext(board);
   if (!ctx) return { status: 'no-git', message: 'the board is not in a git repository' };
@@ -1704,7 +1704,8 @@ function saveBoardUnlocked(board, message, { timeout = netTimeout() } = {}) {
     const history = gitx(['log', '--format=', '--name-only', '--no-renames', '--diff-merges=first-parent', '-z', `@{u}..${head.out}`], ctx.root);
     if (!history.ok) return { status: 'error', message: `cannot check unpushed commits: ${failureHint(history)}` };
     const out = history.out.split('\0').filter(Boolean);
-    const foreign = out.filter((x) => !inScope(ctx, x));
+    const scopes = [ctx, ...allowedBoards.map((dir) => syncContext(loadBoard(dir))).filter((c) => c && c.root === ctx.root)];
+    const foreign = out.filter((x) => !scopes.some((scope) => inScope(scope, x)));
     if (foreign.length) return { status: 'foreign-commits', files: foreign, message: `unpushed commits touch paths outside the board (${foreign.slice(0, 5).join(', ')}); push those yourself` };
     if (!out.length && !(aheadBehind(ctx.root)?.ahead > 0)) return { status: 'nothing-to-save', message: `nothing to push${note}` };
     const p = gitx(['push', '--quiet', remote.out, `${head.out}:${target.out}`], ctx.root, { timeout });
@@ -4609,7 +4610,7 @@ TICK_KINDS.push(...Object.keys(MODULE_REG.tickKinds));
 export const ALL_COMMANDS = { ...COMMANDS, ...MODULE_REG.commands };
 /** The helpers a module may use (modules do not import this file). Extending this list is an edit of the shared file. */
 const moduleApi = () => Object.freeze({ VERSION, findBoard, loadBoard, parseCard, criteriaProblems, readyMilestones, milestoneSummary, milestoneLine, ruleStale, workBasisStale, checkpointWorkBasis, depMet, withRepoLock, repoLockDead, knownBoards, hasBoardSources, loadRegistry, sanitize, today, lint, appendLog,
-  boardRequires, compareVersions, nowMs, delegationInfo, approvalBasis, scopesOf, eligibility, claimable, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits,
+  boardRequires, compareVersions, nowMs, delegationInfo, approvalBasis, scopesOf, eligibility, claimable, formatDelegate, leaseExpired, ownerUpdateContext, publishOwnerUpdate, workspaceRoots, userBoardsFile, registryPath, syncContext, syncState, saveBoard, routineRows, providerTable, resolveTarget, splitCommand, hostOfAgent, limitsCachePath, tickLedgerPath, routineDoneWithHooks, checkLimits, reserveFor, evaluateLimits,
   async tickSnapshot(agent, boardDirs, env, io) {
     let snapshot = null;
     const code = await tickCommand({ as: agent, _boardDirs: boardDirs }, ['tick'], io, env, (t) => {

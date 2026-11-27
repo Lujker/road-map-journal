@@ -123,10 +123,12 @@ async function serveCommand(ctx) {
     for (const board of boards) {
       const state = ctx.api.syncState(ctx.api.loadBoard(board));
       if (state.state !== 'ok' || !state.ahead || state.pending) continue;
-      const r = child(['save', '--json', '--board', board], { env, cwd: service.workspace });
-      if (json(r)?.status === 'saved-local') offlineRoots.add(rootOf(board));
-      if (r.status !== 0 && json(r)?.status === 'foreign-commits') { foreign.push({ board, message: r.stderr || r.stdout }); continue; }
-      if (r.status !== 0) { ctx.io.err(`roadctl serve: sync refused: ${clean(r.stderr || r.stdout)}\n`); return 1; }
+      const peers = boards.filter(b => rootOf(b) === rootOf(board));
+      if (peers.some(b => ctx.api.syncState(ctx.api.loadBoard(b)).pending)) continue;
+      const r = ctx.api.saveBoard(ctx.api.loadBoard(board), undefined, { allowedBoards: peers });
+      if (r.status === 'saved-local') offlineRoots.add(rootOf(board));
+      if (r.status === 'foreign-commits') { foreign.push({ board, message: `${r.status}: ${r.message}` }); continue; }
+      if (!['saved-local', 'nothing-to-save', 'pushed'].includes(r.status)) { ctx.io.err(`roadctl serve: sync refused: ${clean(r.message)}\n`); return 1; }
     }
     for (const f of foreign) {
       const state = ctx.api.syncState(ctx.api.loadBoard(f.board));
