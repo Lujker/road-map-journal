@@ -14,7 +14,7 @@ export default {
       examples: ['roadctl checkpoint W-3 --board ./board --as worker < handoff.json'],
       changes: 'Appends one Log entry and updates as_of on that card only; no status change, commit, delivery or retry.',
       exits: '0 recorded; 1 refused by mandate; 2 invalid input, unavailable board, refused target or write failure',
-      run({ args, flags, api, out }) {
+      run({ args, flags, api, env, out }) {
         const id = args[1];
         if (flags.project !== undefined || args.length !== 2 || !/^[A-Za-z0-9._-]+$/.test(id ?? '') || typeof flags.board !== 'string' || !flags.board.trim()
           || typeof flags.as !== 'string' || !/^[A-Za-z0-9@._-]{1,100}$/.test(flags.as)) throw new Error(usage);
@@ -42,8 +42,10 @@ export default {
         api.appendLog(board, id, `checkpoint: did: ${plain(handoff.did)} | next: ${plain(handoff.next)} | in-flight: ${plain(handoff.in_flight)}`, { author: flags.as, loose: true, maxLength: 2200 });
         const wasStale = api.workBasisStale(board, cards[0]);
         const holder = api.delegationInfo(cards[0]).claim?.agent;
-        const reconciled = wasStale && (!holder || holder === flags.as) && api.checkpointWorkBasis(board, cards[0]);
-        out(`checkpoint recorded on ${id}; not committed${wasStale ? reconciled ? '; reassess and check the impact before reporting' : '; dependencies still unresolved, checkpoint again after they are current' : ''}`);
+        let executor = flags.as;
+        try { executor = api.resolveAs(flags.as, api.loadRegistry(env)).executor ?? flags.as; } catch { /* registry unavailable: keep the explicit name */ }
+        const reconciled = wasStale && (!holder || holder === executor) && api.checkpointWorkBasis(board, cards[0]);
+        out(`checkpoint recorded on ${id}; not committed${wasStale ? reconciled ? '; reassess and check the impact before reporting' : '; dependencies or course basis still unresolved, checkpoint again after they are current' : ''}`);
         return 0;
       },
     },

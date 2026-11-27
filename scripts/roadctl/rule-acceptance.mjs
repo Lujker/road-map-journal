@@ -32,8 +32,10 @@ function admissionFields(card, reviewedClosure) {
   const { by_mandate, kind, size, goal } = card.header;
   return reviewedClosure && by_mandate ? { admission: [kind, size, goal] } : {};
 }
+const courseFields = (card) => ['plan_mandate', 'plan_course', 'plan_generation', 'work_course'].some((k) => k in card.header)
+  ? { course_basis: ['plan_mandate', 'plan_course', 'plan_generation', 'work_course'].map((k) => card.header[k] ?? '') } : {};
 
-export const ruleContent = (card, reviewedClosure = card.header.rule_admission === 'v1') => crypto.createHash('sha256').update(JSON.stringify({ criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), proof: (card.sections['Rule Evidence'] ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', ...(card.header.owner_acceptance === undefined ? {} : { owner_acceptance: card.header.owner_acceptance }), depends_on: card.header.depends_on ?? '', ...admissionFields(card, reviewedClosure) })).digest('hex');
+export const ruleContent = (card, reviewedClosure = card.header.rule_admission === 'v1') => crypto.createHash('sha256').update(JSON.stringify({ criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), proof: (card.sections['Rule Evidence'] ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', ...(card.header.owner_acceptance === undefined ? {} : { owner_acceptance: card.header.owner_acceptance }), depends_on: card.header.depends_on ?? '', ...admissionFields(card, reviewedClosure), ...courseFields(card) })).digest('hex');
 
 /** A unique acceptance id changes on each rule acceptance; dependencies are checked recursively without rewriting cards. */
 export function dependencyBasis(board, card, api = null, seen = new Set()) {
@@ -78,7 +80,7 @@ export function ruleSnapshot(board, id, repo) {
     if (!dep || dep.errors.length) throw new Error(`dependency ${id} is missing or invalid`);
     return [id, dep.header.status ?? '', dep.header.accepted ?? '', dep.header.by_mandate ?? '', dep.header.rule_id ?? '', dep.header.rule_deps ?? ''];
   });
-  const data = { revision, criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', ...(card.header.owner_acceptance === undefined ? {} : { owner_acceptance: card.header.owner_acceptance }), depends_on: dependencies, ...admissionFields(card, board.config.close_reviewed === true) };
+  const data = { revision, criteria: card.criteria, evidence: (card.sections.Evidence ?? '').trim(), approved: card.header.approved ?? '', by_mandate: card.header.by_mandate ?? '', ...(card.header.owner_acceptance === undefined ? {} : { owner_acceptance: card.header.owner_acceptance }), depends_on: dependencies, ...admissionFields(card, board.config.close_reviewed === true), ...courseFields(card) };
   return { revision, basis: `sha256:${crypto.createHash('sha256').update(JSON.stringify(data)).digest('hex')}` };
 }
 

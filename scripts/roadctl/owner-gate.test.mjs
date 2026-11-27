@@ -118,6 +118,7 @@ const OWNER_CALLS = [
   ['queue', 'add', 'M-1'], ['queue', 'remove', 'M-1'], ['queue', 'move', 'M-1', '--at', '1'],
   ['pause', '--reason', 'x'], ['resume'],
   ['mandate', 'approve', '--by', OWNER],
+  ['course', 'confirm', 'proposal.json', '--hash', 'x', '--by', OWNER], ['course', 'undo', '--hash', 'x', '--by', OWNER], ['course', 'effect', '--hash', 'x', '--by', OWNER],
   ['milestone', 'continue', 'M-1', '--by', OWNER], ['milestone', 'move', 'M-1', '--to', '2026-12-01', '--by', OWNER], ['milestone', 'done', 'M-1', '--hash', 'x', '--by', OWNER], ['milestone', 'return', 'M-1', '--cards', 'M-1', '--reason', 'x', '--hash', 'x', '--by', OWNER],
   ['routine', 'on', 'r1', '--by', OWNER, '--source', 'chat'], ['routine', 'off', 'r1', '--by', OWNER], ['routine', 'resume', 'r1'], ['routine', 'promote', 'r1'],
   ['autonomy', 'on', '--by', OWNER], ['autonomy', 'off'], ['autonomy', 'routines', 'on', '--by', OWNER],
@@ -125,12 +126,12 @@ const OWNER_CALLS = [
   ['boards', 'add', '/nonexistent'], ['boards', 'remove', 'x'],
   ['hook-install', '--git', '--apply'], ['hook-uninstall', '--git', '--apply'], ['instructions-install', '--claude', '--apply'], ['instructions-uninstall', '--claude', '--apply'], ['agents-install', '--claude', '--apply'], ['agents-uninstall', '--claude', '--apply'],
 ];
-const READ_CALLS = [['status'], ['pause', 'status'], ['mandate', 'show'], ['queue', 'list'], ['autonomy'], ['routine', 'list'], ['hook-install', '--git'], ['boards', 'list'], ['limits', '--check', 'claude']];
+const READ_CALLS = [['status'], ['pause', 'status'], ['mandate', 'show'], ['course', 'show'], ['course', 'preview', 'proposal.json'], ['queue', 'list'], ['autonomy'], ['routine', 'list'], ['hook-install', '--git'], ['boards', 'list'], ['limits', '--check', 'claude']];
 
 test('P5.3 a1: every owner call is refused with exit 1 in an unattended run (ROADCTL_UNATTENDED, ROADCTL_RUN_ID); reads are not; without the mode the gate says nothing; the list is the `owner` entries', () => {
   const r = rig();
   const owners = Object.entries(rc.ALL_COMMANDS).filter(([, c]) => c.owner).map(([n]) => n).sort();
-  assert.deepEqual(owners, ['agents-install', 'agents-uninstall', 'answer', 'approve', 'auto', 'autonomy', 'boards', 'done', 'hook-install', 'hook-uninstall', 'inbox', 'instructions-install', 'instructions-uninstall', 'limits', 'mandate', 'milestone', 'pause', 'queue', 'resume', 'routine', 'undo']);
+  assert.deepEqual(owners, ['agents-install', 'agents-uninstall', 'answer', 'approve', 'auto', 'autonomy', 'boards', 'course', 'done', 'hook-install', 'hook-uninstall', 'inbox', 'instructions-install', 'instructions-uninstall', 'limits', 'mandate', 'milestone', 'pause', 'queue', 'resume', 'routine', 'undo']);
   // every call of the table is an owner call by the entries, every read call is not
   const parse = (a) => ({ args: a.filter((x, i) => !x.startsWith('--') && !(i && a[i - 1].startsWith('--') && !['--git', '--claude', '--apply'].includes(a[i - 1]))), flags: Object.fromEntries(a.filter((x) => x.startsWith('--')).map((x) => [x.slice(2), true])) });
   for (const a of OWNER_CALLS) { const { args, flags } = parse(a); assert.ok(ownerCall(args[0], rc.ALL_COMMANDS[args[0]], args, flags), a.join(' ')); }

@@ -56,6 +56,9 @@ try {
 } catch (e) {
   if (e?.code !== 'ERR_MODULE_NOT_FOUND' || e.url !== new URL('./roadctl/rule-acceptance.mjs', import.meta.url).href) throw e;
 }
+let COURSE = null;
+try { COURSE = await import('./roadctl/course.mjs'); }
+catch (e) { if (e?.code !== 'ERR_MODULE_NOT_FOUND' || e.url !== new URL('./roadctl/course.mjs', import.meta.url).href) throw e; }
 
 // seam (P5.28): the state directory and the lock helper live in scripts/roadctl/state.mjs (one definition for the core and the modules).
 // seam (P5.28): lone-copy fallback: a copy of this file without its roadctl/ folder uses the small inline versions below, with the same paths and the same
@@ -78,7 +81,7 @@ try {
   if (e?.code !== 'ERR_MODULE_NOT_FOUND' || !/roadctl[\\/]who-takes\.mjs/.test(String(e.message))) throw e;
 }
 
-export const VERSION = '0.16.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
+export const VERSION = '0.17.0'; // raised with every change of a format (card/routine/config keys); see docs/developing-roadctl.md
 export const BOARD_VERSION = 1;
 export const STATUSES = ['idea', 'ready', 'doing', 'review', 'blocked', 'done', 'parked', 'dropped'];
 const KNOWN_KEYS = new Set(['id', 'title', 'status', 'depends_on', 'blocked', 'approved', 'accepted', 'as_of', 'delegate', 'claim']);
@@ -341,7 +344,7 @@ export function boardRequires(config, version = VERSION) {
   return null;
 }
 const WHO_REQUIRES = '0.14.0'; // the first roadctl that reads profiles and orchestrator/profile pairs in --as and --to
-const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy'], ['0.13.0', 'owner-questions'], ['0.15.0', 'rule-acceptance'], ['0.15.0', 'milestone']]; // required modules for board format versions
+const REQUIRES_MODULE = [['0.6.0', 'approval-hash'], ['0.8.0', 'mandate'], ['0.12.0', 'outcome-policy'], ['0.13.0', 'owner-questions'], ['0.15.0', 'rule-acceptance'], ['0.15.0', 'milestone'], ['0.17.0', 'course']]; // required modules for board format versions
 
 const statusOf = (board, card) => {
   const s = card.header.status ?? '';
@@ -678,6 +681,7 @@ export function ruleStale(board, card) {
 }
 
 export function workBasisStale(board, card) {
+  if (COURSE?.activeCourseStale(board, card, moduleApi())) return true;
   if (statusOf(board, card) !== 'doing' || !depsOf(card).length || (compareVersions(board.config.requires, '0.15.0') ?? -1) < 0) return false;
   if (!card.header.work_deps) return true;
   try { return card.header.work_deps !== dependencyBasis(board, card, moduleApi()); } catch { return true; }
@@ -688,8 +692,11 @@ export function checkpointWorkBasis(board, card) {
   const byId = new Map(board.cards.map((c) => [c.header.id, c]));
   if (depsOf(card).some((id) => !depMet(board, card, id, byId))) return false;
   try {
-    const next = dependencyBasis(board, card, moduleApi());
-    writeCard(card, setHeader(readNorm(card), 'work_deps', next));
+    let raw = readNorm(card);
+    if (depsOf(card).length) raw = setHeader(raw, 'work_deps', dependencyBasis(board, card, moduleApi()));
+    const course = COURSE?.currentCourseRevision(board, moduleApi());
+    if (course) raw = setHeader(raw, 'work_course', course);
+    writeCard(card, raw);
     return true;
   } catch { return false; }
 }
@@ -1180,10 +1187,11 @@ export function newCard(board, id, title, status = 'ready', date = today()) {
   if (board.cards.some((c) => c.header.id === id)) throw new Error(`id ${id} already exists`);
   if (!['idea', 'ready'].includes(status)) throw new Error('new cards start as idea or ready');
   const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'card';
+  const basis = COURSE?.basisLines(board, moduleApi()) ?? '';
   const dir = path.join(board.dir, 'cards');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${id}-${slug}.md`);
-  fs.writeFileSync(file, `---\nid: ${id}\ntitle: ${sanitize(title, 120)}\nstatus: ${status}\nas_of: ${date}\n---\n\n## Goal\n\n## Acceptance\n- [ ] a1: \n`, { flag: 'wx' });
+  fs.writeFileSync(file, `---\nid: ${id}\ntitle: ${sanitize(title, 120)}\nstatus: ${status}\n${basis}as_of: ${date}\n---\n\n## Goal\n\n## Acceptance\n- [ ] a1: \n`, { flag: 'wx' });
   return file;
 }
 
@@ -1204,7 +1212,7 @@ export function brief(board) {
   const milestones = milestoneSummary(board);
   if (milestones) l.push(`MILESTONES ${milestoneLine(milestones)}`);
   for (const c of board.cards.filter((card) => ruleStale(board, card))) l.push(`STALE RULE [${c.header.id}]: dependency or evidence changed; impact check required`);
-  for (const c of board.cards.filter((card) => workBasisStale(board, card))) l.push(`STALE WORK [${c.header.id}]: checkpoint and reassess dependency impact`);
+  for (const c of board.cards.filter((card) => workBasisStale(board, card))) l.push(`STALE WORK [${c.header.id}]: checkpoint and reassess basis impact`);
   for (const c of by('doing')) l.push(`DOING [${c.header.id}] ${sanitize(c.header.title, 80)} | approved: ${approvedText(c)} | as_of ${sanitize(c.header.as_of, 10)}${nextOpen(c) ? ` | next ${nextOpen(c)}` : ''}`);
   for (const c of by('review')) l.push(`REVIEW [${c.header.id}] ${sanitize(c.header.title, 80)} | ${c.header.accepted === 'rule' ? 'accepted by rule; ' : ''}${reviewByRule(board, c) ? reviewRuleHint : 'awaiting owner acceptance, do not mark done'}`);
   for (const c of by('blocked')) l.push(`BLOCKED [${c.header.id}] ${sanitize(c.header.title, 60)} | ${sanitize(c.header.blocked, 80)}`);
@@ -1312,7 +1320,7 @@ export function formatStatus(summaries) {
   for (const s of summaries) {
     if (s.milestones) out.push(`${s.project}: milestones: ${milestoneLine(s.milestones)}`);
     for (const id of s.stale_rule ?? []) out.push(`${s.project}: STALE RULE [${id}]: dependency or evidence changed; impact check required`);
-    for (const id of s.stale_work ?? []) out.push(`${s.project}: STALE WORK [${id}]: checkpoint and reassess dependency impact`);
+    for (const id of s.stale_work ?? []) out.push(`${s.project}: STALE WORK [${id}]: checkpoint and reassess basis impact`);
     for (const c of s.doing) out.push(`${s.project}: DOING [${c.id}] ${sanitize(c.title, 80)} | approved: ${c.approved.join('+') || 'no'}`);
     for (const c of s.review.filter((c) => c.accepted === 'rule')) out.push(`${s.project}: REVIEW [${c.id}] ${sanitize(c.title, 80)} | accepted by rule; ${c.close_reviewed ? reviewRuleHint : 'awaiting owner acceptance'}`);
     if (s.routines?.total) out.push(`${s.project}: ROUTINES switch ${s.routines.switch ? 'on' : 'off'}, ${s.routines.total} routine(s), ${s.routines.enabled} on, due now ${s.routines.due}`);
@@ -1780,6 +1788,7 @@ export function delegateCard(board, id, { to, host = 'any', criteria = 'all', by
   if (CLOSED.has(st)) reasons.push(`the card is ${st}`);
   if (st === 'ready' && pendingMilestoneOperation(board)) reasons.push('milestone operation awaits recovery');
   if (st === 'ready' && readyMilestones(board, { waiting: true }).length >= 2) reasons.push('two milestones await owner decision');
+  if (st === 'ready') { const reason = COURSE?.courseReason(board, c, moduleApi()); if (reason) reasons.push(reason); }
   if ('delegate' in c.header || 'claim' in c.header) reasons.push('a delegation is already active on this card (one at a time); accept or return it first');
   const tgt = WHO.resolveTo(to, registry); // P5.41: role, profile, executor or orchestrator
   if (tgt.kind === 'unknown') reasons.push(tgt.error + (tgt.hint ? `; ${tgt.hint}` : ''));
@@ -1822,6 +1831,10 @@ function claimable(board, c, as, reg) {
   if (CLOSED.has(statusOf(board, c))) return { reasons: [`the card is ${statusOf(board, c)}`] };
   if (statusOf(board, c) === 'ready' && d.state === 'open' && pendingMilestoneOperation(board)) return { reasons: ['milestone operation awaits recovery'] };
   if (statusOf(board, c) === 'ready' && d.state === 'open' && readyMilestones(board, { waiting: true }).length >= 2) return { reasons: ['two milestones await owner decision'] };
+  if (statusOf(board, c) === 'ready' && d.state === 'open') {
+    const reason = COURSE?.courseReason(board, c, moduleApi());
+    if (reason) return { reasons: [reason] };
+  }
   if (statusOf(board, c) === 'blocked' && /^owner question /.test(c.header.blocked ?? '')) return { reasons: ['waiting for an owner answer'] };
   if (d.state === 'reported') return { reasons: ['the delegation was already reported and awaits acceptance'] };
   if (d.state === 'claimed' && !info.claim) return { reasons: ['state is claimed but there is no claim; run roadctl lint'] };
@@ -2005,7 +2018,7 @@ function reportCardUnlocked(board, id, { as, text, commit = null, timeout = netT
   const bad = need(info, 'claimed');
   if (bad) return { status: 'refused', message: bad };
   if (!info.claim || info.claim.agent !== who.executor) return { status: 'refused', message: `only the claimant may report (claimed by ${info.claim?.agent ?? 'nobody'})` };
-  if (workBasisStale(board, c)) return { status: 'refused', message: 'dependency changed: checkpoint the current work and reassess its impact before reporting' };
+  if (workBasisStale(board, c)) return { status: 'refused', message: 'work basis changed: checkpoint the current work and reassess its impact before reporting' };
   // P5.41 a4: every criterion the delegation handed over must have an Evidence line
   const crits = info.delegate.criteria === 'all' ? c.criteria.map((x) => x.id) : (info.delegate.criteria ?? []);
   const missing = crits.filter((x) => !c.evidence.has(x));

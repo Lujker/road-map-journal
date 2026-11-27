@@ -5,6 +5,7 @@ import crypto from 'node:crypto';
 import { changeHeader, log, ownerItems } from './owner-questions.mjs';
 import { RULE_REQUIRES, ruleDependencySatisfied } from './rule-acceptance.mjs';
 import { acquireLock, milestoneTransactionFile } from './state.mjs';
+import { basisLines } from './course.mjs';
 
 function applyTransaction(board, journalFile, transaction, id, hash, action) {
   if (transaction?.action !== action || transaction.id !== id || transaction.hash !== hash || !Array.isArray(transaction.entries) || !transaction.entries.length) throw new Error('pending milestone operation requires its original id and hash');
@@ -60,8 +61,9 @@ function runCommand({ args, flags, api, env, out, board, journal }) {
     if (typeof flags.cards !== 'string' || typeof flags.why !== 'string' || !flags.why.trim() || /[\r\n\x00-\x1f]/.test(flags.why) || flags.why.length > 500) throw new Error('add needs --cards A,B and --why TEXT');
     const ids = flags.cards.split(',').map((x) => x.trim());
     if (ids.some((x) => !x || !board.cards.some((c) => c.header.id === x)) || new Set(ids).size !== ids.length) throw new Error('cards must name distinct existing cards');
+    const basis = basisLines(board, api);
     fs.mkdirSync(path.dirname(file), { recursive: true });
-    fs.writeFileSync(file, `---\nid: ${id}\ncards: ${ids.join(', ')}\n---\n\n## Goal\n${flags.why.trim()}\n`, { flag: 'wx' });
+    fs.writeFileSync(file, `---\nid: ${id}\ncards: ${ids.join(', ')}\n${basis}---\n\n## Goal\n${flags.why.trim()}\n`, { flag: 'wx' });
     out(`milestone ${id}: added`);
     return 0;
   }
